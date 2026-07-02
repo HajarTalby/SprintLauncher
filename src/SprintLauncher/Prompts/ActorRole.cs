@@ -1,0 +1,153 @@
+﻿namespace SprintLauncher.Prompts;
+
+public enum SessionMode
+{
+    Execution, // default: Familles → Comité Pilotage → Arbitrage → QA
+    Cadrage,   // Comité Pilotage first → Familles → Arbitrage → QA
+}
+
+public static class SessionModeExtensions
+{
+    public static IReadOnlyList<ActorGroup> GetGroupOrder(this SessionMode mode) => mode switch
+    {
+        SessionMode.Cadrage => [
+            ActorGroup.CommitteePilotage,
+            ActorGroup.FamilyClaude,
+            ActorGroup.FamilyGpt,
+            ActorGroup.CommitteeArbitrage,
+            ActorGroup.Qa,
+        ],
+        _ => [
+            ActorGroup.FamilyClaude,
+            ActorGroup.FamilyGpt,
+            ActorGroup.CommitteePilotage,
+            ActorGroup.CommitteeArbitrage,
+            ActorGroup.Qa,
+        ],
+    };
+
+    public static string ToLabel(this SessionMode mode) => mode switch
+    {
+        SessionMode.Cadrage   => "CADRAGE",
+        SessionMode.Execution => "EXECUTION",
+        _                     => mode.ToString().ToUpperInvariant(),
+    };
+}
+
+public enum ActorRole
+{
+    // ── FAMILLE CLAUDE ──
+    ClaudePilotage,
+    ClaudeImplementation,
+
+    // ── FAMILLE GPT ──
+    GptImplementation,
+    GptPilotage, // semi-manual: prompt generated, Hajar runs in ChatGPT web
+
+    // ── COMITÉ DE PILOTAGE ──
+    CommitteePilotageClaudeChat,
+    CommitteePilotageGptChat,
+
+    // ── COMITÉ D'ARBITRAGE COMPLET ──
+    CommitteeClaudeChat,
+    CommitteeCcode,
+    CommitteeGptChat,
+    CommitteeCodex,
+
+    // ── QA ──
+    ClaudeQaVerdict,
+    GptQaVerdict,
+}
+
+public enum ActorGroup
+{
+    FamilyClaude,
+    FamilyGpt,
+    CommitteePilotage,
+    CommitteeArbitrage,
+    Qa,
+}
+
+public static class ActorRoleExtensions
+{
+    public static ActorGroup GetGroup(this ActorRole role) => role switch
+    {
+        ActorRole.ClaudePilotage or ActorRole.ClaudeImplementation
+            => ActorGroup.FamilyClaude,
+        ActorRole.GptImplementation or ActorRole.GptPilotage
+            => ActorGroup.FamilyGpt,
+        ActorRole.CommitteePilotageClaudeChat or ActorRole.CommitteePilotageGptChat
+            => ActorGroup.CommitteePilotage,
+        ActorRole.CommitteeClaudeChat or ActorRole.CommitteeCcode
+            or ActorRole.CommitteeGptChat or ActorRole.CommitteeCodex
+            => ActorGroup.CommitteeArbitrage,
+        ActorRole.ClaudeQaVerdict or ActorRole.GptQaVerdict
+            => ActorGroup.Qa,
+        _ => throw new ArgumentOutOfRangeException(nameof(role), role, null),
+    };
+
+    public static string GetGroupLabel(this ActorGroup group) => group switch
+    {
+        ActorGroup.FamilyClaude        => "── FAMILLE CLAUDE ──",
+        ActorGroup.FamilyGpt           => "── FAMILLE GPT ──",
+        ActorGroup.CommitteePilotage   => "── COMITÉ DE PILOTAGE ──",
+        ActorGroup.CommitteeArbitrage  => "── COMITÉ D'ARBITRAGE COMPLET ──",
+        ActorGroup.Qa                  => "── QA ──",
+        _ => throw new ArgumentOutOfRangeException(nameof(group), group, null),
+    };
+
+    public static bool IsClaudeFamily(this ActorRole role) => role is
+        ActorRole.ClaudePilotage or
+        ActorRole.ClaudeImplementation or
+        ActorRole.CommitteePilotageClaudeChat or
+        ActorRole.CommitteeClaudeChat or
+        ActorRole.CommitteeCcode or
+        ActorRole.ClaudeQaVerdict;
+
+    public static bool IsSemiManual(this ActorRole role) => role is ActorRole.GptPilotage;
+
+    public static bool IsPilotageActor(this ActorRole role) => role is
+        ActorRole.ClaudePilotage or ActorRole.GptPilotage;
+
+    // Implementation actors publish their sprint-level analysis to the reference ticket only.
+    // Per-US analysis is a future US; posting to all N tickets would duplicate content (cf. comité C3 fix).
+    public static bool PublishesToReferenceTicketOnly(this ActorRole role) =>
+        role.IsPilotageActor() ||
+        role is ActorRole.ClaudeImplementation or ActorRole.GptImplementation;
+
+    public static bool IsCollective(this ActorRole role) =>
+        role.GetGroup() is ActorGroup.CommitteePilotage
+            or ActorGroup.CommitteeArbitrage
+            or ActorGroup.Qa;
+
+    public static bool NeedsReadOnlySandbox(this ActorRole role) => role is
+        ActorRole.CommitteePilotageGptChat or
+        ActorRole.CommitteeGptChat or
+        ActorRole.CommitteeCodex or
+        ActorRole.GptQaVerdict;
+
+    public static string ToSignatureTag(this ActorRole role) => role switch
+    {
+        ActorRole.ClaudePilotage             => "claude-chat | role: pilotage-cadrage",
+        ActorRole.ClaudeImplementation       => "claude-code | role: implementation",
+        ActorRole.GptPilotage                => "gpt-chat | role: pilotage-cadrage",
+        ActorRole.GptImplementation          => "codex | role: implementation",
+        ActorRole.CommitteePilotageClaudeChat => "claude-chat | role: comite-pilotage",
+        ActorRole.CommitteePilotageGptChat   => "gpt-chat | role: comite-pilotage",
+        ActorRole.CommitteeClaudeChat        => "claude-chat | role: comite-arbitrage",
+        ActorRole.CommitteeCcode             => "claude-code | role: comite-arbitrage",
+        ActorRole.CommitteeGptChat           => "gpt-chat | role: comite-arbitrage",
+        ActorRole.CommitteeCodex             => "codex | role: comite-arbitrage",
+        ActorRole.ClaudeQaVerdict            => "claude-chat | role: qa-verdict",
+        ActorRole.GptQaVerdict               => "gpt-chat | role: qa-verdict",
+        _                                    => role.ToString().ToLowerInvariant(),
+    };
+
+    public static string ToGroupSignatureTag(this ActorGroup group) => group switch
+    {
+        ActorGroup.CommitteePilotage  => "comite-pilotage",
+        ActorGroup.CommitteeArbitrage => "comite-arbitrage",
+        ActorGroup.Qa                 => "qa-verdict",
+        _ => group.ToString().ToLowerInvariant(),
+    };
+}

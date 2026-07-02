@@ -1,0 +1,338 @@
+﻿<Window x:Class="SprintLauncher.UI.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Sprint Launcher — SERZENIA"
+        Height="820" Width="1320" MinHeight="600" MinWidth="900"
+        Background="#1e1e2e" Foreground="#cdd6f4"
+        FontFamily="Segoe UI" FontSize="13">
+
+  <Window.Resources>
+    <Style x:Key="DarkInput" TargetType="TextBox">
+      <Setter Property="Background" Value="#181825"/>
+      <Setter Property="Foreground" Value="#cdd6f4"/>
+      <Setter Property="BorderBrush" Value="#45475a"/>
+      <Setter Property="BorderThickness" Value="1"/>
+      <Setter Property="Padding" Value="6,4"/>
+      <Setter Property="CaretBrush" Value="#cdd6f4"/>
+      <Setter Property="VerticalContentAlignment" Value="Center"/>
+    </Style>
+
+    <Style x:Key="OutputBox" TargetType="TextBox">
+      <Setter Property="Background" Value="Transparent"/>
+      <Setter Property="Foreground" Value="#cdd6f4"/>
+      <Setter Property="BorderThickness" Value="0"/>
+      <Setter Property="FontFamily" Value="Consolas, Courier New"/>
+      <Setter Property="FontSize" Value="12.5"/>
+      <Setter Property="IsReadOnly" Value="True"/>
+      <Setter Property="TextWrapping" Value="Wrap"/>
+      <Setter Property="Padding" Value="12"/>
+      <Setter Property="VerticalAlignment" Value="Top"/>
+      <Setter Property="AcceptsReturn" Value="True"/>
+    </Style>
+
+    <Style x:Key="LogBox" TargetType="TextBox">
+      <Setter Property="Background" Value="Transparent"/>
+      <Setter Property="Foreground" Value="#cdd6f4"/>
+      <Setter Property="BorderThickness" Value="0"/>
+      <Setter Property="FontFamily" Value="Segoe UI, Consolas"/>
+      <Setter Property="FontSize" Value="12.5"/>
+      <Setter Property="IsReadOnly" Value="True"/>
+      <Setter Property="TextWrapping" Value="Wrap"/>
+      <Setter Property="Padding" Value="12,8"/>
+      <Setter Property="VerticalAlignment" Value="Top"/>
+    </Style>
+
+    <ControlTemplate x:Key="BtnTpl" TargetType="Button">
+      <Border x:Name="Bd" Background="{TemplateBinding Background}"
+              CornerRadius="4" Padding="{TemplateBinding Padding}">
+        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+      </Border>
+      <ControlTemplate.Triggers>
+        <Trigger Property="IsMouseOver" Value="True">
+          <Setter TargetName="Bd" Property="Opacity" Value="0.85"/>
+        </Trigger>
+        <Trigger Property="IsEnabled" Value="False">
+          <Setter TargetName="Bd" Property="Background" Value="#313244"/>
+          <Setter Property="Foreground" Value="#585b70"/>
+        </Trigger>
+      </ControlTemplate.Triggers>
+    </ControlTemplate>
+
+    <Style x:Key="Btn" TargetType="Button">
+      <Setter Property="Background" Value="#89b4fa"/>
+      <Setter Property="Foreground" Value="#1e1e2e"/>
+      <Setter Property="FontWeight" Value="SemiBold"/>
+      <Setter Property="Padding" Value="14,6"/>
+      <Setter Property="BorderThickness" Value="0"/>
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="Template" Value="{StaticResource BtnTpl}"/>
+    </Style>
+
+    <Style x:Key="BtnGo" TargetType="Button" BasedOn="{StaticResource Btn}">
+      <Setter Property="Background" Value="#a6e3a1"/>
+      <Setter Property="FontSize" Value="14"/>
+      <Setter Property="Padding" Value="28,10"/>
+    </Style>
+
+    <Style x:Key="BtnStop" TargetType="Button" BasedOn="{StaticResource Btn}">
+      <Setter Property="Background" Value="#f38ba8"/>
+      <Setter Property="FontSize" Value="14"/>
+      <Setter Property="Padding" Value="28,10"/>
+    </Style>
+
+    <Style x:Key="BtnSoft" TargetType="Button" BasedOn="{StaticResource Btn}">
+      <Setter Property="Background" Value="#313244"/>
+      <Setter Property="Foreground" Value="#cdd6f4"/>
+      <Setter Property="FontWeight" Value="Normal"/>
+    </Style>
+
+    <Style x:Key="Chk" TargetType="CheckBox">
+      <Setter Property="Foreground" Value="#cdd6f4"/>
+      <Setter Property="VerticalAlignment" Value="Center"/>
+      <Setter Property="Margin" Value="0,0,14,0"/>
+    </Style>
+  </Window.Resources>
+
+  <Grid>
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto"/>   <!-- Config bar -->
+      <RowDefinition Height="*"/>      <!-- Main area -->
+      <RowDefinition Height="Auto"/>   <!-- Interactive checkpoint -->
+      <RowDefinition Height="Auto"/>   <!-- Status bar -->
+    </Grid.RowDefinitions>
+
+    <!-- ── Config bar ──────────────────────────────────────────────────────── -->
+    <Border Grid.Row="0" Background="#181825" BorderBrush="#313244" BorderThickness="0,0,0,1" Padding="14,10">
+      <DockPanel>
+        <!-- Boutons — docké à droite en premier pour garantir la visibilité -->
+        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+          <Button x:Name="BtnOpenReport"    Style="{StaticResource BtnSoft}" Content="Rapport HTML"
+                  IsEnabled="False" Click="BtnOpenReport_Click" Margin="0,0,6,0"/>
+          <Button x:Name="BtnOpenArtifacts" Style="{StaticResource BtnSoft}" Content="Artefacts"
+                  IsEnabled="False" Click="BtnOpenArtifacts_Click" Margin="0,0,10,0"/>
+          <Button x:Name="BtnRun" Style="{StaticResource Btn}" Content="▶  Lancer" Click="BtnRun_Click" MinWidth="90"/>
+        </StackPanel>
+
+        <!-- Gauche : Sprint #, Tickets, options -->
+        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+          <TextBlock Text="Sprint #" VerticalAlignment="Center"
+                     Foreground="#89b4fa" FontWeight="SemiBold" Margin="0,0,8,0"
+                     ToolTip="Numéro de sprint défini dans sprints.json (ex: 6)"/>
+          <TextBox x:Name="TxtSprint" Style="{StaticResource DarkInput}"
+                   Width="50" ToolTip="Numéro de sprint (optionnel — prioritaire sur le champ Tickets)"/>
+
+          <TextBlock Text="Tickets" VerticalAlignment="Center"
+                     Foreground="#6c7086" FontWeight="SemiBold" Margin="16,0,8,0"
+                     ToolTip="Clés Jira séparées par des espaces (ignoré si Sprint # est rempli)"/>
+          <TextBox x:Name="TxtIssueKeys" Style="{StaticResource DarkInput}"
+                   Width="200" Text="" ToolTip="Ex : SERZENIA-138  SERZENIA-140"/>
+
+          <CheckBox x:Name="ChkWrite"   Style="{StaticResource Chk}" Content="--write"   Margin="16,0,0,0"
+                    ToolTip="Poste les commentaires réellement sur Jira. Sans cette option : dry-run, rien n'est écrit."/>
+          <CheckBox x:Name="ChkNoCache" Style="{StaticResource Chk}" Content="--no-cache" IsChecked="True"
+                    ToolTip="Force une relecture complète depuis Jira même si un cache local existe."/>
+          <CheckBox x:Name="ChkResume"  Style="{StaticResource Chk}" Content="--resume"
+                    ToolTip="Reprend un run interrompu — les acteurs déjà terminés sont ignorés."/>
+
+          <Border Background="#313244" CornerRadius="4" Padding="6,3" Margin="6,0,0,0" VerticalAlignment="Center">
+            <StackPanel Orientation="Horizontal">
+              <TextBlock Text="Mode :" Foreground="#a6adc8" FontSize="11.5" VerticalAlignment="Center" Margin="0,0,6,0"/>
+              <ComboBox x:Name="CmbMode" Background="#313244" Foreground="#cdd6f4"
+                        BorderThickness="0" FontSize="11.5" VerticalAlignment="Center"
+                        SelectedIndex="0"
+                        ToolTip="execution : Familles → Comité → QA&#x0a;cadrage : Comité Pilotage en premier (nouveau sprint)">
+                <ComboBoxItem Content="execution" Tag="execution"/>
+                <ComboBoxItem Content="cadrage"   Tag="cadrage"/>
+              </ComboBox>
+            </StackPanel>
+          </Border>
+        </StackPanel>
+      </DockPanel>
+    </Border>
+
+    <!-- ── Main area: actor list | tabbed content ───────────────────────────── -->
+    <Grid Grid.Row="1">
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="230" MinWidth="160"/>
+        <ColumnDefinition Width="4"/>
+        <ColumnDefinition Width="*"/>
+      </Grid.ColumnDefinitions>
+
+      <!-- Actor list -->
+      <Grid Grid.Column="0" Background="#181825">
+        <Grid.RowDefinitions>
+          <RowDefinition Height="Auto"/>
+          <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+        <Border Grid.Row="0" Padding="10,8" BorderBrush="#313244" BorderThickness="0,0,0,1">
+          <TextBlock Text="ACTEURS" FontSize="10" FontWeight="Bold" Foreground="#6c7086"/>
+        </Border>
+        <ListBox Grid.Row="1" x:Name="ActorList"
+                 Background="Transparent" BorderThickness="0"
+                 ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                 SelectionChanged="ActorList_SelectionChanged">
+          <ListBox.ItemContainerStyle>
+            <Style TargetType="ListBoxItem">
+              <Setter Property="Padding" Value="8,4"/>
+              <Setter Property="Background" Value="Transparent"/>
+              <Setter Property="BorderThickness" Value="0"/>
+              <Setter Property="Cursor" Value="Hand"/>
+              <Style.Triggers>
+                <Trigger Property="IsSelected" Value="True">
+                  <Setter Property="Background" Value="#313244"/>
+                </Trigger>
+                <Trigger Property="IsMouseOver" Value="True">
+                  <Setter Property="Background" Value="#24273a"/>
+                </Trigger>
+              </Style.Triggers>
+            </Style>
+          </ListBox.ItemContainerStyle>
+          <ListBox.ItemTemplate>
+            <DataTemplate>
+              <Grid>
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="20"/>
+                  <ColumnDefinition Width="*"/>
+                  <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" Text="{Binding Icon}"
+                           Foreground="{Binding Color}" VerticalAlignment="Center"
+                           FontFamily="Segoe UI Symbol, Segoe UI" FontSize="13"/>
+                <TextBlock Grid.Column="1" Text="{Binding DisplayName}"
+                           Foreground="{Binding Color}" FontSize="11.5"
+                           VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+                <TextBlock Grid.Column="2" Text="{Binding Elapsed}"
+                           Foreground="#6c7086" FontSize="10.5"
+                           VerticalAlignment="Center" Margin="4,0,0,0"/>
+              </Grid>
+            </DataTemplate>
+          </ListBox.ItemTemplate>
+        </ListBox>
+      </Grid>
+
+      <GridSplitter Grid.Column="1" Width="4" HorizontalAlignment="Stretch"
+                    Background="#313244" Cursor="SizeWE"/>
+
+      <!-- TabControl: Journal (live run) + Sortie acteur (on-demand) -->
+      <TabControl Grid.Column="2" x:Name="TabMain"
+                  Background="#181825" BorderBrush="#313244" BorderThickness="0,1,0,0"
+                  Padding="0">
+        <TabControl.Resources>
+          <Style TargetType="TabItem">
+            <Setter Property="Background" Value="#11111b"/>
+            <Setter Property="Foreground" Value="#6c7086"/>
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Padding" Value="14,6"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Template">
+              <Setter.Value>
+                <ControlTemplate TargetType="TabItem">
+                  <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                          BorderBrush="#313244" BorderThickness="0,0,1,0" Padding="{TemplateBinding Padding}">
+                    <ContentPresenter ContentSource="Header"/>
+                  </Border>
+                  <ControlTemplate.Triggers>
+                    <Trigger Property="IsSelected" Value="True">
+                      <Setter TargetName="Bd" Property="Background" Value="#181825"/>
+                      <Setter Property="Foreground" Value="#89b4fa"/>
+                      <Setter TargetName="Bd" Property="BorderThickness" Value="0,0,1,0"/>
+                    </Trigger>
+                    <Trigger Property="IsMouseOver" Value="True">
+                      <Setter TargetName="Bd" Property="Background" Value="#24273a"/>
+                    </Trigger>
+                  </ControlTemplate.Triggers>
+                </ControlTemplate>
+              </Setter.Value>
+            </Setter>
+          </Style>
+        </TabControl.Resources>
+
+        <!-- Onglet 1 : Journal live -->
+        <TabItem Header="JOURNAL">
+          <Grid Background="#11111b">
+            <ScrollViewer x:Name="LogScroll"
+                          VerticalScrollBarVisibility="Auto"
+                          HorizontalScrollBarVisibility="Disabled">
+              <TextBox x:Name="TxtLog" Style="{StaticResource LogBox}"
+                       TextWrapping="Wrap"/>
+            </ScrollViewer>
+          </Grid>
+        </TabItem>
+
+        <!-- Onglet 2 : Sortie d'un acteur sélectionné -->
+        <TabItem Header="SORTIE ACTEUR">
+          <Grid Background="#181825">
+            <Grid.RowDefinitions>
+              <RowDefinition Height="Auto"/>
+              <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+            <Border Grid.Row="0" Padding="12,8" BorderBrush="#313244" BorderThickness="0,0,0,1">
+              <Grid>
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="*"/>
+                  <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock x:Name="TxtSelectedActor" Grid.Column="0"
+                           Text="Sélectionnez un acteur pour voir sa sortie"
+                           FontSize="11" FontWeight="SemiBold" Foreground="#a6adc8"
+                           VerticalAlignment="Center"/>
+                <Button x:Name="BtnOpenOutputFile" Grid.Column="1"
+                        Style="{StaticResource BtnSoft}" Content="Ouvrir fichier"
+                        IsEnabled="False" Click="BtnOpenOutputFile_Click"
+                        Padding="10,3" FontSize="11"/>
+              </Grid>
+            </Border>
+            <ScrollViewer Grid.Row="1" x:Name="OutputScroll"
+                          VerticalScrollBarVisibility="Auto"
+                          HorizontalScrollBarVisibility="Auto">
+              <TextBox x:Name="TxtOutput" Style="{StaticResource OutputBox}"/>
+            </ScrollViewer>
+          </Grid>
+        </TabItem>
+
+      </TabControl>
+    </Grid>
+
+    <!-- ── Interactive checkpoint ───────────────────────────────────────────── -->
+    <Border Grid.Row="2" x:Name="PnlInteractive"
+            Background="#1a1032" BorderBrush="#cba6f7" BorderThickness="0,2,0,0"
+            Padding="20,14" Visibility="Collapsed">
+      <Grid>
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="*"/>
+          <ColumnDefinition Width="Auto"/>
+          <ColumnDefinition Width="10"/>
+          <ColumnDefinition Width="Auto"/>
+        </Grid.ColumnDefinitions>
+        <StackPanel Grid.Column="0" VerticalAlignment="Center">
+          <TextBlock x:Name="TxtCheckpointTitle" FontSize="14" FontWeight="SemiBold"
+                     Foreground="#cba6f7" Text="Groupe terminé"/>
+          <TextBlock x:Name="TxtCheckpointHint" FontSize="11" Foreground="#a6adc8" Margin="0,4,0,0"
+                     Text="Revoyez les sorties dans le panneau central. Cliquez GO pour continuer ou ARRET pour sauvegarder et quitter."/>
+        </StackPanel>
+        <Button Grid.Column="1" x:Name="BtnGo"   Style="{StaticResource BtnGo}"
+                Content="GO  —  Continuer" Click="BtnGo_Click"/>
+        <Button Grid.Column="3" x:Name="BtnStop" Style="{StaticResource BtnStop}"
+                Content="ARRET" Click="BtnStop_Click"/>
+      </Grid>
+    </Border>
+
+    <!-- ── Status bar ───────────────────────────────────────────────────────── -->
+    <Border Grid.Row="3" Background="#11111b" Padding="12,5">
+      <Grid>
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="*"/>
+          <ColumnDefinition Width="Auto"/>
+          <ColumnDefinition Width="Auto"/>
+        </Grid.ColumnDefinitions>
+        <TextBlock x:Name="TxtStatus" Grid.Column="0" Foreground="#6c7086" FontSize="11.5"
+                   Text="Pret — configurez les issues et cliquez Lancer."/>
+        <TextBlock x:Name="TxtProgress" Grid.Column="1" Foreground="#6c7086" FontSize="11.5"
+                   Margin="0,0,20,0"/>
+        <TextBlock x:Name="TxtTimer" Grid.Column="2" Foreground="#6c7086" FontSize="11.5"
+                   FontFamily="Consolas" Text="00:00"/>
+      </Grid>
+    </Border>
+  </Grid>
+</Window>
