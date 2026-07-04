@@ -14,4 +14,10 @@
     <Description>Sprint Launcher — orchestrateur IA multi-acteurs pour la planification de sprint</Description>
   </PropertyGroup>
 
+  <!-- Copier sprints.json et .env.example dans le dossier de sortie -->
+  <ItemGroup>
+    <None Include="..\..\sprints.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="Always"/>
+    <None Include="..\..\\.env.example" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="Always" TargetPath=".env.example"/>
+  </ItemGroup>
+
 </Project>

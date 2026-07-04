@@ -74,20 +74,41 @@ var issueKeys = args
     .Select(item => item.value)
     .ToArray();
 
-// --sprint <id> : résout les tickets depuis sprints.json à la racine du repo
+// --sprint <id> : résout les tickets depuis sprints.json
+// Cherche dans : dossier du binaire → répertoire courant → SERZENIA_REPO (env var)
 var sprintArg = GetArg(args, "--sprint");
 if (sprintArg is not null && issueKeys.Length == 0)
 {
-    var sprintsFile = Path.Combine(AppContext.BaseDirectory, "sprints.json");
-    if (!File.Exists(sprintsFile))
-        sprintsFile = Path.Combine(Directory.GetCurrentDirectory(), "sprints.json");
-    if (!File.Exists(sprintsFile))
-        throw new FileNotFoundException($"sprints.json introuvable. Créez le fichier à la racine du dépôt.");
+    var sprintsFile = FindSprintsJson();
+    if (sprintsFile is null)
+        throw new FileNotFoundException(
+            "sprints.json introuvable. Placez-le dans le même dossier que le binaire, " +
+            "dans le répertoire courant, ou définissez SERZENIA_REPO dans .env.");
     var sprintsJson = System.Text.Json.JsonDocument.Parse(File.ReadAllText(sprintsFile));
     if (!sprintsJson.RootElement.TryGetProperty(sprintArg, out var sprintElement))
-        throw new ArgumentException($"Sprint '{sprintArg}' absent de sprints.json.");
+        throw new ArgumentException($"Sprint '{sprintArg}' absent de sprints.json ({sprintsFile}).");
     issueKeys = sprintElement.EnumerateArray().Select(e => e.GetString()!).ToArray();
     Console.WriteLine($"Sprint {sprintArg} : {issueKeys.Length} ticket(s) — {string.Join(", ", issueKeys)}");
+}
+
+static string? FindSprintsJson()
+{
+    var candidates = new[]
+    {
+        Path.Combine(AppContext.BaseDirectory, "sprints.json"),
+        Path.Combine(Directory.GetCurrentDirectory(), "sprints.json"),
+    };
+    foreach (var c in candidates)
+        if (File.Exists(c)) return c;
+
+    // Fallback : SERZENIA_REPO env var (peut être défini sans charger la config complète)
+    var repoEnv = Environment.GetEnvironmentVariable("SERZENIA_REPO");
+    if (!string.IsNullOrWhiteSpace(repoEnv))
+    {
+        var fromRepo = Path.Combine(repoEnv, "sprints.json");
+        if (File.Exists(fromRepo)) return fromRepo;
+    }
+    return null;
 }
 
 // ─── --list-roles ──────────────────────────────────────────────────────────────
