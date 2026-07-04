@@ -70,15 +70,23 @@ public sealed class ActorRunner : IDisposable
         // regardless of where the launcher binary is located.
         if (_repoRoot is not null)
         {
-            psi.ArgumentList.Add("--dir");
+            psi.ArgumentList.Add("--add-dir");
             psi.ArgumentList.Add(_repoRoot);
             psi.WorkingDirectory = _repoRoot;
         }
         // Prompt delivered via stdin, not as CLI arg — avoids Windows 32767-char limit
 
-        // Isolation: strip API keys from subprocess env to guarantee subscription mode
+        // Isolation: strip API keys + Claude Code sentinel vars so claude.exe starts fresh
+        // (CLAUDECODE=1 / CLAUDE_CODE_CHILD_SESSION=1 cause immediate exit when inherited)
         psi.EnvironmentVariables.Remove("ANTHROPIC_API_KEY");
-        psi.EnvironmentVariables.Remove("OPENAI_API_KEY");
+        psi.EnvironmentVariables.Remove("CLAUDECODE");
+        psi.EnvironmentVariables.Remove("CLAUDE_CODE_CHILD_SESSION");
+        psi.EnvironmentVariables.Remove("CLAUDE_CODE_SESSION_ID");
+        psi.EnvironmentVariables.Remove("CLAUDE_CODE_ENTRYPOINT");
+        psi.EnvironmentVariables.Remove("CLAUDE_AGENT_SDK_VERSION");
+        psi.EnvironmentVariables.Remove("CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING");
+        psi.EnvironmentVariables.Remove("CLAUDE_CODE_ENABLE_TASKS");
+        psi.EnvironmentVariables.Remove("MCP_CONNECTION_NONBLOCKING");
 
         return await RunProcessWithStdinAsync(prompt.Role, psi, fullPrompt, ct);
     }
@@ -164,9 +172,13 @@ public sealed class ActorRunner : IDisposable
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
 
-        // Write prompt to stdin then close — avoids Windows 32767-char CLI arg limit
-        await process.StandardInput.WriteAsync(stdinContent);
-        process.StandardInput.Close();
+        // Write prompt via sync path in Task.Run — WriteAsync on anonymous Windows pipes uses
+        // AsyncOverSyncWithIoCancellation which fails for large prompts (>64 KB).
+        await Task.Run(() =>
+        {
+            process.StandardInput.Write(stdinContent);
+            process.StandardInput.Close();
+        });
 
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeoutCts.CancelAfter(_actorTimeout);

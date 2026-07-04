@@ -13,7 +13,10 @@ Console.InputEncoding  = System.Text.Encoding.UTF8;
 // Pause on unhandled exception so the window doesn't vanish when double-clicked.
 AppDomain.CurrentDomain.UnhandledException += (_, e) =>
 {
-    Console.Error.WriteLine($"\n! Erreur : {((Exception)e.ExceptionObject).Message}");
+    var ex = (Exception)e.ExceptionObject;
+    Console.Error.WriteLine($"\n! Erreur : {ex.Message}");
+    if (ex.InnerException is not null)
+        Console.Error.WriteLine($"  Cause   : {ex.InnerException.Message}");
     PauseIfInteractive();
     Environment.Exit(1);
 };
