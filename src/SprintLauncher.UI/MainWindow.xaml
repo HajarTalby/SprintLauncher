@@ -17,19 +17,6 @@
       <Setter Property="VerticalContentAlignment" Value="Center"/>
     </Style>
 
-    <Style x:Key="OutputBox" TargetType="TextBox">
-      <Setter Property="Background" Value="Transparent"/>
-      <Setter Property="Foreground" Value="#cdd6f4"/>
-      <Setter Property="BorderThickness" Value="0"/>
-      <Setter Property="FontFamily" Value="Consolas, Courier New"/>
-      <Setter Property="FontSize" Value="12.5"/>
-      <Setter Property="IsReadOnly" Value="True"/>
-      <Setter Property="TextWrapping" Value="Wrap"/>
-      <Setter Property="Padding" Value="12"/>
-      <Setter Property="VerticalAlignment" Value="Top"/>
-      <Setter Property="AcceptsReturn" Value="True"/>
-    </Style>
-
     <Style x:Key="LogBox" TargetType="TextBox">
       <Setter Property="Background" Value="Transparent"/>
       <Setter Property="Foreground" Value="#cdd6f4"/>
@@ -283,11 +270,11 @@
                         Padding="10,3" FontSize="11"/>
               </Grid>
             </Border>
-            <ScrollViewer Grid.Row="1" x:Name="OutputScroll"
-                          VerticalScrollBarVisibility="Auto"
-                          HorizontalScrollBarVisibility="Auto">
-              <TextBox x:Name="TxtOutput" Style="{StaticResource OutputBox}"/>
-            </ScrollViewer>
+            <FlowDocumentScrollViewer Grid.Row="1" x:Name="OutputViewer"
+                                      Background="Transparent"
+                                      VerticalScrollBarVisibility="Auto"
+                                      IsToolBarVisible="False"
+                                      Padding="8,4"/>
           </Grid>
         </TabItem>
 

@@ -1,4 +1,5 @@
-﻿using SprintLauncher.Jira;
+﻿using SprintLauncher.Dialogue;
+using SprintLauncher.Jira;
 using SprintLauncher.Memory;
 
 namespace SprintLauncher.Prompts;
@@ -178,6 +179,71 @@ public sealed class PromptBuilder
         _ => throw new ArgumentOutOfRangeException(nameof(role), role, null),
     };
 
+    /// <summary>
+    /// Construit le prompt d'un tour de discussion multi-tours (SERZENIA-143).
+    /// Le transcript complet est injecté ; l'acteur répond aux contributions précédentes
+    /// et vise la convergence. Les interventions de l'approbatrice ont autorité.
+    /// </summary>
+    public ActorPrompt BuildDialogueTurn(
+        ActorRole role,
+        IReadOnlyList<JiraIssue> issues,
+        string issueKey,
+        IReadOnlyList<DialogueTurn> transcript,
+        int round,
+        int maxRounds,
+        bool isFinalSynthesis,
+        SessionMode mode = SessionMode.Execution,
+        FrameworkContext? frameworks = null,
+        AgentMemoryContext? memory = null)
+    {
+        var dialogueDirective =
+            $"\n\nDISCUSSION MULTI-TOURS : tu participes à une vraie discussion avec les autres membres " +
+            $"(maximum {maxRounds} allers-retours). Discute réellement : réponds aux arguments précédents, " +
+            "challenge ce qui doit l'être, converge vers une décision commune — ne juxtapose pas une analyse indépendante. " +
+            $"Les interventions de {_approver} ont AUTORITÉ : toute directive de sa part oriente ou tranche la discussion. " +
+            $"Quand la discussion a abouti à une décision commune, termine ta contribution par le marqueur {DialogueEngine.ConsensusMarker}. " +
+            $"N'émets ce marqueur que si tout est réellement tranché.";
+
+        var systemPrompt = GetSystemPrompt(role, issueKey, mode) + dialogueDirective;
+
+        string instruction;
+        if (isFinalSynthesis)
+        {
+            instruction =
+                $"La discussion doit se conclure maintenant (plafond de {maxRounds} tours atteint ou clôture demandée par {_approver}). " +
+                "Produis la SYNTHÈSE FINALE de la délibération : décision commune, points d'accord, désaccords résiduels " +
+                $"explicitement listés s'il en reste, et prochaine étape concrète pour {_approver}. " +
+                $"Termine impérativement par le marqueur {DialogueEngine.FinalDecisionMarker}.";
+        }
+        else if (transcript.Count == 0)
+        {
+            instruction =
+                $"Ouvre la discussion (round 1/{maxRounds}). Pose ta position initiale : analyse, points à trancher, " +
+                "recommandation structurée. Les autres membres vont répondre et construire dessus.";
+        }
+        else
+        {
+            instruction =
+                $"Voici la discussion en cours (round {round}/{maxRounds}). Lis toutes les contributions — " +
+                $"y compris les interventions de {_approver}, qui ont autorité — puis apporte ton tour de parole : " +
+                "réponds aux points soulevés, marque tes accords et désaccords, et fais avancer la discussion vers une décision commune.";
+        }
+
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine(instruction);
+
+        if (transcript.Count > 0)
+        {
+            sb.AppendLine();
+            sb.AppendLine("## Discussion en cours");
+            sb.AppendLine();
+            sb.AppendLine(DialogueEngine.FormatForPrompt(transcript));
+        }
+
+        AppendSharedContext(sb, BuildSprintContext(issues), frameworks, memory);
+        return new ActorPrompt(role, systemPrompt, sb.ToString());
+    }
+
     private static string BuildUserPrompt(ActorRole role, string sprintContext, string? previousContributions, SessionMode mode = SessionMode.Execution, FrameworkContext? frameworks = null, AgentMemoryContext? memory = null)
     {
         var instruction = role switch
@@ -253,6 +319,17 @@ public sealed class PromptBuilder
             sb.AppendLine(previousContributions);
         }
 
+        AppendSharedContext(sb, sprintContext, frameworks, memory);
+        return sb.ToString();
+    }
+
+    // Sections communes à tous les prompts : contexte sprint, frameworks, mémoire projet.
+    private static void AppendSharedContext(
+        System.Text.StringBuilder sb,
+        string sprintContext,
+        FrameworkContext? frameworks,
+        AgentMemoryContext? memory)
+    {
         sb.AppendLine();
         sb.AppendLine("---");
         sb.AppendLine();
@@ -279,8 +356,6 @@ public sealed class PromptBuilder
             sb.AppendLine();
             sb.AppendLine(MemorySync.BuildPromptSection(memory));
         }
-
-        return sb.ToString();
     }
 }
 

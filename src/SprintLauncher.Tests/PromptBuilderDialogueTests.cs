@@ -1,0 +1,75 @@
+using SprintLauncher.Dialogue;
+using SprintLauncher.Jira;
+using SprintLauncher.Prompts;
+using Xunit;
+
+namespace SprintLauncher.Tests;
+
+public class PromptBuilderDialogueTests
+{
+    private static readonly List<JiraIssue> Issues =
+        [new("SERZ-1", "Ticket de test", "Description du ticket", [])];
+
+    private readonly PromptBuilder _builder = new("SERZENIA", "Hajar");
+
+    [Fact]
+    public void First_turn_opens_the_discussion()
+    {
+        var prompt = _builder.BuildDialogueTurn(
+            ActorRole.CommitteePilotageClaudeChat, Issues, "SERZ-1",
+            transcript: [], round: 1, maxRounds: 3, isFinalSynthesis: false);
+
+        Assert.Contains("Ouvre la discussion", prompt.UserPrompt);
+        Assert.DoesNotContain("## Discussion en cours", prompt.UserPrompt);
+        Assert.Contains(DialogueEngine.ConsensusMarker, prompt.SystemPrompt);
+        Assert.Contains("Hajar", prompt.SystemPrompt); // autorité de l'approbatrice déclarée
+    }
+
+    [Fact]
+    public void Later_turn_includes_full_transcript_and_authority_marker()
+    {
+        var transcript = new List<DialogueTurn>
+        {
+            new("CommitteePilotageClaudeChat", "Je propose l'option A.", DateTimeOffset.UtcNow, 1, false),
+            new("Hajar (approver)", "Écartez l'option B.", DateTimeOffset.UtcNow, 1, true),
+        };
+
+        var prompt = _builder.BuildDialogueTurn(
+            ActorRole.CommitteePilotageGptChat, Issues, "SERZ-1",
+            transcript, round: 2, maxRounds: 3, isFinalSynthesis: false);
+
+        Assert.Contains("## Discussion en cours", prompt.UserPrompt);
+        Assert.Contains("Je propose l'option A.", prompt.UserPrompt);
+        Assert.Contains("Écartez l'option B.", prompt.UserPrompt);
+        Assert.Contains("AUTORITÉ", prompt.UserPrompt);
+        Assert.Contains("round 2/3", prompt.UserPrompt);
+    }
+
+    [Fact]
+    public void Final_synthesis_turn_requires_decision_marker()
+    {
+        var transcript = new List<DialogueTurn>
+        {
+            new("CommitteePilotageClaudeChat", "Option A.", DateTimeOffset.UtcNow, 1, false),
+            new("CommitteePilotageGptChat", "Option B.", DateTimeOffset.UtcNow, 1, false),
+        };
+
+        var prompt = _builder.BuildDialogueTurn(
+            ActorRole.CommitteePilotageGptChat, Issues, "SERZ-1",
+            transcript, round: 3, maxRounds: 3, isFinalSynthesis: true);
+
+        Assert.Contains("SYNTHÈSE FINALE", prompt.UserPrompt);
+        Assert.Contains(DialogueEngine.FinalDecisionMarker, prompt.UserPrompt);
+    }
+
+    [Fact]
+    public void Sprint_context_is_present_in_every_turn()
+    {
+        var prompt = _builder.BuildDialogueTurn(
+            ActorRole.ClaudeQaVerdict, Issues, "SERZ-1",
+            transcript: [], round: 1, maxRounds: 3, isFinalSynthesis: false);
+
+        Assert.Contains("[SERZ-1] Ticket de test", prompt.UserPrompt);
+        Assert.Contains("Description du ticket", prompt.UserPrompt);
+    }
+}

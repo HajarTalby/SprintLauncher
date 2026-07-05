@@ -12,6 +12,9 @@ public sealed class SprintState
     // Actors that were running when the process was interrupted (Ctrl+C / ProcessExit).
     // --resume replays these from scratch (they did not complete successfully).
     public HashSet<string> InterruptedRoles { get; set; } = [];
+    // Groupes collectifs dont la discussion multi-tours est terminée ET publiée (SERZENIA-143).
+    // Un groupe absent d'ici avec un transcript dialogue-<groupe>.json existant reprend la discussion en cours.
+    public HashSet<string> CompletedGroups { get; set; } = [];
     public DateTimeOffset? LastCompletedAt { get; set; }
 }
 

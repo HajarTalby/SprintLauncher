@@ -1,6 +1,7 @@
 ﻿using System.Diagnostics;
 using System.Text;
 using SprintLauncher.Config;
+using SprintLauncher.Dialogue;
 using SprintLauncher.Jira;
 using SprintLauncher.Memory;
 using SprintLauncher.Prompts;
@@ -276,10 +277,17 @@ foreach (var group in sessionMode.GetGroupOrder())
         .Where(r => r.GetGroup() == group)
         .ToArray();
 
-    // Skip group if all roles are completed (and no interrupted ones to replay)
-    var allCompleted = rolesInGroup.All(r =>
-        sprintState.CompletedRoles.Contains(r.ToString()) &&
-        !sprintState.InterruptedRoles.Contains(r.ToString()));
+    bool isCollectiveGroup = group is ActorGroup.CommitteePilotage
+        or ActorGroup.CommitteeArbitrage
+        or ActorGroup.Qa;
+
+    // Skip : groupes collectifs = discussion publiée (CompletedGroups) ;
+    // familles = tous les rôles complétés sans interruption à rejouer.
+    var allCompleted = isCollectiveGroup
+        ? sprintState.CompletedGroups.Contains(group.ToString())
+        : rolesInGroup.All(r =>
+            sprintState.CompletedRoles.Contains(r.ToString()) &&
+            !sprintState.InterruptedRoles.Contains(r.ToString()));
 
     if (lastGroupPrinted != group)
     {
@@ -298,13 +306,9 @@ foreach (var group in sessionMode.GetGroupOrder())
         continue;
     }
 
-    bool isCollectiveGroup = group is ActorGroup.CommitteePilotage
-        or ActorGroup.CommitteeArbitrage
-        or ActorGroup.Qa;
-
     if (isCollectiveGroup)
     {
-        await RunCollectiveGroupAsync(
+        await RunDialogueGroupAsync(
             group, rolesInGroup, issues, pilotageKey,
             sprintState, stateFile, artifactsDir,
             builder, runner, publisher, shutdownCts.Token);
@@ -458,8 +462,8 @@ async Task RunSingleActorAsync(
     await SprintStateManager.SaveAsync(stateFile, state);
 }
 
-// ─── Collective group (comité / QA): sequential deliberation → 1 Jira comment ─
-async Task RunCollectiveGroupAsync(
+// ─── Collective group : discussion multi-tours → 1 commentaire Jira (SERZENIA-143)
+async Task RunDialogueGroupAsync(
     ActorGroup group,
     ActorRole[] roles,
     IReadOnlyList<SprintLauncher.Jira.JiraIssue> issues,
@@ -472,107 +476,127 @@ async Task RunCollectiveGroupAsync(
     JiraCommentPublisher publisher,
     CancellationToken ct)
 {
-    var contributions = new List<(ActorRole Role, string Output)>();
-    bool anyFailed = false;
+    var transcriptBase = Path.Combine(artifactsDir, $"dialogue-{group}");
 
-    foreach (var role in roles)
+    // Reprise : le transcript persisté est rechargé, la discussion continue au tour suivant.
+    var resumedTurns = resume ? await DialogueEngine.TryLoadTranscriptAsync(transcriptBase, ct) : null;
+    if (resumedTurns is { Count: > 0 })
+        Console.WriteLine($"  Reprise discussion — {resumedTurns.Count} tour(s) déjà joué(s)");
+
+    var engine = new DialogueEngine(config.MaxDialogueRounds, config.ApproverName);
+
+    var outcome = await engine.RunAsync(
+        participants: roles,
+        buildPrompt: (role, transcript, round, isFinal) =>
+            builder.BuildDialogueTurn(role, issues, publishKey, transcript, round,
+                config.MaxDialogueRounds, isFinal, sessionMode, frameworks, agentMemory),
+        runTurn: (role, prompt, token) => RunDialogueTurnAsync(role, prompt, artifactsDir, runner, token),
+        requestIntervention: interactive ? round => RequestInterventionAsync(group, round) : null,
+        transcriptBasePath: transcriptBase,
+        resumedTurns: resumedTurns,
+        ct: ct);
+
+    if (outcome.EndReason == DialogueEndReason.Stopped)
     {
-        if (ct.IsCancellationRequested) break;
-
-        if (state.CompletedRoles.Contains(role.ToString()) &&
-            !state.InterruptedRoles.Contains(role.ToString()))
-        {
-            Console.WriteLine($"  ○ {role,-28} [déjà complété]");
-            // Can't continue deliberation without prior output — restart group from scratch
-            contributions.Clear();
-            break;
-        }
-
-        // Build previous contributions context
-        string? previousContribs = contributions.Count > 0
-            ? string.Join("\n\n---\n\n", contributions.Select(c =>
-                $"### {c.Role} [{c.Role.ToSignatureTag()}]\n{c.Output}"))
-            : null;
-
-        var prompt = builder.Build(role, issues, publishKey, previousContribs, sessionMode, frameworks, agentMemory);
-
-        var promptFile = Path.Combine(artifactsDir, $"prompt-{role}.txt");
-        await File.WriteAllTextAsync(promptFile, $"=== SYSTEM ===\n{prompt.SystemPrompt}\n\n=== USER ===\n{prompt.UserPrompt}");
-
-        // Correction 1: live timer
-        var sw = Stopwatch.StartNew();
-        if (Console.IsOutputRedirected) Console.WriteLine($"  > {role}");
-        else Console.Write($"  > {role,-28}");
-
-        using var timerCts = new CancellationTokenSource();
-        var timerTask = StartTimerTask(role.ToString(), sw, timerCts.Token);
-
-        var runResult = await runner.RunAsync(prompt, ct);
-
-        timerCts.Cancel();
-        await timerTask;
-        sw.Stop();
-
-        PrintActorResult(role.ToString(), sw, runResult);
-
-        var outputFile = Path.Combine(artifactsDir, $"output-{role}.txt");
-        await File.WriteAllTextAsync(outputFile, runResult.Output);
-
-        reportEntries.Add(new ActorReportEntry(
-            Role: role,
-            Success: runResult.Success,
-            IsSemiManual: runResult.IsSemiManual,
-            IsSkipped: false,
-            ExitCode: runResult.ExitCode,
-            ElapsedSeconds: (int)sw.Elapsed.TotalSeconds,
-            OutputChars: runResult.Output.Length,
-            ErrorSnippet: runResult.ErrorOutput?.Trim() is { Length: > 0 } errC ? errC[..Math.Min(300, errC.Length)] : null,
-            OutputFilePath: outputFile,
-            SemiManualPromptPath: null));
-
-        if (runResult.Success)
-        {
-            contributions.Add((role, runResult.Output));
-            state.CompletedRoles.Add(role.ToString());
-            state.InterruptedRoles.Remove(role.ToString());
-            await SprintStateManager.SaveAsync(stateFile, state);
-        }
-        else
-        {
-            anyFailed = true;
-            if (ct.IsCancellationRequested)
-            {
-                state.InterruptedRoles.Add(role.ToString());
-                Console.WriteLine($"  ⚠ {role} marqué interrupted dans state.json");
-                await SprintStateManager.SaveAsync(stateFile, state);
-            }
-            break;
-        }
+        Console.WriteLine($"  ⚠ Discussion {group} interrompue — transcript sauvegardé, reprise via --resume");
+        return;
+    }
+    if (outcome.EndReason == DialogueEndReason.ActorFailed)
+    {
+        Console.WriteLine($"  ✗ Discussion {group} : échec de {outcome.FailedRole} — --resume rejouera ce tour");
+        return;
     }
 
-    if (!anyFailed && contributions.Count > 0 && !ct.IsCancellationRequested)
+    var combined = BuildDialogueComment(group, outcome, config.MaxDialogueRounds, transcriptBase);
+    var collectiveFile = Path.Combine(artifactsDir, $"output-{group}-collective.txt");
+    await File.WriteAllTextAsync(collectiveFile, combined);
+
+    var pubResult = await publisher.PublishCollectiveAsync(publishKey, group, combined);
+    var icon = pubResult.Status switch
     {
-        // Build combined comment (deliberation collective → 1 seul commentaire Jira)
-        var combined = BuildCombinedComment(group, contributions);
+        PublishStatus.Posted  => "✓",
+        PublishStatus.DryRun  => "~",
+        PublishStatus.Skipped => "○",
+        PublishStatus.Failed  => "✗",
+        _                     => "?"
+    };
+    Console.WriteLine($"  {icon} [{publishKey}] {pubResult.Status} (commentaire collectif {group})");
 
-        var collectiveFile = Path.Combine(artifactsDir, $"output-{group}-collective.txt");
-        await File.WriteAllTextAsync(collectiveFile, combined);
-
-        var pubResult = await publisher.PublishCollectiveAsync(publishKey, group, combined);
-        var icon = pubResult.Status switch
-        {
-            PublishStatus.Posted  => "✓",
-            PublishStatus.DryRun  => "~",
-            PublishStatus.Skipped => "○",
-            PublishStatus.Failed  => "✗",
-            _                     => "?"
-        };
-        Console.WriteLine($"  {icon} [{publishKey}] {pubResult.Status} (commentaire collectif {group})");
+    if (pubResult.Status != PublishStatus.Failed)
+    {
+        state.CompletedGroups.Add(group.ToString());
+        await SprintStateManager.SaveAsync(stateFile, state);
     }
 }
 
-// ─── Collective comment builder ───────────────────────────────────────────────
-static string BuildCombinedComment(ActorGroup group, List<(ActorRole Role, string Output)> contributions)
+// ─── Un tour de discussion : timer, artefacts, entrée rapport ─────────────────
+async Task<ActorRunResult> RunDialogueTurnAsync(
+    ActorRole role, ActorPrompt prompt, string artifactsDir, ActorRunner runner, CancellationToken ct)
+{
+    var promptFile = Path.Combine(artifactsDir, $"prompt-{role}.txt");
+    await File.WriteAllTextAsync(promptFile, $"=== SYSTEM ===\n{prompt.SystemPrompt}\n\n=== USER ===\n{prompt.UserPrompt}");
+
+    var sw = Stopwatch.StartNew();
+    if (Console.IsOutputRedirected) Console.WriteLine($"  > {role}");
+    else Console.Write($"  > {role,-28}");
+
+    using var timerCts = new CancellationTokenSource();
+    var timerTask = StartTimerTask(role.ToString(), sw, timerCts.Token);
+
+    var runResult = await runner.RunAsync(prompt, ct);
+
+    timerCts.Cancel();
+    await timerTask;
+    sw.Stop();
+
+    PrintActorResult(role.ToString(), sw, runResult);
+
+    // Dernier tour du rôle = fichier de sortie affiché par l'UI (écrasé à chaque tour).
+    var outputFile = Path.Combine(artifactsDir, $"output-{role}.txt");
+    await File.WriteAllTextAsync(outputFile, runResult.Output);
+
+    reportEntries.Add(new ActorReportEntry(
+        Role: role,
+        Success: runResult.Success,
+        IsSemiManual: runResult.IsSemiManual,
+        IsSkipped: false,
+        ExitCode: runResult.ExitCode,
+        ElapsedSeconds: (int)sw.Elapsed.TotalSeconds,
+        OutputChars: runResult.Output.Length,
+        ErrorSnippet: runResult.ErrorOutput?.Trim() is { Length: > 0 } errC ? errC[..Math.Min(300, errC.Length)] : null,
+        OutputFilePath: outputFile,
+        SemiManualPromptPath: null));
+
+    return runResult;
+}
+
+// ─── Checkpoint d'intervention entre rounds (mode --interactive) ──────────────
+// « GO pour continuer » est le motif reconnu par l'UI pour afficher le panneau GO/ARRÊT.
+Task<DialogueIntervention> RequestInterventionAsync(ActorGroup group, int round)
+{
+    Console.WriteLine();
+    Console.WriteLine($"  ▶ Round {round - 1} terminé — discussion {group.GetGroupLabel()}");
+    Console.Write("  GO pour continuer la discussion ? [Entrée=oui / n=arrêt / fin=conclure / texte=intervention] > ");
+    var answer = Console.ReadLine()?.Trim();
+
+    var intervention = answer?.ToLowerInvariant() switch
+    {
+        null or ""           => new DialogueIntervention(InterventionKind.Continue),
+        "n" or "non" or "no" => new DialogueIntervention(InterventionKind.Stop),
+        "fin" or "conclure"  => new DialogueIntervention(InterventionKind.Conclude),
+        _                    => new DialogueIntervention(InterventionKind.Message, answer),
+    };
+
+    if (intervention.Kind == InterventionKind.Message)
+        Console.WriteLine($"  ⚑ Intervention de {config.ApproverName} injectée dans la discussion.");
+    if (intervention.Kind == InterventionKind.Stop)
+        Console.WriteLine("  Arrêt demandé. Utilisez --resume pour reprendre la discussion.");
+
+    return Task.FromResult(intervention);
+}
+
+// ─── Commentaire Jira de la discussion : synthèse + traçabilité ───────────────
+static string BuildDialogueComment(ActorGroup group, DialogueOutcome outcome, int maxRounds, string transcriptBase)
 {
     var label = group switch
     {
@@ -582,23 +606,26 @@ static string BuildCombinedComment(ActorGroup group, List<(ActorRole Role, strin
         _ => group.ToString(),
     };
 
+    var actorTurns = outcome.Turns.Where(t => !t.IsIntervention).ToList();
+    var interventions = outcome.Turns.Count(t => t.IsIntervention);
+    var rounds = actorTurns.Count == 0 ? 0 : actorTurns.Max(t => t.Round);
+
     var sb = new StringBuilder();
     sb.AppendLine($"## Délibération collective — {label}");
     sb.AppendLine();
-
-    for (int i = 0; i < contributions.Count; i++)
-    {
-        var (role, output) = contributions[i];
-        sb.AppendLine($"### {role} [{role.ToSignatureTag()}]");
-        sb.AppendLine();
-        sb.AppendLine(output.Trim());
-        if (i < contributions.Count - 1)
-        {
-            sb.AppendLine();
-            sb.AppendLine("---");
-            sb.AppendLine();
-        }
-    }
+    sb.Append($"Discussion multi-tours : {actorTurns.Count} prise(s) de parole sur {rounds} round(s) (max {maxRounds})");
+    sb.AppendLine(interventions > 0 ? $", {interventions} intervention(s) de l'approbatrice." : ".");
+    sb.AppendLine(outcome.EndReason == DialogueEndReason.Converged
+        ? "Convergence explicite atteinte."
+        : "Synthèse finale produite au plafond de tours (sans marqueur de convergence).");
+    sb.AppendLine();
+    sb.AppendLine($"Participants : {string.Join(", ", actorTurns.Select(t => t.Speaker).Distinct())}");
+    sb.AppendLine();
+    sb.AppendLine("### Décision finale");
+    sb.AppendLine();
+    sb.AppendLine(outcome.FinalContribution ?? "(aucune contribution)");
+    sb.AppendLine();
+    sb.AppendLine($"_Transcript complet de la discussion : `{Path.GetFileName(transcriptBase)}.md` (artefacts du run)._");
 
     return sb.ToString().TrimEnd();
 }
@@ -668,3 +695,4 @@ static string? GetArg(string[] args, string flag)
     var idx = Array.IndexOf(args, flag);
     return idx >= 0 && idx + 1 < args.Length ? args[idx + 1] : null;
 }
+// test

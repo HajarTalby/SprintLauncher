@@ -5,6 +5,8 @@ using System.IO;
 using System.Runtime.CompilerServices;
 using System.Text.RegularExpressions;
 using System.Windows;
+using System.Windows.Documents;
+using System.Windows.Media;
 using System.Windows.Threading;
 
 namespace SprintLauncher.UI;
@@ -93,7 +95,7 @@ public partial class MainWindow : Window
     private void StartRun(string keys)
     {
         BuildActorList();
-        TxtOutput.Clear();
+        OutputViewer.Document = new FlowDocument();
         TxtLog.Clear();
         TxtSelectedActor.Text = "Sélectionnez un acteur pour voir sa sortie";
         BtnOpenOutputFile.IsEnabled = false;
@@ -376,6 +378,91 @@ public partial class MainWindow : Window
             AppendLog(CleanSymbols(line));
     }
 
+    // ─── Markdown → FlowDocument (rendu style Claude/ChatGPT) ────────────────
+    private static readonly Brush ColorFg      = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#cdd6f4")!);
+    private static readonly Brush ColorH2      = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#89b4fa")!);
+    private static readonly Brush ColorH3      = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#a6adc8")!);
+    private static readonly Brush ColorBullet  = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#6c7086")!);
+    private static readonly Brush ColorBold    = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#ffffff")!);
+    private static readonly FontFamily SansFont = new("Segoe UI, Arial");
+
+    private static FlowDocument MarkdownToFlow(string text)
+    {
+        var doc = new FlowDocument
+        {
+            FontFamily  = SansFont,
+            FontSize    = 14,
+            Foreground  = ColorFg,
+            LineHeight  = 24,
+            PagePadding = new Thickness(20, 16, 20, 16),
+        };
+
+        foreach (var rawLine in text.Split('\n'))
+        {
+            var line = rawLine.TrimEnd('\r');
+
+            // H2 — ## Titre
+            if (line.StartsWith("## "))
+            {
+                var p = new Paragraph { Margin = new Thickness(0, 18, 0, 4), LineHeight = 28 };
+                p.Inlines.Add(new Run(line[3..])
+                    { FontSize = 17, FontWeight = FontWeights.Bold, Foreground = ColorH2 });
+                doc.Blocks.Add(p);
+                continue;
+            }
+
+            // H3 — ### Titre
+            if (line.StartsWith("### "))
+            {
+                var p = new Paragraph { Margin = new Thickness(0, 12, 0, 2), LineHeight = 26 };
+                p.Inlines.Add(new Run(line[4..])
+                    { FontSize = 15, FontWeight = FontWeights.SemiBold, Foreground = ColorH3 });
+                doc.Blocks.Add(p);
+                continue;
+            }
+
+            // Bullet — - text ou   - text
+            if (Regex.IsMatch(line, @"^(\s*)- (.*)"))
+            {
+                var m = Regex.Match(line, @"^(\s*)- (.*)");
+                var indent = m.Groups[1].Value.Length * 8.0 + 16.0;
+                var p = new Paragraph { Margin = new Thickness(indent, 1, 0, 1), TextIndent = -14, LineHeight = 22 };
+                p.Inlines.Add(new Run("• ") { Foreground = ColorBullet });
+                AddBoldInlines(p, m.Groups[2].Value);
+                doc.Blocks.Add(p);
+                continue;
+            }
+
+            // Ligne vide → espacement entre blocs
+            if (string.IsNullOrWhiteSpace(line))
+            {
+                doc.Blocks.Add(new Paragraph { Margin = new Thickness(0, 3, 0, 3) });
+                continue;
+            }
+
+            // Paragraphe normal
+            var para = new Paragraph { Margin = new Thickness(0, 2, 0, 2), LineHeight = 22 };
+            AddBoldInlines(para, line);
+            doc.Blocks.Add(para);
+        }
+
+        return doc;
+    }
+
+    private static void AddBoldInlines(Paragraph p, string text)
+    {
+        // Découpe sur **bold** et *italic*
+        var parts = Regex.Split(text, @"\*\*(.+?)\*\*");
+        for (int i = 0; i < parts.Length; i++)
+        {
+            if (string.IsNullOrEmpty(parts[i])) continue;
+            if (i % 2 == 1)
+                p.Inlines.Add(new Run(parts[i]) { FontWeight = FontWeights.Bold, Foreground = ColorBold });
+            else
+                p.Inlines.Add(new Run(parts[i]));
+        }
+    }
+
     // ─── Helpers ───────────────────────────────────────────────────────────────
     private static string CleanSymbols(string s) =>
         s.Replace("──", "--").Replace("─", "-")
@@ -434,12 +521,12 @@ public partial class MainWindow : Window
         try
         {
             var content = File.ReadAllText(path);
-            TxtOutput.Text = content;
-            OutputScroll.ScrollToTop();
+            OutputViewer.Document = MarkdownToFlow(content);
         }
         catch (Exception ex)
         {
-            TxtOutput.Text = $"Impossible de lire le fichier :\n{ex.Message}";
+            OutputViewer.Document = new FlowDocument(
+                new Paragraph(new Run($"Impossible de lire le fichier :\n{ex.Message}")));
         }
         BtnOpenOutputFile.IsEnabled = true;
         TabMain.SelectedIndex = 1; // switch to actor output tab
@@ -460,7 +547,8 @@ public partial class MainWindow : Window
         if (File.Exists(path)) ShowOutputFile(path, item.DisplayName);
         else
         {
-            TxtOutput.Text = "Sortie non disponible — acteur non encore exécuté.";
+            OutputViewer.Document = new FlowDocument(
+                new Paragraph(new Run("Sortie non disponible — acteur non encore exécuté.")));
             TxtSelectedActor.Text = item.DisplayName;
             BtnOpenOutputFile.IsEnabled = false;
         }
