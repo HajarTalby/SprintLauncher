@@ -108,6 +108,21 @@ public sealed class JiraClient
         return (summary, description);
     }
 
+    // Returns all issue keys matching a JQL query (sprint resolution, etc.)
+    public async Task<string[]> SearchKeysAsync(string jql, CancellationToken ct = default)
+    {
+        var url = $"{_baseUrl}/rest/api/3/search" +
+                  $"?jql={Uri.EscapeDataString(jql)}&fields=summary&maxResults=100";
+        using var resp = await SendAsync(HttpMethod.Get, url, ct);
+        resp.EnsureSuccessStatusCode();
+
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
+        return doc.RootElement.GetProperty("issues")
+            .EnumerateArray()
+            .Select(i => i.GetProperty("key").GetString()!)
+            .ToArray();
+    }
+
     public async Task<int> GetCommentTotalAsync(string issueKey, CancellationToken ct = default)
     {
         var url = $"{_baseUrl}/rest/api/3/issue/{Uri.EscapeDataString(issueKey)}" +

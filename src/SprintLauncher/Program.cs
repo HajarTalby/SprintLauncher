@@ -77,42 +77,8 @@ var issueKeys = args
     .Select(item => item.value)
     .ToArray();
 
-// --sprint <id> : résout les tickets depuis sprints.json
-// Cherche dans : dossier du binaire → répertoire courant → SERZENIA_REPO (env var)
+// Sprint tickets are resolved from Jira after config load (see below, after JiraClient creation)
 var sprintArg = GetArg(args, "--sprint");
-if (sprintArg is not null && issueKeys.Length == 0)
-{
-    var sprintsFile = FindSprintsJson();
-    if (sprintsFile is null)
-        throw new FileNotFoundException(
-            "sprints.json introuvable. Placez-le dans le même dossier que le binaire, " +
-            "dans le répertoire courant, ou définissez SERZENIA_REPO dans .env.");
-    var sprintsJson = System.Text.Json.JsonDocument.Parse(File.ReadAllText(sprintsFile));
-    if (!sprintsJson.RootElement.TryGetProperty(sprintArg, out var sprintElement))
-        throw new ArgumentException($"Sprint '{sprintArg}' absent de sprints.json ({sprintsFile}).");
-    issueKeys = sprintElement.EnumerateArray().Select(e => e.GetString()!).ToArray();
-    Console.WriteLine($"Sprint {sprintArg} : {issueKeys.Length} ticket(s) — {string.Join(", ", issueKeys)}");
-}
-
-static string? FindSprintsJson()
-{
-    var candidates = new[]
-    {
-        Path.Combine(AppContext.BaseDirectory, "sprints.json"),
-        Path.Combine(Directory.GetCurrentDirectory(), "sprints.json"),
-    };
-    foreach (var c in candidates)
-        if (File.Exists(c)) return c;
-
-    // Fallback : SERZENIA_REPO env var (peut être défini sans charger la config complète)
-    var repoEnv = Environment.GetEnvironmentVariable("SERZENIA_REPO");
-    if (!string.IsNullOrWhiteSpace(repoEnv))
-    {
-        var fromRepo = Path.Combine(repoEnv, "sprints.json");
-        if (File.Exists(fromRepo)) return fromRepo;
-    }
-    return null;
-}
 
 // ─── --list-roles ──────────────────────────────────────────────────────────────
 if (listRoles)
@@ -133,7 +99,7 @@ if (listRoles)
 }
 
 // ─── Usage guard — before config load so no .env required just to show help ───
-if (issueKeys.Length == 0 && publishManualRole is null)
+if (issueKeys.Length == 0 && sprintArg is null && publishManualRole is null)
 {
     Console.Error.WriteLine("Usage: sprint-launcher <ISSUE-KEY> [<ISSUE-KEY> ...] [--write] [--no-cache] [--resume] [--interactive]");
     Console.Error.WriteLine("       sprint-launcher --publish-manual <ROLE> --from-file <path> <ISSUE-KEY> [--write]");
@@ -187,6 +153,21 @@ var issues = new List<SprintLauncher.Jira.JiraIssue>();
 
 var mode = dryRun ? "DRY-RUN" : "WRITE";
 Console.WriteLine($"[{mode}] Mode : {sessionMode.ToLabel()}");
+
+// Sprint resolution: Jira is the source of truth; sprints.json next to the binary is the local cache.
+// First run → fetch from Jira + write cache. Next runs → compare cache vs Jira, re-fetch on diff.
+if (sprintArg is not null && issueKeys.Length == 0)
+{
+    Console.WriteLine($"[{mode}] Résolution sprint {sprintArg}...");
+    var resolver = new SprintLauncher.Jira.SprintResolver(jiraClient, config.ProjectName);
+    var cachePath = Path.Combine(AppContext.BaseDirectory, "sprints.json");
+    issueKeys = await resolver.ResolveAsync(sprintArg, noCache, cachePath, shutdownCts.Token);
+    Console.WriteLine($"Sprint {sprintArg} : {issueKeys.Length} ticket(s) — {string.Join(", ", issueKeys)}");
+}
+
+if (issueKeys.Length == 0)
+    throw new InvalidOperationException("Aucun ticket résolu. Passez les clés directement ou vérifiez --sprint.");
+
 Console.WriteLine($"[{mode}] Lecture des issues Jira...");
 
 JiraCacheEntry? cache = noCache ? null : await JiraCache.TryLoadLatestAsync(issueKeys);
