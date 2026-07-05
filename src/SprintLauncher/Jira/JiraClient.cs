@@ -109,11 +109,17 @@ public sealed class JiraClient
     }
 
     // Returns all issue keys matching a JQL query (sprint resolution, etc.)
+    // Uses POST /rest/api/3/search/jql — Jira Cloud deprecated the GET endpoint (410).
     public async Task<string[]> SearchKeysAsync(string jql, CancellationToken ct = default)
     {
-        var url = $"{_baseUrl}/rest/api/3/search" +
-                  $"?jql={Uri.EscapeDataString(jql)}&fields=summary&maxResults=100";
-        using var resp = await SendAsync(HttpMethod.Get, url, ct);
+        var url = $"{_baseUrl}/rest/api/3/search/jql";
+        var body = JsonSerializer.Serialize(new
+        {
+            jql,
+            fields = new[] { "summary" },
+            maxResults = 100
+        });
+        using var resp = await SendWithBodyAsync(HttpMethod.Post, url, body, ct);
         resp.EnsureSuccessStatusCode();
 
         using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
@@ -145,6 +151,26 @@ public sealed class JiraClient
             var req = new HttpRequestMessage(method, url);
             req.Headers.Authorization = _auth;
             req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+
+            last = await _http.SendAsync(req, ct);
+            var status = (int)last.StatusCode;
+            if (status != 429 && status < 500) return last;
+        }
+        return last!;
+    }
+
+    private async Task<HttpResponseMessage> SendWithBodyAsync(HttpMethod method, string url, string jsonBody, CancellationToken ct)
+    {
+        HttpResponseMessage? last = null;
+        for (int attempt = 0; attempt < 3; attempt++)
+        {
+            if (attempt > 0)
+                await Task.Delay(TimeSpan.FromSeconds(Math.Pow(2, attempt)), ct);
+
+            var req = new HttpRequestMessage(method, url);
+            req.Headers.Authorization = _auth;
+            req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+            req.Content = new StringContent(jsonBody, System.Text.Encoding.UTF8, "application/json");
 
             last = await _http.SendAsync(req, ct);
             var status = (int)last.StatusCode;
