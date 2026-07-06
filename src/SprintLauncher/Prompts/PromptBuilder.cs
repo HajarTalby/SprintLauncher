@@ -106,6 +106,23 @@ public sealed class PromptBuilder
             $"validation unique par {_approver} plutôt qu'autorisation action par action. " +
             $"Tu te signes [agent: codex | role: implementation | us: {issueKey}].",
 
+        ActorRole.AnalysisCcode =>
+            $"Tu es le premier membre de la session d'analyse {_project} (perspective claude-code). " +
+            "La session reçoit les US ready du sprint et produit une analyse préalable PAR US, " +
+            $"conforme au framework {_permKey} : actions techniques, fichiers impactés, dépendances, " +
+            "permissions nécessaires, réutilisation de l'existant, points flous ou bloquants. " +
+            "Tu n'implémentes RIEN — tu analyses. Tu discutes avec le second membre (codex) pour converger. " +
+            "Si un désaccord de fond persiste, signale-le explicitement par un marqueur [LITIGE: <sujet>]. " +
+            $"Tu te signes [agent: claude-code | role: analyse | us: {issueKey}].",
+
+        ActorRole.AnalysisCodex =>
+            $"Tu es le second membre de la session d'analyse {_project} (perspective Codex). " +
+            "Tu reçois l'analyse du premier membre (claude-code) et tu la challenges : " +
+            "valide ou conteste les choix techniques, complète les manques, identifie les risques omis. " +
+            "Tu n'implémentes RIEN — tu analyses. Ne répète pas ce qui est déjà dit. " +
+            "Si un désaccord de fond persiste, signale-le explicitement par un marqueur [LITIGE: <sujet>]. " +
+            $"Tu te signes [agent: codex | role: analyse | us: {issueKey}].",
+
         ActorRole.CommitteePilotageClaudeChat when mode == SessionMode.Cadrage =>
             $"Tu es le premier membre du comité de pilotage {_project} en session de CADRAGE (perspective Claude). " +
             "Ton rôle : analyser les user stories brutes ou partielles, produire le cadrage métier et technique, " +
@@ -204,6 +221,19 @@ public sealed class PromptBuilder
             $"Quand la discussion a abouti à une décision commune, termine ta contribution par le marqueur {DialogueEngine.ConsensusMarker}. " +
             $"N'émets ce marqueur que si tout est réellement tranché.";
 
+        // Analyse : la synthèse doit être découpée par US pour publication sur chaque ticket
+        // (SERZENIA-139), avec signalement de litige structuré pour convoquer l'arbitrage.
+        if (role.GetGroup() == ActorGroup.Analysis)
+        {
+            dialogueDirective +=
+                "\n\nSTRUCTURE DE SYNTHÈSE OBLIGATOIRE : quand la discussion se conclut " +
+                "(consensus ou synthèse finale), structure la conclusion avec UNE section " +
+                "'## ANALYSE <CLE-TICKET>' par ticket du scope (analyse spécifique de ce ticket), " +
+                "suivie d'une section '## SYNTHESE SPRINT' (vision transverse). " +
+                "En cas de désaccord non résolu entre membres, ajoute un marqueur [LITIGE: <sujet>] " +
+                "dans la synthèse — il déclenche la convocation du comité d'arbitrage.";
+        }
+
         // Cadrage : la conclusion doit produire le bloc structuré des US à créer (SERZENIA-89).
         // Aucune création n'est faite par l'acteur — l'outil parse le bloc et le soumet à validation.
         if (mode == SessionMode.Cadrage && role.GetGroup() == ActorGroup.CommitteePilotage)
@@ -278,6 +308,15 @@ public sealed class PromptBuilder
                 "décisions de pilotage). Implémente les user stories dans l'ordre de priorité validé. " +
                 "Respecte les conventions du projet (C#/.NET MAUI, Domain/Application/Infrastructure/App, " +
                 "tests xUnit, nullable enable). Commit et push à chaque user story complète.",
+
+            ActorRole.AnalysisCcode =>
+                "Voici les US du sprint à analyser avant implémentation. " +
+                "Fournis ta contribution d'analyse (première de la discussion) : pour chaque US, " +
+                "actions techniques, fichiers impactés, dépendances, réutilisation, points flous.",
+
+            ActorRole.AnalysisCodex =>
+                "Voici les US du sprint à analyser avant implémentation. " +
+                "L'analyse du premier membre (claude-code) suit — challenge-la et complète-la.",
 
             ActorRole.CommitteePilotageClaudeChat when mode == SessionMode.Cadrage =>
                 "Voici les user stories soumises au comité de pilotage pour cadrage. " +

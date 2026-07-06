@@ -412,9 +412,42 @@ foreach (var group in sessionMode.GetGroupOrder())
         .Where(r => r.GetGroup() == group)
         .ToArray();
 
-    bool isCollectiveGroup = group is ActorGroup.CommitteePilotage
+    bool isCollectiveGroup = group is ActorGroup.Analysis
+        or ActorGroup.CommitteePilotage
         or ActorGroup.CommitteeArbitrage
         or ActorGroup.Qa;
+
+    // ── Arbitrage conditionnel : convoqué uniquement sur litige (SERZENIA-143 lot 4)
+    if (group == ActorGroup.CommitteeArbitrage &&
+        !sprintState.CompletedGroups.Contains(group.ToString()))
+    {
+        if (!sprintState.LitigeDetected)
+        {
+            Console.WriteLine($"\n{group.GetGroupLabel()}");
+            Console.WriteLine("  [non convoqué — aucun litige détecté en analyse]");
+            lastGroupPrinted = group;
+            foreach (var skipped in rolesInGroup)
+                reportEntries.Add(new ActorReportEntry(
+                    Role: skipped, Success: true, IsSemiManual: false, IsSkipped: true,
+                    ExitCode: 0, ElapsedSeconds: 0, OutputChars: 0,
+                    ErrorSnippet: null, OutputFilePath: null, SemiManualPromptPath: null));
+            continue;
+        }
+
+        if (interactive)
+        {
+            Console.WriteLine($"\n{group.GetGroupLabel()}");
+            EventEmitter.Emit("checkpoint", new { kind = "group", group = group.ToString(), next = "COMITÉ D'ARBITRAGE (litige détecté)" });
+            Console.Write("  ⚠ Litige détecté en analyse. GO pour continuer avec l'arbitrage ? [Entrée=oui / n=non] > ");
+            var arbAnswer = Console.ReadLine()?.Trim().ToLowerInvariant();
+            if (arbAnswer is "n" or "non" or "no")
+            {
+                Console.WriteLine("  Arbitrage non convoqué — le pipeline continue.");
+                lastGroupPrinted = group;
+                continue;
+            }
+        }
+    }
 
     // Skip : groupes collectifs = discussion publiée (CompletedGroups) ;
     // familles = tous les rôles complétés sans interruption à rejouer.
@@ -669,6 +702,32 @@ async Task RunDialogueGroupAsync(
     {
         Console.WriteLine($"  ✗ Discussion {group} : échec de {outcome.FailedRole} — --resume rejouera ce tour");
         return;
+    }
+
+    // ── Analyse : détection de litige + publication per-US (SERZENIA-143 lot 4) ──
+    if (group == ActorGroup.Analysis && outcome.FinalContribution is { } analysisText)
+    {
+        if (AnalysisSections.HasLitige(analysisText))
+        {
+            state.LitigeDetected = true;
+            await SprintStateManager.SaveAsync(stateFile, state);
+            Console.WriteLine("  ⚠ LITIGE détecté dans la synthèse d'analyse — l'arbitrage sera proposé.");
+            EventEmitter.Emit("litige", new { group = group.ToString(), detail = AnalysisSections.ExtractLitige(analysisText) });
+        }
+
+        // Un commentaire d'analyse par US concernée (couvre SERZENIA-139)
+        var sections = AnalysisSections.Split(analysisText, issues.Select(i => i.Key).ToArray());
+        foreach (var (usKey, section) in sections)
+        {
+            if (usKey == publishKey) continue; // la synthèse complète part déjà sur le ticket pilotage
+            var perUsBody = $"## Analyse {usKey}\n\n{section}";
+            await File.WriteAllTextAsync(Path.Combine(artifactsDir, $"output-Analysis-{usKey}.txt"), perUsBody);
+            var perUsResult = await publisher.PublishCollectiveAsync(usKey, group, perUsBody);
+            Console.WriteLine($"  {(perUsResult.Status == PublishStatus.Posted ? "✓" : "~")} [{usKey}] {perUsResult.Status} (analyse per-US)");
+            EventEmitter.Emit("publish", new { key = usKey, actor = "Analysis", status = perUsResult.Status.ToString() });
+        }
+        if (issues.Count > 1 && sections.Count == 0)
+            Console.WriteLine("  ! Synthèse d'analyse sans sections '## ANALYSE <KEY>' — publication sur le ticket pilotage uniquement.");
     }
 
     var combined = BuildDialogueComment(group, outcome, config.MaxDialogueRounds, transcriptBase);

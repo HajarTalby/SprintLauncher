@@ -8,16 +8,21 @@ public enum SessionMode
 
 public static class SessionModeExtensions
 {
+    // Pipeline vision SERZENIA-143 : cadrage → analyse → implémentation →
+    // arbitrage (seulement si litige) → QA. L'arbitrage est convoqué sur
+    // marqueur [LITIGE] détecté en analyse, jamais systématiquement.
     public static IReadOnlyList<ActorGroup> GetGroupOrder(this SessionMode mode) => mode switch
     {
         SessionMode.Cadrage => [
             ActorGroup.CommitteePilotage,
+            ActorGroup.Analysis,
             ActorGroup.FamilyClaude,
             ActorGroup.FamilyGpt,
             ActorGroup.CommitteeArbitrage,
             ActorGroup.Qa,
         ],
         _ => [
+            ActorGroup.Analysis,
             ActorGroup.FamilyClaude,
             ActorGroup.FamilyGpt,
             ActorGroup.CommitteePilotage,
@@ -44,6 +49,10 @@ public enum ActorRole
     GptImplementation,
     GptPilotage, // semi-manual: prompt generated, Hajar runs in ChatGPT web
 
+    // ── ANALYSE (discussion claude-code + codex, per-US) ──
+    AnalysisCcode,
+    AnalysisCodex,
+
     // ── COMITÉ DE PILOTAGE ──
     CommitteePilotageClaudeChat,
     CommitteePilotageGptChat,
@@ -63,6 +72,7 @@ public enum ActorGroup
 {
     FamilyClaude,
     FamilyGpt,
+    Analysis,
     CommitteePilotage,
     CommitteeArbitrage,
     Qa,
@@ -76,6 +86,8 @@ public static class ActorRoleExtensions
             => ActorGroup.FamilyClaude,
         ActorRole.GptImplementation or ActorRole.GptPilotage
             => ActorGroup.FamilyGpt,
+        ActorRole.AnalysisCcode or ActorRole.AnalysisCodex
+            => ActorGroup.Analysis,
         ActorRole.CommitteePilotageClaudeChat or ActorRole.CommitteePilotageGptChat
             => ActorGroup.CommitteePilotage,
         ActorRole.CommitteeClaudeChat or ActorRole.CommitteeCcode
@@ -90,6 +102,7 @@ public static class ActorRoleExtensions
     {
         ActorGroup.FamilyClaude        => "── FAMILLE CLAUDE ──",
         ActorGroup.FamilyGpt           => "── FAMILLE GPT ──",
+        ActorGroup.Analysis            => "── ANALYSE ──",
         ActorGroup.CommitteePilotage   => "── COMITÉ DE PILOTAGE ──",
         ActorGroup.CommitteeArbitrage  => "── COMITÉ D'ARBITRAGE COMPLET ──",
         ActorGroup.Qa                  => "── QA ──",
@@ -99,6 +112,7 @@ public static class ActorRoleExtensions
     public static bool IsClaudeFamily(this ActorRole role) => role is
         ActorRole.ClaudePilotage or
         ActorRole.ClaudeImplementation or
+        ActorRole.AnalysisCcode or
         ActorRole.CommitteePilotageClaudeChat or
         ActorRole.CommitteeClaudeChat or
         ActorRole.CommitteeCcode or
@@ -116,11 +130,13 @@ public static class ActorRoleExtensions
         role is ActorRole.ClaudeImplementation or ActorRole.GptImplementation;
 
     public static bool IsCollective(this ActorRole role) =>
-        role.GetGroup() is ActorGroup.CommitteePilotage
+        role.GetGroup() is ActorGroup.Analysis
+            or ActorGroup.CommitteePilotage
             or ActorGroup.CommitteeArbitrage
             or ActorGroup.Qa;
 
     public static bool NeedsReadOnlySandbox(this ActorRole role) => role is
+        ActorRole.AnalysisCodex or // l'analyse ne modifie rien
         ActorRole.CommitteePilotageGptChat or
         ActorRole.CommitteeGptChat or
         ActorRole.CommitteeCodex or
@@ -132,6 +148,8 @@ public static class ActorRoleExtensions
         ActorRole.ClaudeImplementation       => "claude-code | role: implementation",
         ActorRole.GptPilotage                => "gpt-chat | role: pilotage-cadrage",
         ActorRole.GptImplementation          => "codex | role: implementation",
+        ActorRole.AnalysisCcode              => "claude-code | role: analyse",
+        ActorRole.AnalysisCodex              => "codex | role: analyse",
         ActorRole.CommitteePilotageClaudeChat => "claude-chat | role: comite-pilotage",
         ActorRole.CommitteePilotageGptChat   => "gpt-chat | role: comite-pilotage",
         ActorRole.CommitteeClaudeChat        => "claude-chat | role: comite-arbitrage",
@@ -145,6 +163,7 @@ public static class ActorRoleExtensions
 
     public static string ToGroupSignatureTag(this ActorGroup group) => group switch
     {
+        ActorGroup.Analysis           => "analyse",
         ActorGroup.CommitteePilotage  => "comite-pilotage",
         ActorGroup.CommitteeArbitrage => "comite-arbitrage",
         ActorGroup.Qa                 => "qa-verdict",

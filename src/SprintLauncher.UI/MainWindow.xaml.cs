@@ -39,6 +39,8 @@ public partial class MainWindow : Window
         ("ClaudeImplementation",       "FAMILLE CLAUDE",   "FamilyClaude"),
         ("GptImplementation",          "FAMILLE GPT",      "FamilyGpt"),
         ("GptPilotage",                "FAMILLE GPT",      "FamilyGpt"),
+        ("AnalysisCcode",              "ANALYSE",          "Analysis"),
+        ("AnalysisCodex",              "ANALYSE",          "Analysis"),
         ("CommitteePilotageClaudeChat","COMITE PILOTAGE",  "CommitteePilotage"),
         ("CommitteePilotageGptChat",   "COMITE PILOTAGE",  "CommitteePilotage"),
         ("CommitteeClaudeChat",        "COMITE ARBITRAGE", "CommitteeArbitrage"),
@@ -368,6 +370,15 @@ public partial class MainWindow : Window
                     break;
                 }
 
+                case "litige":
+                {
+                    var detail = data.TryGetProperty("detail", out var d) ? d.GetString() : "";
+                    TxtStatus.Text = $"⚠ Litige détecté : {detail}";
+                    AppendLog("");
+                    AppendLog($"!! LITIGE detecte en analyse : {detail} — l'arbitrage sera propose.");
+                    break;
+                }
+
                 case "us-proposals":
                 {
                     _usProposals.Clear();
@@ -401,7 +412,7 @@ public partial class MainWindow : Window
     private void EnablePublishSelection()
     {
         bool any = false;
-        var collectiveGroups = new[] { "CommitteePilotage", "CommitteeArbitrage", "Qa" };
+        var collectiveGroups = new[] { "Analysis", "CommitteePilotage", "CommitteeArbitrage", "Qa" };
         foreach (var item in _actors)
         {
             if (item.IsHeader && collectiveGroups.Contains(item.GroupName))

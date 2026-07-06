@@ -15,6 +15,9 @@ public sealed class SprintState
     // Groupes collectifs dont la discussion multi-tours est terminée ET publiée (SERZENIA-143).
     // Un groupe absent d'ici avec un transcript dialogue-<groupe>.json existant reprend la discussion en cours.
     public HashSet<string> CompletedGroups { get; set; } = [];
+    // Litige signalé par la session d'analyse ([LITIGE: ...]) — conditionne la convocation
+    // du comité d'arbitrage, y compris après --resume.
+    public bool LitigeDetected { get; set; }
     public DateTimeOffset? LastCompletedAt { get; set; }
 }
 
