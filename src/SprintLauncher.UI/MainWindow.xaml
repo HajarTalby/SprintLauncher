@@ -93,6 +93,9 @@
       <DockPanel>
         <!-- Boutons — docké à droite en premier pour garantir la visibilité -->
         <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+          <Button x:Name="BtnCreateUs" Style="{StaticResource BtnSoft}" Content="Créer US proposées"
+                  IsEnabled="False" Click="BtnCreateUs_Click" Margin="0,0,6,0"
+                  ToolTip="Valide et crée dans Jira les US décidées par la session de cadrage."/>
           <Button x:Name="BtnPublish" Style="{StaticResource BtnSoft}" Content="Publier sélection → Jira"
                   IsEnabled="False" Click="BtnPublish_Click" Margin="0,0,6,0"
                   ToolTip="Publie sur Jira les sorties dry-run cochées dans la liste des acteurs — sans réexécuter les acteurs (zéro quota)."/>

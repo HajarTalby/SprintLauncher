@@ -1,5 +1,6 @@
 ﻿using System.Diagnostics;
 using System.Text;
+using SprintLauncher.Cadrage;
 using SprintLauncher.Config;
 using SprintLauncher.Dialogue;
 using SprintLauncher.Events;
@@ -55,6 +56,7 @@ bool resume = args.Contains("--resume");
 bool interactive = args.Contains("--interactive");
 bool publishFromArtifacts = args.Contains("--publish-from-artifacts");
 string? publishRolesFilter = GetArg(args, "--roles");
+string? createUsFile = GetArg(args, "--create-us");
 string? publishManualRole = GetArg(args, "--publish-manual");
 string? publishManualFile = GetArg(args, "--from-file");
 
@@ -68,7 +70,7 @@ var sessionMode = modeArg?.ToLowerInvariant() switch
 };
 
 var optionValues = new HashSet<int>();
-foreach (var flag in new[] { "--publish-manual", "--from-file", "--mode", "--sprint", "--roles" })
+foreach (var flag in new[] { "--publish-manual", "--from-file", "--mode", "--sprint", "--roles", "--create-us" })
 {
     var index = Array.IndexOf(args, flag);
     if (index >= 0 && index + 1 < args.Length)
@@ -103,7 +105,7 @@ if (listRoles)
 }
 
 // ─── Usage guard — before config load so no .env required just to show help ───
-if (issueKeys.Length == 0 && sprintArg is null && publishManualRole is null)
+if (issueKeys.Length == 0 && sprintArg is null && publishManualRole is null && createUsFile is null)
 {
     Console.Error.WriteLine("Usage: sprint-launcher <ISSUE-KEY> [<ISSUE-KEY> ...] [--write] [--no-cache] [--resume] [--interactive]");
     Console.Error.WriteLine("       sprint-launcher --publish-manual <ROLE> --from-file <path> <ISSUE-KEY> [--write]");
@@ -146,6 +148,54 @@ if (publishManualRole is not null)
         var result = await manualPublisher.PublishManualAsync(key, manualRole, responseText);
         PrintPublishResult(key, manualRole, result);
     }
+    return 0;
+}
+
+// ─── --create-us : créer les US validées depuis un fichier de propositions ─────
+// Produit par la session de cadrage (us-proposals.json), validé par l'approbatrice
+// dans l'UI ou à la main. Dry-run par défaut ; --write crée réellement.
+if (createUsFile is not null)
+{
+    if (!File.Exists(createUsFile))
+    {
+        Console.Error.WriteLine($"Fichier de propositions introuvable : {createUsFile}");
+        return 1;
+    }
+
+    var proposalsJson = await File.ReadAllTextAsync(createUsFile);
+    var proposals = System.Text.Json.JsonSerializer.Deserialize<List<UsProposal>>(
+        proposalsJson, new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? [];
+
+    if (proposals.Count == 0)
+    {
+        Console.Error.WriteLine("Aucune proposition d'US valide dans le fichier.");
+        return 1;
+    }
+
+    var refIssueKey = issueKeys.FirstOrDefault();
+    var projectKey = (refIssueKey ?? config.ProjectName).Split('-')[0];
+
+    using var createHttp = new HttpClient();
+    var creator = new JiraIssueCreator(createHttp, config.JiraBaseUrl, config.JiraEmail, config.JiraApiToken, dryRun);
+
+    Console.WriteLine($"[{(dryRun ? "DRY-RUN" : "WRITE")}] Création de {proposals.Count} US (projet {projectKey}{(refIssueKey is null ? "" : $", liées à {refIssueKey}")})...");
+    foreach (var proposal in proposals)
+    {
+        var missing = UsProposalParser.MissingTemplateSections(proposal.Description);
+        if (missing.Count > 0)
+            Console.WriteLine($"  ! '{proposal.Summary}' — sections SERZENIA-89 absentes : {string.Join(", ", missing)}");
+
+        var created = await creator.CreateAsync(proposal, projectKey, refIssueKey, shutdownCts.Token);
+        if (created.Created)
+            Console.WriteLine($"  ✓ {created.Key} — {proposal.Summary}");
+        else if (created.Error is not null)
+            Console.Error.WriteLine($"  ✗ '{proposal.Summary}' — {created.Error}");
+        EventEmitter.Emit("us-created", new { key = created.Key, summary = proposal.Summary, dryRun, error = created.Error });
+    }
+
+    Console.WriteLine(dryRun
+        ? "\nDry-run terminé — relancez avec --write pour créer réellement les US."
+        : "\nCréation terminée.");
     return 0;
 }
 
@@ -640,6 +690,38 @@ async Task RunDialogueGroupAsync(
     {
         state.CompletedGroups.Add(group.ToString());
         await SprintStateManager.SaveAsync(stateFile, state);
+    }
+
+    // ── Cadrage : extraction des US décidées par la discussion (SERZENIA-143 lot 3)
+    // Le bloc structuré de la synthèse est parsé et sauvegardé — la création Jira
+    // n'a lieu qu'après validation explicite (--create-us / bouton UI).
+    if (sessionMode == SessionMode.Cadrage && group == ActorGroup.CommitteePilotage
+        && outcome.FinalContribution is { } finalText)
+    {
+        var proposals = UsProposalParser.TryParse(finalText);
+        if (proposals.Count > 0)
+        {
+            var proposalsFile = Path.Combine(artifactsDir, "us-proposals.json");
+            await File.WriteAllTextAsync(proposalsFile, System.Text.Json.JsonSerializer.Serialize(
+                proposals, new System.Text.Json.JsonSerializerOptions { WriteIndented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping }));
+
+            Console.WriteLine($"\n  Le cadrage propose {proposals.Count} US :");
+            foreach (var p in proposals)
+                Console.WriteLine($"    • {p.Summary}");
+            Console.WriteLine($"  Propositions sauvegardées : {proposalsFile}");
+            Console.WriteLine($"  Pour créer après validation : sprint-launcher --create-us \"{proposalsFile}\" {publishKey} --write");
+
+            EventEmitter.Emit("us-proposals", new
+            {
+                file = Path.GetFullPath(proposalsFile),
+                refKey = publishKey,
+                proposals = proposals.Select(p => new { p.Summary, p.Description, p.ReadyConditions }),
+            });
+        }
+        else
+        {
+            Console.WriteLine("  ! Cadrage terminé sans bloc US structuré — aucune proposition extraite.");
+        }
     }
 }
 

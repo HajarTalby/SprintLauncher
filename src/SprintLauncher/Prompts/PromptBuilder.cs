@@ -204,6 +204,24 @@ public sealed class PromptBuilder
             $"Quand la discussion a abouti à une décision commune, termine ta contribution par le marqueur {DialogueEngine.ConsensusMarker}. " +
             $"N'émets ce marqueur que si tout est réellement tranché.";
 
+        // Cadrage : la conclusion doit produire le bloc structuré des US à créer (SERZENIA-89).
+        // Aucune création n'est faite par l'acteur — l'outil parse le bloc et le soumet à validation.
+        if (mode == SessionMode.Cadrage && role.GetGroup() == ActorGroup.CommitteePilotage)
+        {
+            dialogueDirective +=
+                "\n\nBLOC US OBLIGATOIRE À LA CONCLUSION : quand tu conclus la discussion " +
+                $"(marqueur {DialogueEngine.ConsensusMarker} ou {DialogueEngine.FinalDecisionMarker}), " +
+                "inclus juste avant le marqueur un bloc structuré listant les US décidées, au format EXACT :\n" +
+                $"{Cadrage.UsProposalParser.StartMarker}\n" +
+                "[{\"summary\": \"Titre de l'US\", \"description\": \"Description markdown complète\", \"readyConditions\": [\"condition 1\"]}]\n" +
+                $"{Cadrage.UsProposalParser.EndMarker}\n" +
+                "Chaque description DOIT suivre le template SERZENIA-89 : sections ## Objectif, ## Contexte, " +
+                "## Périmètre, ## Hors périmètre, ## Critères d'acceptation, ## Definition of Done, " +
+                "## Scénarios de test, ## Dépendances, ## Risques, ## Impact documentation / architecture, " +
+                "## Artefacts attendus, ## Attendu Codex. " +
+                "JSON valide impératif (échappe les retours à la ligne dans les chaînes avec \\n).";
+        }
+
         var systemPrompt = GetSystemPrompt(role, issueKey, mode) + dialogueDirective;
 
         string instruction;

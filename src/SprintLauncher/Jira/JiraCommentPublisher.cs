@@ -169,7 +169,8 @@ public sealed class JiraCommentPublisher
     private async Task<PublishResult> PostCommentAsync(string issueKey, string text, CancellationToken ct)
     {
         var url = $"{_baseUrl}/rest/api/3/issue/{Uri.EscapeDataString(issueKey)}/comment";
-        var payload = new { body = TextToAdf(text) };
+        // Markdown → ADF : titres, listes, tableaux et code rendus correctement dans Jira (SERZENIA-143)
+        var payload = new { body = MarkdownToAdf.Convert(text) };
         var json = JsonSerializer.Serialize(payload);
 
         using var req = new HttpRequestMessage(HttpMethod.Post, url);
@@ -188,21 +189,6 @@ public sealed class JiraCommentPublisher
         return PublishResult.Posted(commentId);
     }
 
-    // Minimal ADF wrapper: wraps plain text in a doc > paragraph > text node.
-    // For multi-line text, splits on newlines into separate paragraphs.
-    private static object TextToAdf(string text)
-    {
-        var paragraphs = text.Split('\n', StringSplitOptions.None)
-            .Select(line => new
-            {
-                type = "paragraph",
-                content = new[] { new { type = "text", text = line } }
-            })
-            .Cast<object>()
-            .ToArray();
-
-        return new { type = "doc", version = 1, content = paragraphs };
-    }
 }
 
 public sealed record PublishResult(PublishStatus Status, string? CommentId, string? Message)

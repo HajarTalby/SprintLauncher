@@ -28,7 +28,9 @@ public partial class MainWindow : Window
     private bool _chatHasTurns;
     private string _lastRunKeys = "";
     private bool _lastRunWasDryRun = true;
-    private bool _publishMode; // run courant = --publish-from-artifacts (pas de pipeline acteurs)
+    private bool _publishMode; // run courant = --publish-from-artifacts / --create-us (pas de pipeline acteurs)
+    private string? _usProposalsRefKey;
+    private readonly List<UsProposalDialog.ProposalView> _usProposals = [];
 
     // Liste de secours affichée avant réception du manifeste CLI (événement "manifest").
     private static readonly (string Name, string Group, string GroupName)[] Definitions =
@@ -363,6 +365,32 @@ public partial class MainWindow : Window
                     _artifactsDir = data.GetProperty("artifactsDir").GetString();
                     if (data.TryGetProperty("publishable", out var p) && p.GetBoolean())
                         EnablePublishSelection();
+                    break;
+                }
+
+                case "us-proposals":
+                {
+                    _usProposals.Clear();
+                    _usProposalsRefKey = data.GetProperty("refKey").GetString();
+                    foreach (var prop in data.GetProperty("proposals").EnumerateArray())
+                        _usProposals.Add(new UsProposalDialog.ProposalView(
+                            prop.GetProperty("summary").GetString() ?? "",
+                            prop.GetProperty("description").GetString() ?? ""));
+                    BtnCreateUs.IsEnabled = _usProposals.Count > 0;
+                    AppendLog("");
+                    AppendLog($"Le cadrage propose {_usProposals.Count} US — clique « Créer US proposées » pour les valider.");
+                    break;
+                }
+
+                case "us-created":
+                {
+                    var key = data.TryGetProperty("key", out var k) ? k.GetString() : null;
+                    var summary = data.GetProperty("summary").GetString();
+                    var isDry = data.GetProperty("dryRun").GetBoolean();
+                    var err = data.TryGetProperty("error", out var er) ? er.GetString() : null;
+                    AppendLog(err is not null ? $"ECHEC US '{summary}' : {err}"
+                        : isDry ? $"DRY-RUN US : {summary}"
+                        : $"US CREEE {key} : {summary}");
                     break;
                 }
             }
@@ -921,6 +949,47 @@ public partial class MainWindow : Window
         if (confirm != MessageBoxResult.Yes) return;
 
         StartPublish(string.Join(",", selected));
+    }
+
+    // ─── Création des US validées (cadrage) ────────────────────────────────────
+    private void BtnCreateUs_Click(object sender, RoutedEventArgs e)
+    {
+        if (_usProposals.Count == 0 || _artifactsDir is null) return;
+        if (_process is { HasExited: false })
+        {
+            MessageBox.Show("Un run est encore en cours — attends la fin avant de créer les US.",
+                "Sprint Launcher", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var dialog = new UsProposalDialog(_usProposals) { Owner = this };
+        if (dialog.ShowDialog() != true || dialog.Selected.Count == 0) return;
+
+        // Écrit la sélection validée — c'est CE fichier que le CLI crée, rien d'autre.
+        var selectedFile = Path.Combine(_artifactsDir, "us-proposals-selected.json");
+        var json = JsonSerializer.Serialize(
+            dialog.Selected.Select(p => new { summary = p.Summary, description = p.Description }),
+            new JsonSerializerOptions { WriteIndented = true });
+        File.WriteAllText(selectedFile, json);
+
+        var confirm = MessageBox.Show(
+            $"Créer {dialog.Selected.Count} US dans Jira, liées à {_usProposalsRefKey} ?\n\nCette action écrit réellement dans Jira.",
+            "Création d'US Jira", MessageBoxButton.YesNo, MessageBoxImage.Question);
+        if (confirm != MessageBoxResult.Yes) return;
+
+        _publishMode = true;
+        BtnCreateUs.IsEnabled = false;
+        BtnRun.Content = "  Arrêter";
+        TabMain.SelectedIndex = 0;
+
+        var cliArgs = new List<string>();
+        if (_usProposalsRefKey is not null) cliArgs.Add(_usProposalsRefKey);
+        cliArgs.Add("--create-us");
+        cliArgs.Add(selectedFile);
+        cliArgs.Add("--write");
+
+        StartProcess(BuildPsi(cliArgs));
+        AppendLog($"Création de {dialog.Selected.Count} US démarrée...");
     }
 
     private void SendStdin(string s)
