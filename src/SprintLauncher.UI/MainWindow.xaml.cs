@@ -3,9 +3,11 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.CompilerServices;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Documents;
+using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
 
@@ -22,21 +24,27 @@ public partial class MainWindow : Window
     private string? _artifactsDir;
     private string _repoRoot = "";
     private string? _selectedOutputFile;
+    private FlowDocument _chatDoc = new();
+    private bool _chatHasTurns;
+    private string _lastRunKeys = "";
+    private bool _lastRunWasDryRun = true;
+    private bool _publishMode; // run courant = --publish-from-artifacts (pas de pipeline acteurs)
 
-    private static readonly (string Name, string Group)[] Definitions =
+    // Liste de secours affichée avant réception du manifeste CLI (événement "manifest").
+    private static readonly (string Name, string Group, string GroupName)[] Definitions =
     [
-        ("ClaudePilotage",             "FAMILLE CLAUDE"),
-        ("ClaudeImplementation",       "FAMILLE CLAUDE"),
-        ("GptImplementation",          "FAMILLE GPT"),
-        ("GptPilotage",                "FAMILLE GPT"),
-        ("CommitteePilotageClaudeChat","COMITE PILOTAGE"),
-        ("CommitteePilotageGptChat",   "COMITE PILOTAGE"),
-        ("CommitteeClaudeChat",        "COMITE ARBITRAGE"),
-        ("CommitteeCcode",             "COMITE ARBITRAGE"),
-        ("CommitteeGptChat",           "COMITE ARBITRAGE"),
-        ("CommitteeCodex",             "COMITE ARBITRAGE"),
-        ("ClaudeQaVerdict",            "QA"),
-        ("GptQaVerdict",               "QA"),
+        ("ClaudePilotage",             "FAMILLE CLAUDE",   "FamilyClaude"),
+        ("ClaudeImplementation",       "FAMILLE CLAUDE",   "FamilyClaude"),
+        ("GptImplementation",          "FAMILLE GPT",      "FamilyGpt"),
+        ("GptPilotage",                "FAMILLE GPT",      "FamilyGpt"),
+        ("CommitteePilotageClaudeChat","COMITE PILOTAGE",  "CommitteePilotage"),
+        ("CommitteePilotageGptChat",   "COMITE PILOTAGE",  "CommitteePilotage"),
+        ("CommitteeClaudeChat",        "COMITE ARBITRAGE", "CommitteeArbitrage"),
+        ("CommitteeCcode",             "COMITE ARBITRAGE", "CommitteeArbitrage"),
+        ("CommitteeGptChat",           "COMITE ARBITRAGE", "CommitteeArbitrage"),
+        ("CommitteeCodex",             "COMITE ARBITRAGE", "CommitteeArbitrage"),
+        ("ClaudeQaVerdict",            "QA",               "Qa"),
+        ("GptQaVerdict",               "QA",               "Qa"),
     ];
 
     public MainWindow()
@@ -53,14 +61,33 @@ public partial class MainWindow : Window
     {
         _actors.Clear();
         string? lastGroup = null;
-        foreach (var (name, group) in Definitions)
+        foreach (var (name, group, groupName) in Definitions)
         {
             if (group != lastGroup)
             {
-                _actors.Add(new ActorItem { IsHeader = true, DisplayName = group, Color = "#89b4fa", Icon = "—" });
+                _actors.Add(new ActorItem { IsHeader = true, DisplayName = group, GroupName = groupName, Color = "#89b4fa", Icon = "—" });
                 lastGroup = group;
             }
-            _actors.Add(new ActorItem { DisplayName = name, Icon = "·", Color = "#585b70", IsHeader = false });
+            _actors.Add(new ActorItem { DisplayName = name, GroupName = groupName, Icon = "·", Color = "#585b70", IsHeader = false });
+        }
+    }
+
+    // Reconstruit la liste depuis le manifeste émis par le CLI — plus de liste codée en dur.
+    private void RebuildActorsFromManifest(JsonElement roles)
+    {
+        _actors.Clear();
+        string? lastGroup = null;
+        foreach (var r in roles.EnumerateArray())
+        {
+            var name = r.GetProperty("name").GetString() ?? "";
+            var groupName = r.GetProperty("group").GetString() ?? "";
+            var groupLabel = r.GetProperty("groupLabel").GetString() ?? groupName;
+            if (groupLabel != lastGroup)
+            {
+                _actors.Add(new ActorItem { IsHeader = true, DisplayName = groupLabel, GroupName = groupName, Color = "#89b4fa", Icon = "—" });
+                lastGroup = groupLabel;
+            }
+            _actors.Add(new ActorItem { DisplayName = name, GroupName = groupName, Icon = "·", Color = "#585b70", IsHeader = false });
         }
     }
 
@@ -96,22 +123,65 @@ public partial class MainWindow : Window
     {
         BuildActorList();
         OutputViewer.Document = new FlowDocument();
+        _chatDoc = NewChatDocument();
+        ChatViewer.Document = _chatDoc;
+        _chatHasTurns = false;
+        _publishMode = false;
         TxtLog.Clear();
+        TxtPrompt.Clear();
         TxtSelectedActor.Text = "Sélectionnez un acteur pour voir sa sortie";
         BtnOpenOutputFile.IsEnabled = false;
         TabMain.SelectedIndex = 0; // journal tab during run
         BtnOpenReport.IsEnabled = false;
         BtnOpenArtifacts.IsEnabled = false;
+        BtnPublish.IsEnabled = false;
         PnlInteractive.Visibility = Visibility.Collapsed;
+        PnlInterventionInput.Visibility = Visibility.Collapsed;
         _htmlReportPath = null;
         _artifactsDir = null;
         _selectedOutputFile = null;
         BtnRun.Content = "  Arrêter";
 
         var selectedMode = (CmbMode.SelectedItem as System.Windows.Controls.ComboBoxItem)?.Tag?.ToString() ?? "execution";
+        _lastRunKeys = keys;
+        _lastRunWasDryRun = ChkWrite.IsChecked != true;
 
-        // Release mode: sprint-launcher.exe sits next to this exe — use it directly.
-        // Dev mode: no side-by-side exe — call dotnet run from the repo source.
+        var cliArgs = new List<string>(keys.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+        {
+            "--interactive",
+        };
+        if (ChkWrite.IsChecked == true)   cliArgs.Add("--write");
+        if (ChkNoCache.IsChecked == true) cliArgs.Add("--no-cache");
+        if (ChkResume.IsChecked == true)  cliArgs.Add("--resume");
+        cliArgs.Add("--mode");
+        cliArgs.Add(selectedMode);
+
+        StartProcess(BuildPsi(cliArgs));
+        AppendLog($"Run démarré — mode : {selectedMode.ToUpperInvariant()}.");
+    }
+
+    // Publication des sorties dry-run validées — aucune réexécution d'acteur.
+    private void StartPublish(string rolesCsv)
+    {
+        _publishMode = true;
+        BtnPublish.IsEnabled = false;
+        BtnRun.Content = "  Arrêter";
+        TabMain.SelectedIndex = 0;
+
+        var cliArgs = new List<string>(_lastRunKeys.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+        {
+            "--publish-from-artifacts",
+            "--write",
+            "--roles", rolesCsv,
+        };
+
+        StartProcess(BuildPsi(cliArgs));
+        AppendLog($"Publication Jira démarrée ({rolesCsv}).");
+    }
+
+    // Release : sprint-launcher.exe à côté de l'UI. Dev : dotnet run depuis le repo source.
+    private ProcessStartInfo BuildPsi(List<string> cliArgs)
+    {
         var sideBySide = Path.Combine(AppContext.BaseDirectory, "sprint-launcher.exe");
         bool isRelease = File.Exists(sideBySide);
 
@@ -130,12 +200,10 @@ public partial class MainWindow : Window
         {
             psi.FileName = sideBySide;
             psi.WorkingDirectory = AppContext.BaseDirectory;
-            foreach (var k in keys.Split(' ', StringSplitOptions.RemoveEmptyEntries))
-                psi.ArgumentList.Add(k);
         }
         else
         {
-            var slProject = Path.Combine(_repoRoot, "tools", "sprint-launcher");
+            var slProject = Path.Combine(_repoRoot, "src", "SprintLauncher");
             psi.FileName = "dotnet";
             psi.WorkingDirectory = _repoRoot;
             psi.ArgumentList.Add("run");
@@ -143,17 +211,15 @@ public partial class MainWindow : Window
             psi.ArgumentList.Add(slProject);
             psi.ArgumentList.Add("--no-build");
             psi.ArgumentList.Add("--");
-            foreach (var k in keys.Split(' ', StringSplitOptions.RemoveEmptyEntries))
-                psi.ArgumentList.Add(k);
         }
 
-        psi.ArgumentList.Add("--interactive");
-        if (ChkWrite.IsChecked == true)   psi.ArgumentList.Add("--write");
-        if (ChkNoCache.IsChecked == true) psi.ArgumentList.Add("--no-cache");
-        if (ChkResume.IsChecked == true)  psi.ArgumentList.Add("--resume");
-        psi.ArgumentList.Add("--mode");
-        psi.ArgumentList.Add(selectedMode);
+        foreach (var a in cliArgs)
+            psi.ArgumentList.Add(a);
+        return psi;
+    }
 
+    private void StartProcess(ProcessStartInfo psi)
+    {
         _process = new Process { StartInfo = psi, EnableRaisingEvents = true };
         _process.OutputDataReceived += OnLine;
         _process.ErrorDataReceived  += OnError;
@@ -166,7 +232,6 @@ public partial class MainWindow : Window
 
         _elapsed.Restart();
         _timer.Start();
-        AppendLog($"Run démarré — mode : {selectedMode.ToUpperInvariant()}.");
     }
 
     private void StopProcess(string reason)
@@ -184,10 +249,152 @@ public partial class MainWindow : Window
     private void OnLine(object _, DataReceivedEventArgs e)
     {
         if (e.Data is null) return;
+
+        // Protocole structuré CLI→UI (SERZENIA-143) — prioritaire sur le parsing texte.
+        if (e.Data.StartsWith("@@EVENT "))
+        {
+            var json = e.Data["@@EVENT ".Length..];
+            Dispatcher.InvokeAsync(() => HandleEvent(json));
+            return;
+        }
+
         var line = AnsiRegex.Replace(e.Data, "").TrimEnd(TrimChars).Replace("\r", "");
         if (string.IsNullOrWhiteSpace(line)) return;
 
         Dispatcher.InvokeAsync(() => HandleLine(line));
+    }
+
+    // ─── Événements structurés ─────────────────────────────────────────────────
+    private void HandleEvent(string json)
+    {
+        JsonDocument doc;
+        try { doc = JsonDocument.Parse(json); }
+        catch (JsonException) { AppendLog(json); return; }
+
+        using (doc)
+        {
+            var type = doc.RootElement.GetProperty("type").GetString();
+            var data = doc.RootElement.GetProperty("data");
+
+            switch (type)
+            {
+                case "manifest":
+                    _artifactsDir = data.GetProperty("artifactsDir").GetString();
+                    _lastRunWasDryRun = data.GetProperty("dryRun").GetBoolean();
+                    RebuildActorsFromManifest(data.GetProperty("roles"));
+                    BtnOpenArtifacts.IsEnabled = Directory.Exists(_artifactsDir);
+                    break;
+
+                case "group":
+                    AppendLog("");
+                    AppendLog("-- " + (data.GetProperty("label").GetString() ?? "") + " --");
+                    break;
+
+                case "actor-start":
+                {
+                    var role = data.GetProperty("role").GetString() ?? "";
+                    SetStatus(role, "running");
+                    TxtStatus.Text = $"En cours : {role}";
+                    break;
+                }
+
+                case "actor-done":
+                {
+                    var role = data.GetProperty("role").GetString() ?? "";
+                    var success = data.GetProperty("success").GetBoolean();
+                    var semi = data.GetProperty("semiManual").GetBoolean();
+                    var secs = data.GetProperty("seconds").GetInt32();
+                    if (semi)         { SetStatus(role, "semi");    AppendLog($"SEMI  {role}"); }
+                    else if (success) { SetStatus(role, "success", secs + "s"); LoadActorOutput(role); AppendLog($"OK  {role}  ({secs}s)"); }
+                    else              { SetStatus(role, "failed");  AppendLog($"ECHEC  {role}  ({secs}s)"); }
+                    break;
+                }
+
+                case "turn":
+                {
+                    var speaker = data.GetProperty("speaker").GetString() ?? "";
+                    var content = data.GetProperty("content").GetString() ?? "";
+                    var round   = data.GetProperty("round").GetInt32();
+                    var isIntervention = data.GetProperty("isIntervention").GetBoolean();
+                    var isFinal = data.TryGetProperty("isFinalSynthesis", out var f) && f.GetBoolean();
+                    AppendChatTurn(speaker, content, isIntervention, round, isFinal);
+                    break;
+                }
+
+                case "checkpoint":
+                {
+                    var kind = data.GetProperty("kind").GetString();
+                    if (kind == "round")
+                    {
+                        var group = data.GetProperty("group").GetString() ?? "";
+                        var round = data.GetProperty("round").GetInt32();
+                        TxtCheckpointTitle.Text = $"Discussion {group} — round {round - 1} terminé";
+                        TxtCheckpointHint.Text  = "GO = les acteurs continuent seuls · écris un message pour intervenir avec autorité · Conclure = synthèse finale immédiate.";
+                        PnlInterventionInput.Visibility = Visibility.Visible;
+                        PnlInteractive.Visibility = Visibility.Visible;
+                        TabMain.SelectedIndex = 2; // onglet DISCUSSION
+                        TxtIntervention.Focus();
+                    }
+                    else
+                    {
+                        var next = data.TryGetProperty("next", out var n) ? n.GetString() : "prochain groupe";
+                        TxtCheckpointTitle.Text = $"Groupe terminé — Prêt pour : {next}";
+                        TxtCheckpointHint.Text  = "Revoyez les sorties dans le panneau central. Cliquez GO pour continuer ou ARRET pour sauvegarder et quitter.";
+                        PnlInterventionInput.Visibility = Visibility.Collapsed;
+                        PnlInteractive.Visibility = Visibility.Visible;
+                    }
+                    AppendLog("");
+                    AppendLog(">>> Checkpoint — en attente de ta décision");
+                    break;
+                }
+
+                case "publish":
+                {
+                    var key = data.GetProperty("key").GetString();
+                    var actor = data.GetProperty("actor").GetString();
+                    var status = data.GetProperty("status").GetString();
+                    AppendLog($"PUBLISH [{key}] {actor} : {status}");
+                    break;
+                }
+
+                case "run-end":
+                {
+                    _htmlReportPath = data.GetProperty("reportPath").GetString();
+                    _artifactsDir = data.GetProperty("artifactsDir").GetString();
+                    if (data.TryGetProperty("publishable", out var p) && p.GetBoolean())
+                        EnablePublishSelection();
+                    break;
+                }
+            }
+        }
+    }
+
+    // Après un dry-run complet : cases à cocher sur les sorties publiables.
+    private void EnablePublishSelection()
+    {
+        bool any = false;
+        var collectiveGroups = new[] { "CommitteePilotage", "CommitteeArbitrage", "Qa" };
+        foreach (var item in _actors)
+        {
+            if (item.IsHeader && collectiveGroups.Contains(item.GroupName))
+            {
+                // Le header d'un groupe collectif représente le commentaire de synthèse de la discussion
+                var groupDone = _actors.Any(a => !a.IsHeader && a.GroupName == item.GroupName && a.Status == "success");
+                if (groupDone) { item.CheckVisibility = "Visible"; item.IsChecked = true; any = true; }
+            }
+            else if (!item.IsHeader && item.Status == "success" && !collectiveGroups.Contains(item.GroupName))
+            {
+                item.CheckVisibility = "Visible";
+                item.IsChecked = true;
+                any = true;
+            }
+        }
+        if (any)
+        {
+            BtnPublish.IsEnabled = true;
+            AppendLog("");
+            AppendLog("Dry-run validable : coche les sorties à publier puis clique « Publier sélection → Jira ».");
+        }
     }
 
     private void OnError(object _, DataReceivedEventArgs e)
@@ -210,8 +417,19 @@ public partial class MainWindow : Window
         {
             _timer.Stop();
             BtnRun.Content = "  Lancer";
-            PnlInteractive.Visibility = Visibility.Collapsed;
+            HideCheckpoint();
             var code = _process?.ExitCode ?? -1;
+
+            if (_publishMode)
+            {
+                _publishMode = false;
+                TxtStatus.Text = code == 0
+                    ? $"Publication Jira terminée — {_elapsed.Elapsed:mm\\:ss}"
+                    : $"Publication échouée (exit {code}) — voir le journal";
+                AppendLog(code == 0 ? "Publication terminée." : $"Publication échouée exit {code}.");
+                return;
+            }
+
             var done = _actors.Count(a => !a.IsHeader && a.Status is "success" or "semi" or "skipped");
             TxtStatus.Text = code == 0
                 ? $"Terminé avec succès — {done} acteurs — {_elapsed.Elapsed:mm\\:ss}"
@@ -328,9 +546,10 @@ public partial class MainWindow : Window
             return;
         }
 
-        // ── Interactive checkpoint ─────────────────────────────────────────────
+        // ── Interactive checkpoint (legacy — l'événement "checkpoint" fait foi) ─
         if (line.Contains("GO pour continuer"))
         {
+            if (PnlInteractive.Visibility == Visibility.Visible) return; // déjà affiché par l'événement
             var m = Regex.Match(line, @"continuer avec (.+?)\s*\?");
             var next = m.Success ? m.Groups[1].Value.Trim(' ', '─') : "prochain groupe";
             TxtCheckpointTitle.Text = $"Groupe terminé — Prêt pour : {next}";
@@ -379,12 +598,61 @@ public partial class MainWindow : Window
     }
 
     // ─── Markdown → FlowDocument (rendu style Claude/ChatGPT) ────────────────
-    private static readonly Brush ColorFg      = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#cdd6f4")!);
-    private static readonly Brush ColorH2      = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#89b4fa")!);
-    private static readonly Brush ColorH3      = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#a6adc8")!);
-    private static readonly Brush ColorBullet  = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#6c7086")!);
-    private static readonly Brush ColorBold    = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#ffffff")!);
+    private static readonly Brush ColorFg       = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#cdd6f4")!);
+    private static readonly Brush ColorH2       = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#89b4fa")!);
+    private static readonly Brush ColorH3       = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#a6adc8")!);
+    private static readonly Brush ColorBullet   = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#6c7086")!);
+    private static readonly Brush ColorBold     = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#ffffff")!);
+    private static readonly Brush ColorApprover = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#f9e2af")!);
     private static readonly FontFamily SansFont = new("Segoe UI, Arial");
+
+    // ─── Fil de discussion (onglet DISCUSSION) ─────────────────────────────────
+    private static FlowDocument NewChatDocument() => new()
+    {
+        FontFamily  = SansFont,
+        FontSize    = 14,
+        Foreground  = ColorFg,
+        LineHeight  = 24,
+        PagePadding = new Thickness(20, 16, 20, 16),
+    };
+
+    private void AppendChatTurn(string speaker, string content, bool isIntervention, int round, bool isFinal)
+    {
+        if (!_chatHasTurns)
+        {
+            _chatHasTurns = true;
+            TabMain.SelectedIndex = 2; // bascule sur l'onglet DISCUSSION au premier tour
+        }
+
+        var label = isIntervention
+            ? $"⚑ {speaker}"
+            : isFinal ? $"{speaker} — synthèse finale" : $"{speaker} — round {round}";
+
+        var header = new Paragraph { Margin = new Thickness(0, 16, 0, 4) };
+        header.Inlines.Add(new Run(label)
+        {
+            FontWeight = FontWeights.Bold,
+            FontSize = 13.5,
+            Foreground = isIntervention ? ColorApprover : ColorH2,
+        });
+        _chatDoc.Blocks.Add(header);
+
+        // Réutilise le rendu markdown existant, blocs déplacés dans le fil
+        var body = MarkdownToFlow(content);
+        while (body.Blocks.FirstBlock is { } block)
+        {
+            body.Blocks.Remove(block);
+            _chatDoc.Blocks.Add(block);
+        }
+
+        ScrollChatToEnd();
+    }
+
+    private void ScrollChatToEnd()
+    {
+        if (ChatViewer.Template?.FindName("PART_ContentHost", ChatViewer) is System.Windows.Controls.ScrollViewer sv)
+            sv.ScrollToEnd();
+    }
 
     private static FlowDocument MarkdownToFlow(string text)
     {
@@ -552,22 +820,107 @@ public partial class MainWindow : Window
             TxtSelectedActor.Text = item.DisplayName;
             BtnOpenOutputFile.IsEnabled = false;
         }
+
+        // Onglet PROMPT : ce qui a réellement été envoyé à l'acteur
+        var promptPath = Path.Combine(_artifactsDir, $"prompt-{item.DisplayName}.txt");
+        if (File.Exists(promptPath))
+        {
+            TxtPromptActor.Text = $"{item.DisplayName} — prompt envoyé (dernier tour)";
+            try { TxtPrompt.Text = File.ReadAllText(promptPath); }
+            catch (IOException ex) { TxtPrompt.Text = $"Lecture impossible : {ex.Message}"; }
+        }
+        else
+        {
+            TxtPromptActor.Text = $"{item.DisplayName} — prompt non encore généré";
+            TxtPrompt.Text = "";
+        }
     }
 
-    // ─── Interactive checkpoint ────────────────────────────────────────────────
+    // ─── Interactive checkpoint + intervention ─────────────────────────────────
     private void BtnGo_Click(object sender, RoutedEventArgs e)
     {
-        PnlInteractive.Visibility = Visibility.Collapsed;
-        TxtStatus.Text = "GO — poursuite vers le prochain groupe...";
+        HideCheckpoint();
+        TxtStatus.Text = "GO — la discussion continue...";
         AppendLog(">>> GO");
         SendStdin("\n");
     }
 
     private void BtnStop_Click(object sender, RoutedEventArgs e)
     {
-        PnlInteractive.Visibility = Visibility.Collapsed;
+        HideCheckpoint();
         AppendLog(">>> ARRET");
         SendStdin("n\n");
+    }
+
+    private void BtnSendIntervention_Click(object sender, RoutedEventArgs e) => SendInterventionText();
+
+    private void TxtIntervention_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Enter) SendInterventionText();
+    }
+
+    private void SendInterventionText()
+    {
+        var text = TxtIntervention.Text.Trim();
+        TxtIntervention.Clear();
+        HideCheckpoint();
+
+        if (string.IsNullOrEmpty(text))
+        {
+            AppendLog(">>> GO");
+            SendStdin("\n");
+            return;
+        }
+
+        TxtStatus.Text = "Intervention envoyée — la discussion en tient compte au prochain tour.";
+        AppendLog($">>> Intervention : {text}");
+        SendStdin(text + "\n");
+    }
+
+    private void BtnConclude_Click(object sender, RoutedEventArgs e)
+    {
+        HideCheckpoint();
+        TxtStatus.Text = "Clôture demandée — tour de synthèse finale en cours...";
+        AppendLog(">>> Conclure maintenant");
+        SendStdin("fin\n");
+    }
+
+    private void HideCheckpoint()
+    {
+        PnlInteractive.Visibility = Visibility.Collapsed;
+        PnlInterventionInput.Visibility = Visibility.Collapsed;
+    }
+
+    // ─── Publication des sorties validées ──────────────────────────────────────
+    private void BtnPublish_Click(object sender, RoutedEventArgs e)
+    {
+        if (_process is { HasExited: false })
+        {
+            MessageBox.Show("Un run est encore en cours — attends la fin avant de publier.",
+                "Sprint Launcher", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var selected = _actors
+            .Where(a => a.CheckVisibility == "Visible" && a.IsChecked)
+            .Select(a => a.IsHeader ? a.GroupName : a.DisplayName)
+            .Distinct()
+            .ToList();
+
+        if (selected.Count == 0)
+        {
+            MessageBox.Show("Aucune sortie cochée — coche au moins un acteur ou un groupe dans la liste.",
+                "Sprint Launcher", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var confirm = MessageBox.Show(
+            $"Publier {selected.Count} sortie(s) validée(s) sur Jira ({_lastRunKeys}) ?\n\n" +
+            "Les commentaires seront réellement postés — exactement le contenu que tu as relu, sans réexécution des acteurs.",
+            "Publication Jira", MessageBoxButton.YesNo, MessageBoxImage.Question);
+        if (confirm != MessageBoxResult.Yes) return;
+
+        StartPublish(string.Join(",", selected));
     }
 
     private void SendStdin(string s)
@@ -620,14 +973,19 @@ public class ActorItem : INotifyPropertyChanged
     private string _color = "#585b70";
     private string _elapsed = "";
     private string _status = "waiting";
+    private bool _isChecked;
+    private string _checkVisibility = "Collapsed";
 
     public bool IsHeader { get; init; }
     public string DisplayName { get; init; } = "";
+    public string GroupName { get; init; } = "";
 
     public string Status  { get => _status;  set { _status = value;  Notify(); } }
     public string Icon    { get => _icon;    set { _icon = value;    Notify(); } }
     public string Color   { get => _color;   set { _color = value;   Notify(); } }
     public string Elapsed { get => _elapsed; set { _elapsed = value; Notify(); } }
+    public bool   IsChecked       { get => _isChecked;       set { _isChecked = value;       Notify(); } }
+    public string CheckVisibility { get => _checkVisibility; set { _checkVisibility = value; Notify(); } }
 
     public event PropertyChangedEventHandler? PropertyChanged;
     private void Notify([CallerMemberName] string? p = null) =>

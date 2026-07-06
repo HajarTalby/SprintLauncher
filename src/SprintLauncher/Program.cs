@@ -2,6 +2,7 @@
 using System.Text;
 using SprintLauncher.Config;
 using SprintLauncher.Dialogue;
+using SprintLauncher.Events;
 using SprintLauncher.Jira;
 using SprintLauncher.Memory;
 using SprintLauncher.Prompts;
@@ -52,6 +53,8 @@ bool listRoles = args.Contains("--list-roles");
 bool noCache = args.Contains("--no-cache");
 bool resume = args.Contains("--resume");
 bool interactive = args.Contains("--interactive");
+bool publishFromArtifacts = args.Contains("--publish-from-artifacts");
+string? publishRolesFilter = GetArg(args, "--roles");
 string? publishManualRole = GetArg(args, "--publish-manual");
 string? publishManualFile = GetArg(args, "--from-file");
 
@@ -65,7 +68,7 @@ var sessionMode = modeArg?.ToLowerInvariant() switch
 };
 
 var optionValues = new HashSet<int>();
-foreach (var flag in new[] { "--publish-manual", "--from-file", "--mode", "--sprint" })
+foreach (var flag in new[] { "--publish-manual", "--from-file", "--mode", "--sprint", "--roles" })
 {
     var index = Array.IndexOf(args, flag);
     if (index >= 0 && index + 1 < args.Length)
@@ -169,6 +172,70 @@ if (sprintArg is not null && issueKeys.Length == 0)
 if (issueKeys.Length == 0)
     throw new InvalidOperationException("Aucun ticket résolu. Passez les clés directement ou vérifiez --sprint.");
 
+// ─── --publish-from-artifacts : publier les sorties dry-run déjà validées ─────
+// Aucune réexécution d'acteur (zéro quota) : les output-*.txt du run précédent
+// sont republiés tels quels, avec le même routage que le run d'origine.
+if (publishFromArtifacts)
+{
+    var publishTag = sprintArg is not null ? $"sprint{sprintArg}" : "run";
+    var publishDir = Path.Combine("artifacts", publishTag, string.Join("-", issueKeys));
+    if (!Directory.Exists(publishDir))
+    {
+        Console.Error.WriteLine($"Aucun artefact trouvé dans {Path.GetFullPath(publishDir)} — lancez d'abord un dry-run.");
+        return 1;
+    }
+
+    var rolesFilter = publishRolesFilter?
+        .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+    var artifactPublisher = new JiraCommentPublisher(httpClient, config.JiraBaseUrl, config.JiraEmail, config.JiraApiToken, dryRun);
+    var refKey = issueKeys[0];
+    Console.WriteLine($"[{mode}] Publication depuis artefacts : {Path.GetFullPath(publishDir)}");
+
+    // Acteurs individuels (familles) — même routage que le run d'origine
+    foreach (ActorRole role in Enum.GetValues<ActorRole>())
+    {
+        if (role.IsCollective() || role.IsSemiManual()) continue;
+        if (rolesFilter is not null && !rolesFilter.Contains(role.ToString())) continue;
+
+        var outputPath = Path.Combine(publishDir, $"output-{role}.txt");
+        if (!File.Exists(outputPath)) continue;
+
+        var content = await File.ReadAllTextAsync(outputPath);
+        if (string.IsNullOrWhiteSpace(content)) continue;
+
+        var artifactResult = new ActorRunResult(role, true, content, null, 0, false);
+        var targets = role.PublishesToReferenceTicketOnly() ? new[] { refKey } : issueKeys;
+        foreach (var key in targets)
+        {
+            var pub = await artifactPublisher.PublishAsync(key, artifactResult, shutdownCts.Token);
+            PrintPublishResult(key, role, pub);
+        }
+    }
+
+    // Groupes collectifs — commentaire de synthèse de la discussion
+    foreach (ActorGroup group in Enum.GetValues<ActorGroup>())
+    {
+        if (rolesFilter is not null && !rolesFilter.Contains(group.ToString())) continue;
+
+        var collectivePath = Path.Combine(publishDir, $"output-{group}-collective.txt");
+        if (!File.Exists(collectivePath)) continue;
+
+        var content = await File.ReadAllTextAsync(collectivePath);
+        if (string.IsNullOrWhiteSpace(content)) continue;
+
+        var pub = await artifactPublisher.PublishCollectiveAsync(refKey, group, content, shutdownCts.Token);
+        Console.WriteLine($"  {(pub.Status == PublishStatus.Posted ? "✓" : pub.Status == PublishStatus.DryRun ? "~" : "○")} [{refKey}] {pub.Status} (collectif {group})");
+        EventEmitter.Emit("publish", new { key = refKey, actor = group.ToString(), status = pub.Status.ToString() });
+    }
+
+    Console.WriteLine(dryRun
+        ? "\nDry-run terminé — relancez avec --write pour publier réellement."
+        : "\nPublication terminée.");
+    return 0;
+}
+
 Console.WriteLine($"[{mode}] Lecture des issues Jira...");
 
 JiraCacheEntry? cache = noCache ? null : await JiraCache.TryLoadLatestAsync(issueKeys);
@@ -235,6 +302,24 @@ var artifactsDir = Path.Combine("artifacts", sprintTag, string.Join("-", issueKe
 Directory.CreateDirectory(artifactsDir);
 Console.WriteLine($"Artefacts dans : {Path.GetFullPath(artifactsDir)}");
 
+EventEmitter.Emit("manifest", new
+{
+    keys = issueKeys,
+    dryRun,
+    mode = sessionMode.ToLabel(),
+    artifactsDir = Path.GetFullPath(artifactsDir),
+    maxDialogueRounds = config.MaxDialogueRounds,
+    approver = config.ApproverName,
+    roles = Enum.GetValues<ActorRole>().Select(r => new
+    {
+        name = r.ToString(),
+        group = r.GetGroup().ToString(),
+        groupLabel = r.GetGroup().GetGroupLabel().Trim('─', ' '),
+        semiManual = r.IsSemiManual(),
+        collective = r.IsCollective(),
+    }),
+});
+
 var stateFile  = Path.Combine(artifactsDir, "state.json");
 var handoffFile = Path.Combine(artifactsDir, "session-handoff.md");
 
@@ -292,6 +377,7 @@ foreach (var group in sessionMode.GetGroupOrder())
     if (lastGroupPrinted != group)
     {
         Console.WriteLine($"\n{group.GetGroupLabel()}");
+        EventEmitter.Emit("group", new { group = group.ToString(), label = group.GetGroupLabel().Trim('─', ' ') });
         lastGroupPrinted = group;
     }
 
@@ -352,6 +438,7 @@ foreach (var group in sessionMode.GetGroupOrder())
 
         if (nextGroup != default)
         {
+            EventEmitter.Emit("checkpoint", new { kind = "group", group = group.ToString(), next = nextGroup.GetGroupLabel().Trim('─', ' ') });
             Console.Write($"  GO pour continuer avec {nextGroup.GetGroupLabel()} ? [Entrée=oui / n=arrêt] > ");
             var answer = Console.ReadLine()?.Trim().ToLowerInvariant();
             if (answer == "n" || answer == "non" || answer == "no")
@@ -382,6 +469,13 @@ var reportPath = await HtmlReportGenerator.GenerateAsync(
 
 Console.WriteLine($"\nArtefacts écrits dans : {artifactsDir}");
 Console.WriteLine($"Rapport HTML          : {reportPath}");
+EventEmitter.Emit("run-end", new
+{
+    reportPath,
+    artifactsDir = Path.GetFullPath(artifactsDir),
+    dryRun,
+    publishable = dryRun && !shutdownCts.IsCancellationRequested,
+});
 return 0;
 
 // ─── Single actor execution (famille Claude / famille GPT) ────────────────────
@@ -403,6 +497,7 @@ async Task RunSingleActorAsync(
     var promptFile = Path.Combine(artifactsDir, $"prompt-{role}.txt");
     await File.WriteAllTextAsync(promptFile, $"=== SYSTEM ===\n{prompt.SystemPrompt}\n\n=== USER ===\n{prompt.UserPrompt}");
 
+    EventEmitter.Emit("actor-start", new { role = role.ToString() });
     // Correction 1: live timer
     var sw = Stopwatch.StartNew();
     if (Console.IsOutputRedirected) Console.WriteLine($"  > {role}");
@@ -481,16 +576,35 @@ async Task RunDialogueGroupAsync(
     // Reprise : le transcript persisté est rechargé, la discussion continue au tour suivant.
     var resumedTurns = resume ? await DialogueEngine.TryLoadTranscriptAsync(transcriptBase, ct) : null;
     if (resumedTurns is { Count: > 0 })
+    {
         Console.WriteLine($"  Reprise discussion — {resumedTurns.Count} tour(s) déjà joué(s)");
+        foreach (var t in resumedTurns)
+            EventEmitter.Emit("turn", new { group = group.ToString(), speaker = t.Speaker, round = t.Round, isIntervention = t.IsIntervention, content = t.Content, resumed = true });
+    }
 
     var engine = new DialogueEngine(config.MaxDialogueRounds, config.ApproverName);
+
+    // Le round/synthèse du tour courant est capturé par buildPrompt pour l'événement "turn"
+    // (runTurn ne connaît pas le round ; les deux delegates sont appelés séquentiellement).
+    int currentRound = 1;
+    bool currentIsFinal = false;
 
     var outcome = await engine.RunAsync(
         participants: roles,
         buildPrompt: (role, transcript, round, isFinal) =>
-            builder.BuildDialogueTurn(role, issues, publishKey, transcript, round,
-                config.MaxDialogueRounds, isFinal, sessionMode, frameworks, agentMemory),
-        runTurn: (role, prompt, token) => RunDialogueTurnAsync(role, prompt, artifactsDir, runner, token),
+        {
+            currentRound = round;
+            currentIsFinal = isFinal;
+            return builder.BuildDialogueTurn(role, issues, publishKey, transcript, round,
+                config.MaxDialogueRounds, isFinal, sessionMode, frameworks, agentMemory);
+        },
+        runTurn: async (role, prompt, token) =>
+        {
+            var result = await RunDialogueTurnAsync(role, prompt, artifactsDir, runner, token);
+            if (result.Success)
+                EventEmitter.Emit("turn", new { group = group.ToString(), speaker = role.ToString(), round = currentRound, isIntervention = false, isFinalSynthesis = currentIsFinal, content = result.Output.Trim() });
+            return result;
+        },
         requestIntervention: interactive ? round => RequestInterventionAsync(group, round) : null,
         transcriptBasePath: transcriptBase,
         resumedTurns: resumedTurns,
@@ -536,6 +650,7 @@ async Task<ActorRunResult> RunDialogueTurnAsync(
     var promptFile = Path.Combine(artifactsDir, $"prompt-{role}.txt");
     await File.WriteAllTextAsync(promptFile, $"=== SYSTEM ===\n{prompt.SystemPrompt}\n\n=== USER ===\n{prompt.UserPrompt}");
 
+    EventEmitter.Emit("actor-start", new { role = role.ToString() });
     var sw = Stopwatch.StartNew();
     if (Console.IsOutputRedirected) Console.WriteLine($"  > {role}");
     else Console.Write($"  > {role,-28}");
@@ -576,6 +691,7 @@ Task<DialogueIntervention> RequestInterventionAsync(ActorGroup group, int round)
 {
     Console.WriteLine();
     Console.WriteLine($"  ▶ Round {round - 1} terminé — discussion {group.GetGroupLabel()}");
+    EventEmitter.Emit("checkpoint", new { kind = "round", group = group.ToString(), round });
     Console.Write("  GO pour continuer la discussion ? [Entrée=oui / n=arrêt / fin=conclure / texte=intervention] > ");
     var answer = Console.ReadLine()?.Trim();
 
@@ -588,7 +704,10 @@ Task<DialogueIntervention> RequestInterventionAsync(ActorGroup group, int round)
     };
 
     if (intervention.Kind == InterventionKind.Message)
+    {
         Console.WriteLine($"  ⚑ Intervention de {config.ApproverName} injectée dans la discussion.");
+        EventEmitter.Emit("turn", new { group = group.ToString(), speaker = $"{config.ApproverName} (approver)", round, isIntervention = true, content = intervention.Text });
+    }
     if (intervention.Kind == InterventionKind.Stop)
         Console.WriteLine("  Arrêt demandé. Utilisez --resume pour reprendre la discussion.");
 
@@ -653,6 +772,16 @@ static Task StartTimerTask(string label, Stopwatch sw, CancellationToken ct)
 static void PrintActorResult(string label, Stopwatch sw, ActorRunResult result)
 {
     var elapsed = (int)sw.Elapsed.TotalSeconds;
+    EventEmitter.Emit("actor-done", new
+    {
+        role = label,
+        success = result.Success,
+        semiManual = result.IsSemiManual,
+        seconds = elapsed,
+        chars = result.Output.Length,
+        exitCode = result.ExitCode,
+        error = result.ErrorOutput?.Trim() is { Length: > 0 } e ? e[..Math.Min(200, e.Length)] : null,
+    });
     // When stdout is redirected (UI mode), emit clean lines without \r overwrite tricks.
     // In terminal mode, use \r to overwrite the spinning ⟳ line.
     bool redirected = Console.IsOutputRedirected;
@@ -679,6 +808,7 @@ static void PrintActorResult(string label, Stopwatch sw, ActorRunResult result)
 
 static void PrintPublishResult(string key, ActorRole role, PublishResult result)
 {
+    EventEmitter.Emit("publish", new { key, actor = role.ToString(), status = result.Status.ToString() });
     var icon = result.Status switch
     {
         PublishStatus.Posted  => "✓",
