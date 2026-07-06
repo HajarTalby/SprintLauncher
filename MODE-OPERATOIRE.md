@@ -1,12 +1,14 @@
 # Mode opératoire — Sprint Launcher
 
-Version : v1.0.6 (2026-07-03) | Repo : `SprintLauncher/` (repo autonome depuis v1.0.6)
+Version : v1.1.0 (2026-07-06, SERZENIA-143) | Repo : `SprintLauncher/` (branche de référence : `main`)
 
 ---
 
 ## Principe fondamental
 
-**L'outil ne remplace jamais la décision humaine.** Les GO/NO-GO sont pilotés par Hajar à chaque étape structurante. L'outil orchestre les acteurs IA, mais c'est Hajar qui décide : démarrer le sprint, valider l'analyse de pilotage, passer en mode écriture, publier les résultats. Aucune action irréversible n'est effectuée sans `--write` et sans validation consciente.
+**L'outil ne remplace jamais la décision humaine.** Les GO/NO-GO sont pilotés par Hajar à chaque étape structurante. L'outil orchestre les acteurs IA, mais c'est Hajar qui décide : démarrer le sprint, valider l'analyse de pilotage, passer en mode écriture, publier les résultats, créer les US proposées par le cadrage. Aucune action irréversible n'est effectuée sans `--write` et sans validation consciente.
+
+**Depuis la v1.1.0 (SERZENIA-143), les sessions collectives sont de vraies discussions multi-tours** : les acteurs se répondent (max `MAX_DIALOGUE_ROUNDS` allers-retours, défaut 3) jusqu'à convergence explicite (`[CONSENSUS]` / `[DECISION FINALE]`) ou synthèse forcée. **Hajar peut intervenir dans chaque discussion** : ses messages sont injectés avec autorité, elle peut conclure ou arrêter à tout moment.
 
 **Règle absolue — transitions Jira :** Aucune session ne doit transitionner un ticket Jira (Done, In Progress, etc.) sans confirmation explicite de Hajar Talby. L'outil ne fait jamais de transition automatique de statut.
 
@@ -40,6 +42,7 @@ JIRA_API_TOKEN=<token Jira>
 CLAUDE_MODEL=claude-opus-4-8
 CODEX_MODEL=gpt-5.5
 ACTOR_TIMEOUT_SECONDS=600
+MAX_DIALOGUE_ROUNDS=3
 
 # Identité projet (injectée dans tous les prompts)
 # PROJECT_NAME=SERZENIA
@@ -178,6 +181,34 @@ Lit `artifacts/run/<KEY>/state.json` et reprend depuis le dernier acteur non ter
 .\sprint-launcher.exe --publish-manual GptPilotage --from-file response.txt SERZENIA-138 --write
 ```
 
+### Publier les sorties dry-run validées — SANS réexécuter les acteurs (v1.1.0)
+
+C'est la boucle de supervision : dry-run → relecture → publication de **ce qui a été relu**, zéro quota.
+
+```powershell
+# Aperçu de ce qui serait publié
+.\sprint-launcher.exe SERZENIA-138 --publish-from-artifacts
+
+# Publication réelle, éventuellement filtrée par rôles/groupes
+.\sprint-launcher.exe SERZENIA-138 --publish-from-artifacts --write --roles ClaudePilotage,CommitteePilotage
+```
+
+Dans l'UI : après un dry-run, cocher les sorties dans la liste des acteurs puis « Publier sélection → Jira ».
+
+### Créer les US décidées par la session de cadrage (v1.1.0)
+
+La session de cadrage produit `us-proposals.json` (bloc structuré de la synthèse, template SERZENIA-89). Rien n'est créé sans validation.
+
+```powershell
+# Aperçu
+.\sprint-launcher.exe SERZENIA-138 --create-us "artifacts\run\SERZENIA-138\us-proposals.json"
+
+# Création réelle (Stories liées au ticket de référence)
+.\sprint-launcher.exe SERZENIA-138 --create-us "artifacts\run\SERZENIA-138\us-proposals.json" --write
+```
+
+Dans l'UI : bouton « Créer US proposées » → fenêtre de validation (cocher / relire / créer).
+
 ---
 
 ## 4. Paramétrisation avancée
@@ -223,42 +254,62 @@ Les mémoires `feedback` (spécifiques au comportement Claude Code) sont exclues
 
 ---
 
-## 5. Cycle complet d'un sprint
+## 5. Cycle complet d'un sprint (v1.1.0 — SERZENIA-143)
 
 ```
 [HAJAR] GO : lancer le sprint
       │
       ▼
 [1] Lecture Jira — cache différentiel + anti-troncature
-[2] Sync frameworks (SERZENIA-70, 89, 91) — détection des changements
-[3] Sync mémoire projet Claude Code (memory/*.md)
-[4] Génération des prompts — system prompt par rôle + contexte complet
+[2] Sync frameworks (SERZENIA-70, 89, 91) + mémoire projet (memory/*.md)
       │
-      ├──► ClaudePilotage            → claude.exe (stdin)
-      ├──► ClaudeImplementation      → claude.exe (stdin)
-      ├──► GptImplementation         → codex exec (stdin)
-      ├──► GptPilotage               → SEMI-MANUEL (voir §6)
-      ├──► CommitteePilotageClaudeChat → claude.exe (délibération séquentielle)
-      ├──► CommitteePilotageGptChat  → codex exec
-      ├──► CommitteeClaudeChat       → claude.exe
-      ├──► CommitteeCcode            → claude.exe
-      ├──► CommitteeGptChat          → codex exec
-      ├──► CommitteeCodex            → codex exec
-      ├──► ClaudeQaVerdict           → claude.exe
-      └──► GptQaVerdict              → codex exec (--sandbox read-only)
-      │    Checkpoint state.json écrit après chaque acteur
-      ▼
-[5] Artefacts dans artifacts/run/<KEY>/
+      ▼ (mode cadrage : le comité de pilotage ouvre le pipeline)
+[3] CADRAGE — DISCUSSION CommitteePilotageClaudeChat ⇄ CommitteePilotageGptChat
+      max 3 rounds, convergence [CONSENSUS] ou synthèse forcée
+      [HAJAR] peut intervenir entre chaque round (message avec autorité / conclure / arrêt)
+      → synthèse publiée (1 commentaire) + bloc US structuré → us-proposals.json
+      [HAJAR] valide dans l'UI → création des US dans Jira (--create-us)
       │
       ▼
-[HAJAR] Relire les sorties dry-run → valider → relancer avec --write
+[4] ANALYSE — DISCUSSION AnalysisCcode ⇄ AnalysisCodex (read-only)
+      analyse préalable SERZENIA-70 par US, en discussion
+      → 1 commentaire d'analyse PAR US + synthèse sprint sur le ticket pilotage
+      → marqueur [LITIGE: sujet] éventuel
+      │
+      ├── (litige) ──► [5] ARBITRAGE — DISCUSSION à 4 (claude-chat, ccode, gpt-chat, codex)
+      │                  convoqué UNIQUEMENT sur litige + GO de Hajar
+      ▼
+[6] IMPLÉMENTATION — tour de rôle per-US : ccode / codex en alternance
+      quota épuisé → l'AUTRE moteur prend la relève avec contexte de handoff
+      → 1 commentaire par US implémentée
       │
       ▼
-[6] Publication → commentaires Jira signés [agent: ... | us: <KEY>]
+[7] PILOTAGE (mode execution) + QA — DISCUSSION ClaudeQaVerdict ⇄ GptQaVerdict
+      → verdict collectif unique PASS / PASS-avec-réserves / FAIL
+      │
+      ▼
+[8] Artefacts : transcripts dialogue-*.md, sorties, rapport HTML
+      │
+      ▼
+[HAJAR] Relire les sorties dry-run dans l'UI → cocher → « Publier sélection »
+      → publication de CE QUI A ÉTÉ RELU, sans réexécution (--publish-from-artifacts)
       │
       ▼
 [HAJAR] Validation finale → GO Done (jamais automatique)
 ```
+
+### Intervenir dans une discussion
+
+Aux checkpoints entre rounds (`--interactive`, activé d'office par l'UI) :
+
+| Action | CLI | UI |
+|---|---|---|
+| Laisser continuer | `Entrée` | bouton **GO** |
+| Intervenir avec autorité | taper le message | champ texte + **⚑ Intervenir** |
+| Forcer la synthèse finale | `fin` | **Conclure maintenant** |
+| Arrêter (reprise `--resume`) | `n` | **ARRET** |
+
+Les interventions sont tracées dans le transcript (`dialogue-<groupe>.md`), le fil DISCUSSION de l'UI et le commentaire Jira final.
 
 ---
 
@@ -291,8 +342,15 @@ L'acteur GPT Pilotage implique une intervention manuelle de Hajar.
 | Détection dynamique binaires | Aucun chemin versionné codé en dur |
 | Prompt via stdin | Bypass limite Windows 32 767 chars sur arguments CLI |
 | Timeout acteur | Arrêt de l'arbre de processus après `ACTOR_TIMEOUT_SECONDS` |
-| Sandbox Codex | Rôles comité/QA GPT utilisent `--sandbox read-only` |
+| Sandbox Codex | Rôles analyse/comité/QA GPT utilisent `--sandbox read-only` |
 | Checkpoint par acteur | `state.json` — `--resume` reprend sans réexécuter ce qui est fait |
+| Reprise de discussion | Transcript `dialogue-<groupe>.json` rechargé — la discussion continue au tour suivant |
+| Plafond de rounds | `MAX_DIALOGUE_ROUNDS` (3) + marqueur de convergence + « Conclure maintenant » |
+| Arbitrage conditionnel | Convoqué uniquement sur `[LITIGE]` détecté en analyse + GO de Hajar |
+| Relève quota | Échec quota ≠ échec technique — l'autre moteur reprend avec handoff |
+| Création d'US validée | `us-proposals.json` → validation UI/`--create-us` — jamais de création directe par un acteur |
+| Publication relue | `--publish-from-artifacts` publie exactement les sorties validées, zéro réexécution |
+| Markdown → ADF | Titres, listes, tableaux, code rendus correctement dans Jira |
 | Transitions Jira interdites | Aucune transition de statut sans validation explicite de Hajar |
 
 ---
@@ -306,11 +364,17 @@ artifacts/
 │   └── {timestamp}-{KEY}.json   # Cache différentiel Jira par ticket
 └── run/
     └── <KEY>/
-        ├── state.json            # Checkpoint acteurs (--resume)
-        ├── session-handoff.md    # Résumé état sprint à l'interruption
-        ├── report.html           # Rapport HTML post-run
-        ├── prompt-<Acteur>.txt   # Prompt généré par acteur
-        └── output-<Acteur>.txt   # Réponse acteur
+        ├── state.json                    # Checkpoint acteurs + groupes + litige + implémentation (--resume)
+        ├── session-handoff.md            # Résumé état sprint à l'interruption
+        ├── run-report-<ts>.html          # Rapport HTML post-run
+        ├── prompt-<Acteur>.txt           # Prompt du dernier tour de l'acteur
+        ├── output-<Acteur>.txt           # Dernière réponse de l'acteur
+        ├── dialogue-<Groupe>.json / .md  # Transcript complet de la discussion (reprise + lecture)
+        ├── output-<Groupe>-collective.txt# Commentaire collectif publié
+        ├── output-Analysis-<KEY>.txt     # Analyse per-US publiée sur chaque ticket
+        ├── output-<Moteur>-<KEY>.txt     # Implémentation per-US
+        ├── us-proposals.json             # US décidées par le cadrage (avant validation)
+        └── us-proposals-selected.json    # Sélection validée dans l'UI
 ```
 
 ---

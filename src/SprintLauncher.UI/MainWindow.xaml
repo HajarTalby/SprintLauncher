@@ -93,15 +93,16 @@
       <DockPanel>
         <!-- Boutons — docké à droite en premier pour garantir la visibilité -->
         <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
-          <Button x:Name="BtnCreateUs" Style="{StaticResource BtnSoft}" Content="Créer US proposées"
+          <Button x:Name="BtnCreateUs" Style="{StaticResource BtnSoft}" Content="Créer US" FontSize="11"
                   IsEnabled="False" Click="BtnCreateUs_Click" Margin="0,0,6,0"
                   ToolTip="Valide et crée dans Jira les US décidées par la session de cadrage."/>
-          <Button x:Name="BtnPublish" Style="{StaticResource BtnSoft}" Content="Publier sélection → Jira"
+          <Button x:Name="BtnPublish" Style="{StaticResource BtnSoft}" Content="Publier → Jira" FontSize="11"
                   IsEnabled="False" Click="BtnPublish_Click" Margin="0,0,6,0"
                   ToolTip="Publie sur Jira les sorties dry-run cochées dans la liste des acteurs — sans réexécuter les acteurs (zéro quota)."/>
-          <Button x:Name="BtnOpenReport"    Style="{StaticResource BtnSoft}" Content="Rapport HTML"
-                  IsEnabled="False" Click="BtnOpenReport_Click" Margin="0,0,6,0"/>
-          <Button x:Name="BtnOpenArtifacts" Style="{StaticResource BtnSoft}" Content="Artefacts"
+          <Button x:Name="BtnOpenReport"    Style="{StaticResource BtnSoft}" Content="Rapport" FontSize="11"
+                  IsEnabled="False" Click="BtnOpenReport_Click" Margin="0,0,6,0"
+                  ToolTip="Ouvre le rapport HTML du run"/>
+          <Button x:Name="BtnOpenArtifacts" Style="{StaticResource BtnSoft}" Content="Artefacts" FontSize="11"
                   IsEnabled="False" Click="BtnOpenArtifacts_Click" Margin="0,0,10,0"/>
           <Button x:Name="BtnRun" Style="{StaticResource Btn}" Content="▶  Lancer" Click="BtnRun_Click" MinWidth="90"/>
         </StackPanel>
@@ -118,7 +119,7 @@
                      Foreground="#6c7086" FontWeight="SemiBold" Margin="16,0,8,0"
                      ToolTip="Clés Jira séparées par des espaces (ignoré si Sprint # est rempli)"/>
           <TextBox x:Name="TxtIssueKeys" Style="{StaticResource DarkInput}"
-                   Width="200" Text="" ToolTip="Ex : SERZENIA-138  SERZENIA-140"/>
+                   Width="160" Text="" ToolTip="Ex : SERZENIA-138  SERZENIA-140"/>
 
           <CheckBox x:Name="ChkWrite"   Style="{StaticResource Chk}" Content="--write"   Margin="16,0,0,0"
                     ToolTip="Poste les commentaires réellement sur Jira. Sans cette option : dry-run, rien n'est écrit."/>

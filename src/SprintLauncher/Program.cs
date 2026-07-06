@@ -108,12 +108,16 @@ if (listRoles)
 if (issueKeys.Length == 0 && sprintArg is null && publishManualRole is null && createUsFile is null)
 {
     Console.Error.WriteLine("Usage: sprint-launcher <ISSUE-KEY> [<ISSUE-KEY> ...] [--write] [--no-cache] [--resume] [--interactive]");
+    Console.Error.WriteLine("       sprint-launcher --sprint <id> [options]");
+    Console.Error.WriteLine("       sprint-launcher <ISSUE-KEY> --publish-from-artifacts [--roles <csv>] [--write]");
+    Console.Error.WriteLine("       sprint-launcher <REF-KEY> --create-us <fichier.json> [--write]");
     Console.Error.WriteLine("       sprint-launcher --publish-manual <ROLE> --from-file <path> <ISSUE-KEY> [--write]");
     Console.Error.WriteLine("       sprint-launcher --list-roles");
     Console.Error.WriteLine();
-    Console.Error.WriteLine("  --interactive   Pause entre chaque groupe d'acteurs — GO/NO-GO manuel.");
-    Console.Error.WriteLine("  --mode cadrage  Pipeline pilotage-first : Comité Pilotage → Familles → Arbitrage → QA.");
-    Console.Error.WriteLine("  --mode execution (défaut) Pipeline standard : Familles → Comité Pilotage → Arbitrage → QA.");
+    Console.Error.WriteLine("  --interactive   Checkpoints : GO/intervention/conclure entre rounds de discussion et groupes.");
+    Console.Error.WriteLine("  --mode cadrage  Comité Pilotage d'abord (discussion) → US proposées → Analyse → Implémentation → QA.");
+    Console.Error.WriteLine("  --mode execution (défaut) Analyse → Implémentation (tour de rôle) → Pilotage → QA.");
+    Console.Error.WriteLine("  --publish-from-artifacts  Publie les sorties dry-run validées, sans réexécuter les acteurs.");
     PauseIfInteractive();
     return 1;
 }
