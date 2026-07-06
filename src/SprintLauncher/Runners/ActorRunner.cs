@@ -205,13 +205,18 @@ public sealed class ActorRunner : IDisposable
             return Fail(role, reason);
         }
 
+        var outputText = stdout.ToString();
+        var errorText = stderr.ToString();
+        bool success = process.ExitCode == 0;
+
         return new ActorRunResult(
             Role: role,
-            Success: process.ExitCode == 0,
-            Output: stdout.ToString(),
-            ErrorOutput: stderr.ToString(),
+            Success: success,
+            Output: outputText,
+            ErrorOutput: errorText,
             ExitCode: process.ExitCode,
-            IsSemiManual: false);
+            IsSemiManual: false,
+            IsQuotaExhausted: !success && QuotaDetector.IsQuotaExhausted(outputText, errorText));
     }
 
     private static ActorRunResult Fail(ActorRole role, string message) =>

@@ -403,6 +403,7 @@ else
 
 // Step 3: Run actors group by group
 ActorGroup? lastGroupPrinted = null;
+bool implementationPhaseDone = false;
 
 foreach (var group in sessionMode.GetGroupOrder())
 {
@@ -488,6 +489,20 @@ foreach (var group in sessionMode.GetGroupOrder())
         {
             if (shutdownCts.IsCancellationRequested) break;
 
+            // Implémentation : gérée per-US par l'ordonnanceur — tour de rôle
+            // ccode/codex + relève sur quota (SERZENIA-143 lot 5).
+            if (role is ActorRole.ClaudeImplementation or ActorRole.GptImplementation)
+            {
+                if (!implementationPhaseDone)
+                {
+                    implementationPhaseDone = true;
+                    await RunImplementationPhaseAsync(
+                        issues, artifactsDir, sprintState, stateFile,
+                        builder, runner, publisher, shutdownCts.Token);
+                }
+                continue;
+            }
+
             if (sprintState.CompletedRoles.Contains(role.ToString()) &&
                 !sprintState.InterruptedRoles.Contains(role.ToString()))
             {
@@ -495,8 +510,7 @@ foreach (var group in sessionMode.GetGroupOrder())
                 continue;
             }
 
-            // Pilotage + implementation actors publish to the reference ticket only.
-            // Correction 3 (pilotage) + intérimaire implémentation (per-US analysis is a future US).
+            // Pilotage actors publish to the reference ticket only (correction 3).
             var publishKeys = role.PublishesToReferenceTicketOnly() ? new[] { pilotageKey } : issueKeys;
             var currentKey = publishKeys[0];
 
@@ -638,6 +652,115 @@ async Task RunSingleActorAsync(
     }
 
     await SprintStateManager.SaveAsync(stateFile, state);
+}
+
+// ─── Phase implémentation : tour de rôle per-US + relève sur quota (lot 5) ─────
+async Task RunImplementationPhaseAsync(
+    IReadOnlyList<SprintLauncher.Jira.JiraIssue> issues,
+    string artifactsDir,
+    SprintState state,
+    string stateFile,
+    PromptBuilder builder,
+    ActorRunner runner,
+    JiraCommentPublisher publisher,
+    CancellationToken ct)
+{
+    Console.WriteLine("  [implémentation per-US — tour de rôle ccode/codex, relève sur quota]");
+
+    foreach (var issue in issues)
+    {
+        if (ct.IsCancellationRequested) break;
+
+        if (state.CompletedUsImplementations.Contains(issue.Key))
+        {
+            Console.WriteLine($"  ○ {issue.Key,-28} [déjà implémentée — ignorée]");
+            continue;
+        }
+
+        var engineName = ImplementationRotation.PickEngine(state.LastImplementer, state.QuotaExhaustedEngines);
+        if (engineName is null)
+        {
+            Console.WriteLine("  ⚠ Les deux moteurs sont à quota épuisé — US restantes en attente. Reprendre avec --resume après reset du quota.");
+            break;
+        }
+
+        var engine = Enum.Parse<ActorRole>(engineName);
+        Console.WriteLine($"  ▶ {issue.Key} → {engine}");
+        EventEmitter.Emit("implementation-us", new { key = issue.Key, engine = engine.ToString(), relief = false });
+
+        var prompt = builder.Build(engine, [issue], issue.Key, mode: sessionMode, frameworks: frameworks, memory: agentMemory);
+        var result = await RunDialogueTurnAsync(engine, prompt, artifactsDir, runner, ct);
+
+        // ── Relève : quota épuisé → l'autre moteur reprend avec le handoff ────
+        if (result.IsQuotaExhausted)
+        {
+            state.QuotaExhaustedEngines.Add(engine.ToString());
+            await SprintStateManager.SaveAsync(stateFile, state);
+            Console.WriteLine($"  ⚠ {engine} à quota épuisé — relève par l'autre moteur...");
+            EventEmitter.Emit("quota", new { engine = engine.ToString(), key = issue.Key });
+
+            var reliefName = ImplementationRotation.PickRelief(engine.ToString(), state.QuotaExhaustedEngines);
+            if (reliefName is null)
+            {
+                Console.WriteLine("  ⚠ Aucun moteur de relève disponible — arrêt de la phase implémentation.");
+                break;
+            }
+
+            var relief = Enum.Parse<ActorRole>(reliefName);
+            var reliefBase = builder.Build(relief, [issue], issue.Key, mode: sessionMode, frameworks: frameworks, memory: agentMemory);
+            var handoffPrompt = BuildHandoffPrompt(reliefBase, engine, result.Output);
+
+            Console.WriteLine($"  ▶ {issue.Key} → relève par {relief}");
+            EventEmitter.Emit("implementation-us", new { key = issue.Key, engine = relief.ToString(), relief = true });
+            result = await RunDialogueTurnAsync(relief, handoffPrompt, artifactsDir, runner, ct);
+
+            if (result.IsQuotaExhausted)
+            {
+                state.QuotaExhaustedEngines.Add(relief.ToString());
+                await SprintStateManager.SaveAsync(stateFile, state);
+                Console.WriteLine("  ⚠ Moteur de relève également à quota épuisé — arrêt de la phase.");
+                EventEmitter.Emit("quota", new { engine = relief.ToString(), key = issue.Key });
+                break;
+            }
+            engine = relief;
+        }
+
+        if (result.Success)
+        {
+            // Trace per-US en plus du fichier par rôle (écrasé à chaque US)
+            await File.WriteAllTextAsync(Path.Combine(artifactsDir, $"output-{engine}-{issue.Key}.txt"), result.Output);
+            var pub = await publisher.PublishAsync(issue.Key, result, ct);
+            PrintPublishResult(issue.Key, engine, pub);
+
+            state.LastImplementer = engine.ToString();
+            state.CompletedUsImplementations.Add(issue.Key);
+            await SprintStateManager.SaveAsync(stateFile, state);
+        }
+        else if (ct.IsCancellationRequested)
+        {
+            break;
+        }
+        else
+        {
+            Console.WriteLine($"  ✗ {issue.Key} — échec {engine} (non-quota). US suivante ; --resume rejouera celle-ci.");
+        }
+    }
+}
+
+// Le handoff donne au moteur de relève l'état réel : travail partiel + consigne
+// de vérifier le dépôt avant d'agir — il ne repart pas de zéro.
+static ActorPrompt BuildHandoffPrompt(ActorPrompt basePrompt, ActorRole failedEngine, string partialOutput)
+{
+    var handoffSection =
+        "\n\n## RELÈVE — contexte de handoff\n" +
+        $"Le moteur précédent ({failedEngine}) a été interrompu par un épuisement de quota sur cette US. " +
+        "Vérifie l'état réel du dépôt (git status / git diff) avant d'agir : une partie du travail est peut-être déjà commitée ou en cours. " +
+        "Reprends là où il s'est arrêté — ne repars pas de zéro et ne défais pas son travail.\n" +
+        (string.IsNullOrWhiteSpace(partialOutput)
+            ? "Aucune sortie partielle disponible du moteur précédent."
+            : $"### Sortie partielle du moteur précédent\n{partialOutput}");
+
+    return basePrompt with { UserPrompt = basePrompt.UserPrompt + handoffSection };
 }
 
 // ─── Collective group : discussion multi-tours → 1 commentaire Jira (SERZENIA-143)

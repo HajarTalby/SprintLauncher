@@ -370,6 +370,24 @@ public partial class MainWindow : Window
                     break;
                 }
 
+                case "implementation-us":
+                {
+                    var key = data.GetProperty("key").GetString();
+                    var engine = data.GetProperty("engine").GetString();
+                    var relief = data.TryGetProperty("relief", out var rl) && rl.GetBoolean();
+                    AppendLog(relief ? $"US {key} -> RELEVE par {engine}" : $"US {key} -> {engine}");
+                    break;
+                }
+
+                case "quota":
+                {
+                    var engine = data.GetProperty("engine").GetString() ?? "";
+                    TxtStatus.Text = $"⚠ Quota épuisé : {engine} — relève en cours";
+                    AppendLog($"!! QUOTA epuise : {engine} — l'autre moteur prend la releve.");
+                    SetStatus(engine, "failed");
+                    break;
+                }
+
                 case "litige":
                 {
                     var detail = data.TryGetProperty("detail", out var d) ? d.GetString() : "";

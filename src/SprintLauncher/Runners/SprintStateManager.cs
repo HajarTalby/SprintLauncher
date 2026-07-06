@@ -18,6 +18,11 @@ public sealed class SprintState
     // Litige signalé par la session d'analyse ([LITIGE: ...]) — conditionne la convocation
     // du comité d'arbitrage, y compris après --resume.
     public bool LitigeDetected { get; set; }
+    // Ordonnanceur d'implémentation (SERZENIA-143 lot 5) : dernier moteur utilisé
+    // (alternance), moteurs à quota épuisé, US déjà implémentées (reprise per-US).
+    public string? LastImplementer { get; set; }
+    public HashSet<string> QuotaExhaustedEngines { get; set; } = [];
+    public HashSet<string> CompletedUsImplementations { get; set; } = [];
     public DateTimeOffset? LastCompletedAt { get; set; }
 }
 
