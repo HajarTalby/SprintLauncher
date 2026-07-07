@@ -101,11 +101,11 @@ public class DialogueEngineTests : IDisposable
             TranscriptBase);
 
         var injected = Assert.Single(outcome.Turns.Where(t => t.IsIntervention));
-        Assert.Equal("Hajar (approver)", injected.Speaker);
+        Assert.Equal("Hajar", injected.Speaker); // prénom seul, jamais de titre
         Assert.Equal("Laissez tomber l'option B.", injected.Content);
         Assert.True(nextPromptSawIntervention);
-        // Le formatage prompt marque l'autorité de l'intervention
-        Assert.Contains("AUTORITÉ", DialogueEngine.FormatForPrompt(outcome.Turns));
+        // Le formatage prompt marque l'autorité de l'intervention sans titre accolé
+        Assert.Contains("Intervention de Hajar — directive à respecter", DialogueEngine.FormatForPrompt(outcome.Turns));
     }
 
     [Fact]

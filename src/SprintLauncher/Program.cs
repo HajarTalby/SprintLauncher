@@ -681,7 +681,12 @@ async Task RunImplementationPhaseAsync(
             continue;
         }
 
-        var engineName = ImplementationRotation.PickEngine(state.LastImplementer, state.QuotaExhaustedEngines);
+        // Spécialisation front/backend : les US UI et les US backend partent chacune
+        // vers leur moteur attitré — pas de chevauchement de code sur le sprint.
+        var usType = UsTypeClassifier.Classify(issue.Summary, issue.Description);
+        var engineName = ImplementationRotation.PickEngineForUs(
+            usType, state.LastImplementer, state.QuotaExhaustedEngines,
+            config.EngineFront, config.EngineBack);
         if (engineName is null)
         {
             Console.WriteLine("  ⚠ Les deux moteurs sont à quota épuisé — US restantes en attente. Reprendre avec --resume après reset du quota.");
@@ -689,8 +694,9 @@ async Task RunImplementationPhaseAsync(
         }
 
         var engine = Enum.Parse<ActorRole>(engineName);
-        Console.WriteLine($"  ▶ {issue.Key} → {engine}");
-        EventEmitter.Emit("implementation-us", new { key = issue.Key, engine = engine.ToString(), relief = false });
+        var typeLabel = usType switch { UsType.Front => " [front]", UsType.Backend => " [backend]", _ => "" };
+        Console.WriteLine($"  ▶ {issue.Key}{typeLabel} → {engine}");
+        EventEmitter.Emit("implementation-us", new { key = issue.Key, engine = engine.ToString(), relief = false, usType = usType.ToString() });
 
         var prompt = builder.Build(engine, [issue], issue.Key, mode: sessionMode, frameworks: frameworks, memory: agentMemory);
         var result = await RunDialogueTurnAsync(engine, prompt, artifactsDir, runner, ct);
@@ -857,7 +863,7 @@ async Task RunDialogueGroupAsync(
             Console.WriteLine("  ! Synthèse d'analyse sans sections '## ANALYSE <KEY>' — publication sur le ticket pilotage uniquement.");
     }
 
-    var combined = BuildDialogueComment(group, outcome, config.MaxDialogueRounds, transcriptBase);
+    var combined = BuildDialogueComment(group, outcome, config.MaxDialogueRounds, transcriptBase, config.ApproverName);
     var collectiveFile = Path.Combine(artifactsDir, $"output-{group}-collective.txt");
     await File.WriteAllTextAsync(collectiveFile, combined);
 
@@ -974,7 +980,7 @@ Task<DialogueIntervention> RequestInterventionAsync(ActorGroup group, int round)
     if (intervention.Kind == InterventionKind.Message)
     {
         Console.WriteLine($"  ⚑ Intervention de {config.ApproverName} injectée dans la discussion.");
-        EventEmitter.Emit("turn", new { group = group.ToString(), speaker = $"{config.ApproverName} (approver)", round, isIntervention = true, content = intervention.Text });
+        EventEmitter.Emit("turn", new { group = group.ToString(), speaker = config.ApproverName, round, isIntervention = true, content = intervention.Text });
     }
     if (intervention.Kind == InterventionKind.Stop)
         Console.WriteLine("  Arrêt demandé. Utilisez --resume pour reprendre la discussion.");
@@ -983,7 +989,7 @@ Task<DialogueIntervention> RequestInterventionAsync(ActorGroup group, int round)
 }
 
 // ─── Commentaire Jira de la discussion : synthèse + traçabilité ───────────────
-static string BuildDialogueComment(ActorGroup group, DialogueOutcome outcome, int maxRounds, string transcriptBase)
+static string BuildDialogueComment(ActorGroup group, DialogueOutcome outcome, int maxRounds, string transcriptBase, string approverName)
 {
     var label = group switch
     {
@@ -1001,7 +1007,7 @@ static string BuildDialogueComment(ActorGroup group, DialogueOutcome outcome, in
     sb.AppendLine($"## Délibération collective — {label}");
     sb.AppendLine();
     sb.Append($"Discussion multi-tours : {actorTurns.Count} prise(s) de parole sur {rounds} round(s) (max {maxRounds})");
-    sb.AppendLine(interventions > 0 ? $", {interventions} intervention(s) de l'approbatrice." : ".");
+    sb.AppendLine(interventions > 0 ? $", {interventions} intervention(s) de {approverName}." : ".");
     sb.AppendLine(outcome.EndReason == DialogueEndReason.Converged
         ? "Convergence explicite atteinte."
         : "Synthèse finale produite au plafond de tours (sans marqueur de convergence).");

@@ -78,3 +78,55 @@ public class ImplementationRotationTests
         Assert.Null(ImplementationRotation.PickRelief("ClaudeImplementation", exhausted));
     }
 }
+
+public class UsTypeSpecializationTests
+{
+    private const string Front = "GptImplementation";
+    private const string Back = "ClaudeImplementation";
+    private static HashSet<string> None => [];
+
+    [Fact]
+    public void Ui_us_is_classified_front()
+    {
+        var type = UsTypeClassifier.Classify(
+            "Écran de connexion", "## Objectif\nCréer la page de login avec formulaire et navigation.");
+        Assert.Equal(UsType.Front, type);
+    }
+
+    [Fact]
+    public void Api_us_is_classified_backend()
+    {
+        var type = UsTypeClassifier.Classify(
+            "Service d'authentification", "## Objectif\nExposer un endpoint API avec persistance Firebase.");
+        Assert.Equal(UsType.Backend, type);
+    }
+
+    [Fact]
+    public void Neutral_us_is_unknown()
+    {
+        Assert.Equal(UsType.Unknown, UsTypeClassifier.Classify(
+            "Documentation du projet", "## Objectif\nMettre à jour le runbook."));
+    }
+
+    [Fact]
+    public void Front_us_goes_to_front_engine_and_backend_to_back_engine()
+    {
+        Assert.Equal(Front, ImplementationRotation.PickEngineForUs(UsType.Front, null, None, Front, Back));
+        Assert.Equal(Back, ImplementationRotation.PickEngineForUs(UsType.Backend, null, None, Front, Back));
+    }
+
+    [Fact]
+    public void Unknown_us_falls_back_to_alternation()
+    {
+        Assert.Equal(Back, ImplementationRotation.PickEngineForUs(UsType.Unknown, Front, None, Front, Back));
+        Assert.Equal(Front, ImplementationRotation.PickEngineForUs(UsType.Unknown, Back, None, Front, Back));
+    }
+
+    [Fact]
+    public void Exhausted_specialist_is_relieved_by_other_engine()
+    {
+        var exhausted = new HashSet<string> { Front };
+        // US front mais moteur front à quota épuisé → le back prend la relève (avancer prime)
+        Assert.Equal(Back, ImplementationRotation.PickEngineForUs(UsType.Front, null, exhausted, Front, Back));
+    }
+}

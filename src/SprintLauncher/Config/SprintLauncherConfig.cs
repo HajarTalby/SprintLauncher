@@ -10,6 +10,10 @@ public sealed class SprintLauncherConfig
     public int ActorTimeoutSeconds { get; init; } = 600;
     // Nombre maximum d'allers-retours d'une discussion multi-tours (SERZENIA-143).
     public int MaxDialogueRounds { get; init; } = 3;
+    // Spécialisation front/backend des moteurs d'implémentation — les US UI vont
+    // au moteur front, les US backend au moteur back : pas de chevauchement de code.
+    public string EngineFront { get; init; } = "GptImplementation";
+    public string EngineBack { get; init; } = "ClaudeImplementation";
     public string ProjectName { get; init; } = "SERZENIA";
     public string ApproverName { get; init; } = "Hajar";
     public string[] FrameworkKeys { get; init; } = ["SERZENIA-70", "SERZENIA-89", "SERZENIA-91"];
@@ -34,6 +38,8 @@ public sealed class SprintLauncherConfig
             CodexModel = Environment.GetEnvironmentVariable("CODEX_MODEL") ?? "gpt-5.5",
             ActorTimeoutSeconds = ReadPositiveInt("ACTOR_TIMEOUT_SECONDS", 600),
             MaxDialogueRounds = ReadPositiveInt("MAX_DIALOGUE_ROUNDS", 3),
+            EngineFront = Environment.GetEnvironmentVariable("ENGINE_FRONT") ?? "GptImplementation",
+            EngineBack = Environment.GetEnvironmentVariable("ENGINE_BACK") ?? "ClaudeImplementation",
             ProjectName = Environment.GetEnvironmentVariable("PROJECT_NAME") ?? "SERZENIA",
             ApproverName = Environment.GetEnvironmentVariable("APPROVER_NAME") ?? "Hajar",
             FrameworkKeys = (Environment.GetEnvironmentVariable("FRAMEWORK_KEYS") ?? "SERZENIA-70,SERZENIA-89,SERZENIA-91")

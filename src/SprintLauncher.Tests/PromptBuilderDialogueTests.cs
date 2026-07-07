@@ -31,7 +31,7 @@ public class PromptBuilderDialogueTests
         var transcript = new List<DialogueTurn>
         {
             new("CommitteePilotageClaudeChat", "Je propose l'option A.", DateTimeOffset.UtcNow, 1, false),
-            new("Hajar (approver)", "Écartez l'option B.", DateTimeOffset.UtcNow, 1, true),
+            new("Hajar", "Écartez l'option B.", DateTimeOffset.UtcNow, 1, true),
         };
 
         var prompt = _builder.BuildDialogueTurn(
@@ -41,7 +41,8 @@ public class PromptBuilderDialogueTests
         Assert.Contains("## Discussion en cours", prompt.UserPrompt);
         Assert.Contains("Je propose l'option A.", prompt.UserPrompt);
         Assert.Contains("Écartez l'option B.", prompt.UserPrompt);
-        Assert.Contains("AUTORITÉ", prompt.UserPrompt);
+        Assert.Contains("Intervention de Hajar — directive à respecter", prompt.UserPrompt);
+        Assert.Contains("jamais de titre", prompt.SystemPrompt); // consigne anti-qualificatifs
         Assert.Contains("round 2/3", prompt.UserPrompt);
     }
 

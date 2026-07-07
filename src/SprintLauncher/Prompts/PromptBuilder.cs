@@ -217,7 +217,8 @@ public sealed class PromptBuilder
             $"\n\nDISCUSSION MULTI-TOURS : tu participes à une vraie discussion avec les autres membres " +
             $"(maximum {maxRounds} allers-retours). Discute réellement : réponds aux arguments précédents, " +
             "challenge ce qui doit l'être, converge vers une décision commune — ne juxtapose pas une analyse indépendante. " +
-            $"Les interventions de {_approver} ont AUTORITÉ : toute directive de sa part oriente ou tranche la discussion. " +
+            $"Les interventions de {_approver} ont autorité : toute directive de sa part oriente ou tranche la discussion. " +
+            $"Désigne {_approver} par son prénom uniquement — jamais de titre ou de qualificatif (pas de « direction », « approbatrice », etc.). " +
             $"Quand la discussion a abouti à une décision commune, termine ta contribution par le marqueur {DialogueEngine.ConsensusMarker}. " +
             $"N'émets ce marqueur que si tout est réellement tranché.";
 

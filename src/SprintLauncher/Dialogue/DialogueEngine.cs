@@ -67,7 +67,8 @@ public sealed class DialogueEngine
     public DialogueEngine(int maxRounds, string approverName)
     {
         _maxRounds = maxRounds > 0 ? maxRounds : 3;
-        _approverLabel = $"{approverName} (approver)";
+        // Le nom seul, sans titre ni qualificatif (demande explicite de Hajar).
+        _approverLabel = approverName;
     }
 
     public static bool HasConvergenceMarker(string content) =>
@@ -217,7 +218,7 @@ public sealed class DialogueEngine
         foreach (var t in turns)
         {
             sb.AppendLine(t.IsIntervention
-                ? $"### INTERVENTION DE {t.Speaker.ToUpperInvariant()} (AUTORITÉ — à respecter)"
+                ? $"### Intervention de {t.Speaker} — directive à respecter, elle tranche la discussion"
                 : $"### {t.Speaker} (round {t.Round})");
             sb.AppendLine(t.Content);
             sb.AppendLine();
