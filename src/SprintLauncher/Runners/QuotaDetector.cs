@@ -19,6 +19,23 @@ public static class QuotaDetector
         (output is not null && Patterns.IsMatch(output));
 }
 
+/// <summary>
+/// Détecte une sortie d'implémentation qui s'est arrêtée à une demande de GO
+/// (SERZENIA-143 lot 7) : en headless personne ne peut répondre — l'US ne doit
+/// PAS être marquée implémentée sur une simple déclaration d'accès.
+/// </summary>
+public static class ImplementationOutputGuard
+{
+    private static readonly Regex AwaitingGo = new(
+        @"sans go explicite|attends?\s+(le|un|ton)\s+go|r[ée]pond(re|ez)\s+.{0,40}\bGO\b|" +
+        @"pour autoriser l'ex[ée]cution|en attente (de|du|d'un) go|awaiting (your )?go|" +
+        @"je ne (lis|lance|modifie) .{0,60}sans (go|validation)",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    public static bool IsAwaitingGo(string output) =>
+        !string.IsNullOrWhiteSpace(output) && AwaitingGo.IsMatch(output);
+}
+
 /// <summary>Type d'une US pour la répartition front/backend entre moteurs.</summary>
 public enum UsType { Unknown, Front, Backend }
 

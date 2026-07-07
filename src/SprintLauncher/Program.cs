@@ -735,12 +735,25 @@ async Task RunImplementationPhaseAsync(
             engine = relief;
         }
 
+        // Une déclaration d'attente de GO n'est PAS une implémentation (lot 7) :
+        // en headless personne ne répond — l'US n'est pas marquée complétée.
+        if (result.Success && ImplementationOutputGuard.IsAwaitingGo(result.Output))
+        {
+            Console.WriteLine($"  ! {issue.Key} — {engine} s'est arrêté à une demande de GO : US NON implémentée (rejouée au prochain --resume).");
+            EventEmitter.Emit("implementation-blocked", new { key = issue.Key, engine = engine.ToString() });
+            continue;
+        }
+
         if (result.Success)
         {
             // Trace per-US en plus du fichier par rôle (écrasé à chaque US)
             await File.WriteAllTextAsync(Path.Combine(artifactsDir, $"output-{engine}-{issue.Key}.txt"), result.Output);
             var pub = await publisher.PublishAsync(issue.Key, result, ct);
             PrintPublishResult(issue.Key, engine, pub);
+
+            // Revue croisée : l'autre moteur relit, l'implémenteur corrige (lot 7)
+            if (config.CrossReviewEnabled && !ct.IsCancellationRequested)
+                await RunCrossReviewAsync(issue, engine, result.Output, artifactsDir, state, stateFile, builder, runner, publisher, ct);
 
             state.LastImplementer = engine.ToString();
             state.CompletedUsImplementations.Add(issue.Key);
@@ -755,6 +768,92 @@ async Task RunImplementationPhaseAsync(
             Console.WriteLine($"  ✗ {issue.Key} — échec {engine} (non-quota). US suivante ; --resume rejouera celle-ci.");
         }
     }
+}
+
+// ─── Revue croisée post-dev (lot 7) : observations par l'autre moteur, ─────────
+// correctifs chez l'implémenteur, intervention de Hajar possible entre les deux.
+async Task RunCrossReviewAsync(
+    SprintLauncher.Jira.JiraIssue issue,
+    ActorRole implementer,
+    string implementationOutput,
+    string artifactsDir,
+    SprintState state,
+    string stateFile,
+    PromptBuilder builder,
+    ActorRunner runner,
+    JiraCommentPublisher publisher,
+    CancellationToken ct)
+{
+    var reviewerName = ImplementationRotation.PickRelief(implementer.ToString(), state.QuotaExhaustedEngines);
+    if (reviewerName is null)
+    {
+        Console.WriteLine($"  ○ {issue.Key} — revue croisée sautée (réviseur à quota épuisé).");
+        return;
+    }
+
+    var reviewer = Enum.Parse<ActorRole>(reviewerName);
+    Console.WriteLine($"  ⟲ {issue.Key} — revue croisée : {reviewer} relit {implementer}");
+
+    var reviewPrompt = builder.BuildCrossReview(reviewer, issue, implementer, implementationOutput);
+    var review = await RunDialogueTurnAsync(reviewer, reviewPrompt, artifactsDir, runner, ct);
+    if (!review.Success)
+    {
+        if (review.IsQuotaExhausted)
+        {
+            state.QuotaExhaustedEngines.Add(reviewer.ToString());
+            await SprintStateManager.SaveAsync(stateFile, state);
+        }
+        Console.WriteLine($"  ○ {issue.Key} — revue croisée abandonnée (échec {reviewer}), l'implémentation reste valide.");
+        return;
+    }
+
+    await File.WriteAllTextAsync(Path.Combine(artifactsDir, $"output-Review-{issue.Key}.txt"), review.Output);
+    EventEmitter.Emit("turn", new { group = $"RevueCroisee-{issue.Key}", speaker = reviewer.ToString(), round = 1, isIntervention = false, content = review.Output.Trim() });
+
+    // Checkpoint : Hajar peut orienter les correctifs (ou les sauter)
+    string? directive = null;
+    if (interactive)
+    {
+        EventEmitter.Emit("checkpoint", new { kind = "review", group = $"RevueCroisee-{issue.Key}", round = 1 });
+        Console.Write($"  Revue {issue.Key} reçue — [Entrée=appliquer les correctifs / texte=directive / n=passer] > ");
+        var answer = Console.ReadLine()?.Trim();
+        if (answer?.ToLowerInvariant() is "n" or "non" or "no")
+        {
+            Console.WriteLine("  Correctifs sautés sur décision de Hajar — revue publiée telle quelle.");
+            var reviewOnly = $"## Revue croisée {issue.Key}\n\n### Observations ({reviewer})\n\n{review.Output.Trim()}\n\n_Correctifs non appliqués (décision de Hajar)._";
+            var pubR = await publisher.PublishAsync(issue.Key, new ActorRunResult(implementer, true, reviewOnly, null, 0, false), ct);
+            PrintPublishResult(issue.Key, implementer, pubR);
+            return;
+        }
+        if (!string.IsNullOrEmpty(answer)) directive = answer;
+    }
+
+    var corrPrompt = builder.BuildReviewCorrections(implementer, issue, review.Output, directive);
+    var corrections = await RunDialogueTurnAsync(implementer, corrPrompt, artifactsDir, runner, ct);
+
+    var body = new StringBuilder();
+    body.AppendLine($"## Revue croisée {issue.Key}");
+    body.AppendLine();
+    body.AppendLine($"### Observations ({reviewer})");
+    body.AppendLine();
+    body.AppendLine(review.Output.Trim());
+    if (corrections.Success)
+    {
+        await File.WriteAllTextAsync(Path.Combine(artifactsDir, $"output-{implementer}-{issue.Key}-corrections.txt"), corrections.Output);
+        EventEmitter.Emit("turn", new { group = $"RevueCroisee-{issue.Key}", speaker = implementer.ToString(), round = 2, isIntervention = false, content = corrections.Output.Trim() });
+        body.AppendLine();
+        body.AppendLine($"### Correctifs ({implementer})");
+        body.AppendLine();
+        body.AppendLine(corrections.Output.Trim());
+    }
+    else
+    {
+        body.AppendLine();
+        body.AppendLine($"_Correctifs non appliqués (échec {implementer}) — à rejouer via --resume._");
+    }
+
+    var pub = await publisher.PublishAsync(issue.Key, new ActorRunResult(implementer, true, body.ToString(), null, 0, false), ct);
+    PrintPublishResult(issue.Key, implementer, pub);
 }
 
 // Le handoff donne au moteur de relève l'état réel : travail partiel + consigne
@@ -824,6 +923,11 @@ async Task RunDialogueGroupAsync(
         requestIntervention: interactive ? round => RequestInterventionAsync(group, round) : null,
         transcriptBasePath: transcriptBase,
         resumedTurns: resumedTurns,
+        // Garde de complétude : l'analyse ne peut pas conclure tant que chaque US
+        // n'a pas sa section '## ANALYSE <KEY>' (tour de rattrapage sinon).
+        validateConclusion: group == ActorGroup.Analysis
+            ? text => AnalysisSections.ValidateCoverage(text, issues.Select(i => i.Key).ToList())
+            : null,
         ct: ct);
 
     if (outcome.EndReason == DialogueEndReason.Stopped)

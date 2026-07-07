@@ -14,6 +14,9 @@ public sealed class SprintLauncherConfig
     // au moteur front, les US backend au moteur back : pas de chevauchement de code.
     public string EngineFront { get; init; } = "GptImplementation";
     public string EngineBack { get; init; } = "ClaudeImplementation";
+    // Revue croisée post-dev : l'autre moteur relit chaque US implémentée
+    // (observations), les correctifs restent chez l'implémenteur. CROSS_REVIEW=false pour couper.
+    public bool CrossReviewEnabled { get; init; } = true;
     public string ProjectName { get; init; } = "SERZENIA";
     public string ApproverName { get; init; } = "Hajar";
     public string[] FrameworkKeys { get; init; } = ["SERZENIA-70", "SERZENIA-89", "SERZENIA-91"];
@@ -40,6 +43,7 @@ public sealed class SprintLauncherConfig
             MaxDialogueRounds = ReadPositiveInt("MAX_DIALOGUE_ROUNDS", 3),
             EngineFront = Environment.GetEnvironmentVariable("ENGINE_FRONT") ?? "GptImplementation",
             EngineBack = Environment.GetEnvironmentVariable("ENGINE_BACK") ?? "ClaudeImplementation",
+            CrossReviewEnabled = !string.Equals(Environment.GetEnvironmentVariable("CROSS_REVIEW"), "false", StringComparison.OrdinalIgnoreCase),
             ProjectName = Environment.GetEnvironmentVariable("PROJECT_NAME") ?? "SERZENIA",
             ApproverName = Environment.GetEnvironmentVariable("APPROVER_NAME") ?? "Hajar",
             FrameworkKeys = (Environment.GetEnvironmentVariable("FRAMEWORK_KEYS") ?? "SERZENIA-70,SERZENIA-89,SERZENIA-91")

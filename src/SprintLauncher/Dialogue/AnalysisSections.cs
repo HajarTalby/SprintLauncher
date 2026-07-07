@@ -22,6 +22,20 @@ public static class AnalysisSections
             : "litige non détaillé";
     }
 
+    /// <summary>
+    /// Garde de couverture (SERZENIA-143 lot 7) : la conclusion d'une session d'analyse
+    /// n'est acceptable que si CHAQUE US du scope a sa section '## ANALYSE &lt;KEY&gt;'.
+    /// Retourne null si complet, sinon le message de refus listant les US manquantes.
+    /// </summary>
+    public static string? ValidateCoverage(string text, IReadOnlyList<string> keys)
+    {
+        var covered = Split(text, keys);
+        var missing = keys.Where(k => !covered.ContainsKey(k)).ToList();
+        return missing.Count == 0
+            ? null
+            : $"la section '## ANALYSE <KEY>' manque pour {missing.Count} US : {string.Join(", ", missing)}.";
+    }
+
     public static Dictionary<string, string> Split(string text, IReadOnlyList<string> keys)
     {
         var sections = new Dictionary<string, string>();

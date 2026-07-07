@@ -80,6 +80,9 @@ public sealed class DialogueEngine
     /// <param name="runTurn">Exécute un tour acteur (subprocess, timer, artefacts) — fourni par l'appelant.</param>
     /// <param name="requestIntervention">Checkpoint entre rounds (null = jamais d'intervention).</param>
     /// <param name="resumedTurns">Transcript rechargé depuis les artefacts pour --resume.</param>
+    /// <param name="validateConclusion">Garde de complétude : reçoit la conclusion proposée, retourne null
+    /// si acceptable, sinon la raison du refus — la discussion continue avec un tour de rattrapage
+    /// (max <paramref name="maxRescueTurns"/>) au lieu de converger sur un résultat incomplet.</param>
     public async Task<DialogueOutcome> RunAsync(
         IReadOnlyList<ActorRole> participants,
         Func<ActorRole, IReadOnlyList<DialogueTurn>, int, bool, ActorPrompt> buildPrompt,
@@ -87,6 +90,8 @@ public sealed class DialogueEngine
         Func<int, Task<DialogueIntervention>>? requestIntervention,
         string transcriptBasePath,
         IReadOnlyList<DialogueTurn>? resumedTurns = null,
+        Func<string, string?>? validateConclusion = null,
+        int maxRescueTurns = 2,
         CancellationToken ct = default)
     {
         if (participants.Count == 0)
@@ -94,10 +99,27 @@ public sealed class DialogueEngine
 
         var turns = new List<DialogueTurn>(resumedTurns ?? []);
         // Un transcript repris peut déjà contenir la convergence (interruption juste avant publication).
-        if (turns.Count > 0 && !turns[^1].IsIntervention && HasConvergenceMarker(turns[^1].Content))
+        if (turns.Count > 0 && !turns[^1].IsIntervention && HasConvergenceMarker(turns[^1].Content)
+            && validateConclusion?.Invoke(turns[^1].Content) is null)
             return new DialogueOutcome(turns, DialogueEndReason.Converged, null);
 
         bool concludeRequested = false;
+        int rescuesUsed = 0;
+
+        // Refuse une conclusion incomplète : injecte la raison comme directive et
+        // prolonge la discussion d'un tour de rattrapage. Budget épuisé → on accepte
+        // avec le signalement dans le transcript (jamais de boucle infinie).
+        async Task<bool> ConclusionRejectedAsync(string content, int round)
+        {
+            var issue = validateConclusion?.Invoke(content);
+            if (issue is null || rescuesUsed >= maxRescueTurns) return false;
+            rescuesUsed++;
+            turns.Add(new DialogueTurn("Sprint Launcher (garde de complétude)",
+                $"Conclusion refusée : {issue} Complète la discussion avant de conclure à nouveau.",
+                DateTimeOffset.UtcNow, round, IsIntervention: true));
+            await PersistAsync(turns, transcriptBasePath, ct);
+            return true;
+        }
 
         while (true)
         {
@@ -142,6 +164,10 @@ public sealed class DialogueEngine
                 turns.Add(new DialogueTurn(synthesist.ToString(), synthResult.Output.Trim(),
                     DateTimeOffset.UtcNow, Math.Min(round, _maxRounds), IsIntervention: false));
                 await PersistAsync(turns, transcriptBasePath, ct);
+
+                if (await ConclusionRejectedAsync(synthResult.Output, Math.Min(round, _maxRounds)))
+                    continue; // nouveau tour de synthèse avec la directive de complétude
+
                 return new DialogueOutcome(turns, DialogueEndReason.ForcedSynthesis, null);
             }
 
@@ -162,7 +188,12 @@ public sealed class DialogueEngine
             await PersistAsync(turns, transcriptBasePath, ct);
 
             if (HasConvergenceMarker(result.Output))
+            {
+                if (await ConclusionRejectedAsync(result.Output, round))
+                    continue; // convergence refusée — la discussion se poursuit
+
                 return new DialogueOutcome(turns, DialogueEndReason.Converged, null);
+            }
         }
     }
 

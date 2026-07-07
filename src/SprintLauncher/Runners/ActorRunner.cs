@@ -113,7 +113,7 @@ public sealed class ActorRunner : IDisposable
         psi.ArgumentList.Add("exec");
         psi.ArgumentList.Add("--model");
         psi.ArgumentList.Add(_codexModel);
-        if (prompt.Role.NeedsReadOnlySandbox())
+        if (prompt.Role.NeedsReadOnlySandbox() || prompt.ForceReadOnly)
         {
             psi.ArgumentList.Add("--sandbox");
             psi.ArgumentList.Add("read-only");

@@ -81,10 +81,10 @@ public sealed class PromptBuilder
             $"Tu es l'agent d'implémentation Claude Code pour le projet {_project} (.NET MAUI, C#). " +
             "Tu implémente les user stories validées par le pilotage, en suivant les conventions du projet " +
             "(séparation Domain/Application/Infrastructure/App, tests xUnit, nullable enable). " +
-            $"{_permKey} — Déclaration groupée des permissions : avant toute exécution, déclare en bloc " +
-            "la liste exhaustive de tes accès (fichiers lus/écrits, commandes shell, APIs appelées, " +
-            "dépôts git modifiés). Cette déclaration doit précéder toute action — elle est soumise à " +
-            $"validation unique par {_approver} plutôt qu'autorisation action par action. " +
+            $"{_permKey} — l'analyse préalable a déjà été réalisée en session d'analyse et le lancement " +
+            $"de ce run par {_approver} vaut GO d'exécution dans le périmètre de cette US. " +
+            "Tu es en mode headless : personne ne peut répondre à une question. N'attends AUCUNE validation " +
+            "supplémentaire — rappelle brièvement le périmètre et tes accès, puis EXÉCUTE : implémente, teste, committe. " +
             $"Tu te signes [agent: claude-code | role: implementation | us: {issueKey}].",
 
         ActorRole.GptPilotage =>
@@ -100,10 +100,10 @@ public sealed class PromptBuilder
             $"Tu es l'agent d'implémentation Codex pour le projet {_project} (.NET MAUI, C#). " +
             "Tu implémente les user stories validées par le pilotage, en suivant les conventions du projet " +
             "(séparation Domain/Application/Infrastructure/App, tests xUnit, nullable enable). " +
-            $"{_permKey} — Déclaration groupée des permissions : avant toute exécution, déclare en bloc " +
-            "la liste exhaustive de tes accès (fichiers lus/écrits, commandes shell, APIs appelées, " +
-            "dépôts git modifiés). Cette déclaration doit précéder toute action — elle est soumise à " +
-            $"validation unique par {_approver} plutôt qu'autorisation action par action. " +
+            $"{_permKey} — l'analyse préalable a déjà été réalisée en session d'analyse et le lancement " +
+            $"de ce run par {_approver} vaut GO d'exécution dans le périmètre de cette US. " +
+            "Tu es en mode headless : personne ne peut répondre à une question. N'attends AUCUNE validation " +
+            "supplémentaire — rappelle brièvement le périmètre et tes accès, puis EXÉCUTE : implémente, teste, committe. " +
             $"Tu te signes [agent: codex | role: implementation | us: {issueKey}].",
 
         ActorRole.AnalysisCcode =>
@@ -293,6 +293,57 @@ public sealed class PromptBuilder
         return new ActorPrompt(role, systemPrompt, sb.ToString());
     }
 
+    /// <summary>
+    /// Revue croisée post-dev (SERZENIA-143 lot 7) : l'autre moteur relit le travail
+    /// de l'implémenteur — observations uniquement, les correctifs restent chez lui.
+    /// </summary>
+    public ActorPrompt BuildCrossReview(
+        ActorRole reviewer, JiraIssue issue, ActorRole implementer, string implementationOutput)
+    {
+        var reviewerTag = reviewer.IsClaudeFamily() ? "claude-code" : "codex";
+        var systemPrompt =
+            $"Tu es le réviseur croisé du projet {_project}. Tu relis le travail d'implémentation " +
+            $"de {implementer} sur l'US {issue.Key}. Tu ne modifies RIEN — OBSERVATIONS uniquement : " +
+            "anomalies, risques, écarts de périmètre, tests manquants, points forts. " +
+            $"Les correctifs restent chez {implementer}. Vérifie l'état réel du dépôt (git diff / git log) si accessible. " +
+            $"Tu te signes [agent: {reviewerTag} | role: revue-croisee | us: {issue.Key}]." + FormatDirective;
+
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine($"Revue croisée de l'implémentation de {issue.Key}.");
+        sb.AppendLine();
+        sb.AppendLine($"## [{issue.Key}] {issue.Summary}");
+        sb.AppendLine(issue.Description);
+        sb.AppendLine();
+        sb.AppendLine($"## Sortie de l'implémenteur ({implementer})");
+        sb.AppendLine(implementationOutput);
+        sb.AppendLine();
+        sb.AppendLine("Produis tes observations de revue croisée.");
+
+        return new ActorPrompt(reviewer, systemPrompt, sb.ToString(), ForceReadOnly: true);
+    }
+
+    /// <summary>Retour de la revue croisée vers l'implémenteur : il applique ou écarte, en justifiant.</summary>
+    public ActorPrompt BuildReviewCorrections(
+        ActorRole implementer, JiraIssue issue, string reviewObservations, string? approverDirective)
+    {
+        var systemPrompt = GetSystemPrompt(implementer, issue.Key);
+
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine($"La revue croisée de ton implémentation de {issue.Key} est arrivée. " +
+            "Applique les correctifs pertinents, justifie brièvement ce que tu écartes, relance les tests.");
+        sb.AppendLine();
+        sb.AppendLine("## Observations du réviseur croisé");
+        sb.AppendLine(reviewObservations);
+        if (!string.IsNullOrWhiteSpace(approverDirective))
+        {
+            sb.AppendLine();
+            sb.AppendLine($"## Directive de {_approver} — à respecter");
+            sb.AppendLine(approverDirective);
+        }
+
+        return new ActorPrompt(implementer, systemPrompt, sb.ToString());
+    }
+
     private static string BuildUserPrompt(ActorRole role, string sprintContext, string? previousContributions, SessionMode mode = SessionMode.Execution, FrameworkContext? frameworks = null, AgentMemoryContext? memory = null)
     {
         var instruction = role switch
@@ -420,4 +471,7 @@ public sealed class PromptBuilder
 public sealed record ActorPrompt(
     ActorRole Role,
     string SystemPrompt,
-    string UserPrompt);
+    string UserPrompt,
+    // Force le sandbox read-only codex même pour un rôle qui écrit d'habitude
+    // (ex. moteur d'implémentation utilisé comme réviseur croisé).
+    bool ForceReadOnly = false);

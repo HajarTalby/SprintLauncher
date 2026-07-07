@@ -328,7 +328,17 @@ public partial class MainWindow : Window
                 case "checkpoint":
                 {
                     var kind = data.GetProperty("kind").GetString();
-                    if (kind == "round")
+                    if (kind == "review")
+                    {
+                        var group = data.GetProperty("group").GetString() ?? "";
+                        TxtCheckpointTitle.Text = $"Revue croisée reçue — {group.Replace("RevueCroisee-", "")}";
+                        TxtCheckpointHint.Text  = "GO = l'implémenteur applique les correctifs · écris une directive pour les orienter · n dans le champ = publier la revue sans correctifs.";
+                        PnlInterventionInput.Visibility = Visibility.Visible;
+                        PnlInteractive.Visibility = Visibility.Visible;
+                        TabMain.SelectedIndex = 2;
+                        TxtIntervention.Focus();
+                    }
+                    else if (kind == "round")
                     {
                         var group = data.GetProperty("group").GetString() ?? "";
                         var round = data.GetProperty("round").GetInt32();
@@ -375,7 +385,15 @@ public partial class MainWindow : Window
                     var key = data.GetProperty("key").GetString();
                     var engine = data.GetProperty("engine").GetString();
                     var relief = data.TryGetProperty("relief", out var rl) && rl.GetBoolean();
+                    TxtStatus.Text = $"Implémentation {key} → {engine}{(relief ? " (relève)" : "")}";
                     AppendLog(relief ? $"US {key} -> RELEVE par {engine}" : $"US {key} -> {engine}");
+                    break;
+                }
+
+                case "implementation-blocked":
+                {
+                    var key = data.GetProperty("key").GetString();
+                    AppendLog($"!! {key} NON implementee — l'acteur attendait un GO (rejouee au prochain --resume).");
                     break;
                 }
 
