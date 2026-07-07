@@ -198,6 +198,9 @@ public partial class MainWindow : Window
             CreateNoWindow = true,
             StandardOutputEncoding = System.Text.Encoding.UTF8,
             StandardErrorEncoding  = System.Text.Encoding.UTF8,
+            // Sans ceci, les accents des interventions de Hajar sont altérés
+            // (écrits en ANSI, lus en UTF-8 par le CLI).
+            StandardInputEncoding  = System.Text.Encoding.UTF8,
         };
 
         if (isRelease)

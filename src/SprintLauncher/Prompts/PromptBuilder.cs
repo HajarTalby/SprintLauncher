@@ -222,15 +222,20 @@ public sealed class PromptBuilder
             $"Quand la discussion a abouti à une décision commune, termine ta contribution par le marqueur {DialogueEngine.ConsensusMarker}. " +
             $"N'émets ce marqueur que si tout est réellement tranché.";
 
-        // Analyse : la synthèse doit être découpée par US pour publication sur chaque ticket
-        // (SERZENIA-139), avec signalement de litige structuré pour convoquer l'arbitrage.
+        // Analyse : couverture INTÉGRALE exigée dès le premier tour (retour smoke sprint 6 :
+        // les acteurs déclaraient l'analyse « terminée » après la première US). La garde de
+        // complétude reste le filet de sécurité, pas le mécanisme principal.
         if (role.GetGroup() == ActorGroup.Analysis)
         {
+            var keyList = string.Join(", ", issues.Select(i => i.Key));
             dialogueDirective +=
-                "\n\nSTRUCTURE DE SYNTHÈSE OBLIGATOIRE : quand la discussion se conclut " +
-                "(consensus ou synthèse finale), structure la conclusion avec UNE section " +
-                "'## ANALYSE <CLE-TICKET>' par ticket du scope (analyse spécifique de ce ticket), " +
-                "suivie d'une section '## SYNTHESE SPRINT' (vision transverse). " +
+                $"\n\nCOUVERTURE OBLIGATOIRE — {issues.Count} US à analyser : {keyList}. " +
+                "CHACUNE de tes contributions doit traiter TOUTES ces US (même brièvement), " +
+                "pas seulement la première. Ne déclare JAMAIS l'analyse terminée et n'émets " +
+                "JAMAIS le marqueur de consensus tant qu'une seule US n'est pas couverte. " +
+                "STRUCTURE DE SYNTHÈSE OBLIGATOIRE à la conclusion : UNE section " +
+                "'## ANALYSE <CLE-TICKET>' par US listée ci-dessus, suivie d'une section " +
+                "'## SYNTHESE SPRINT' (vision transverse). " +
                 "En cas de désaccord non résolu entre membres, ajoute un marqueur [LITIGE: <sujet>] " +
                 "dans la synthèse — il déclenche la convocation du comité d'arbitrage.";
         }

@@ -62,6 +62,10 @@ public sealed class ActorRunner : IDisposable
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             CreateNoWindow = true,
+            // Les prompts sont en français : UTF-8 explicite sur les trois flux.
+            StandardInputEncoding = Encoding.UTF8,
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8,
         };
         psi.ArgumentList.Add("-p");
         psi.ArgumentList.Add("--model");
@@ -109,6 +113,9 @@ public sealed class ActorRunner : IDisposable
             RedirectStandardError = true,
             CreateNoWindow = true,
             WorkingDirectory = _repoRoot ?? Directory.GetCurrentDirectory(),
+            StandardInputEncoding = Encoding.UTF8,
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8,
         };
         psi.ArgumentList.Add("exec");
         psi.ArgumentList.Add("--model");
