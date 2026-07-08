@@ -159,6 +159,32 @@ public sealed class JiraCommentPublisher
         return await PostCommentAsync(issueKey, signed, ct);
     }
 
+    /// <summary>
+    /// Publie une décision de l'approbatrice saisie à un checkpoint (SERZENIA-143) :
+    /// c'est l'OUTIL qui trace les décisions sur Jira, pas une session externe.
+    /// </summary>
+    public async Task<PublishResult> PublishDecisionAsync(
+        string issueKey, string approverName, string decisionText, CancellationToken ct = default)
+    {
+        var body = decisionText.Trim();
+        if (body.Length < 10)
+            return PublishResult.Skipped("Décision trop courte pour être publiée.");
+
+        var signed = $"## Décision de {approverName} (checkpoint sprint launcher)\n\n{body}\n\n[decision: {approverName} | us: {issueKey}]";
+
+        if (_dryRun)
+        {
+            Console.WriteLine($"[DRY-RUN] Would post decision to {issueKey}:");
+            Console.WriteLine(signed);
+            return PublishResult.DryRun(signed);
+        }
+
+        if (await CommentAlreadyExistsAsync(issueKey, signed, ct))
+            return PublishResult.Skipped("Décision identique déjà publiée.");
+
+        return await PostCommentAsync(issueKey, signed, ct);
+    }
+
     private static string AppendSignature(string body, ActorRole role, string issueKey)
     {
         var tag = role.ToSignatureTag();

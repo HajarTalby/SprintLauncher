@@ -562,6 +562,9 @@ foreach (var group in sessionMode.GetGroupOrder())
                 pendingApproverDirective = answer;
                 Console.WriteLine($"  ⚑ Directive de {config.ApproverName} enregistrée — elle s'applique au groupe suivant.");
                 EventEmitter.Emit("turn", new { group = nextGroup.ToString(), speaker = config.ApproverName, round = 0, isIntervention = true, content = answer });
+                // La décision est tracée sur Jira PAR L'OUTIL (ticket pilotage)
+                var decisionPub = await publisher.PublishDecisionAsync(pilotageKey, config.ApproverName, answer, shutdownCts.Token);
+                Console.WriteLine($"  {(decisionPub.Status == PublishStatus.Posted ? "✓" : "~")} [{pilotageKey}] décision {decisionPub.Status}");
             }
         }
     }
@@ -1297,6 +1300,18 @@ static string BuildDialogueComment(ActorGroup group, DialogueOutcome outcome, in
         : "Synthèse finale produite au plafond de tours (sans marqueur de convergence).");
     sb.AppendLine();
     sb.AppendLine($"Participants : {string.Join(", ", actorTurns.Select(t => t.Speaker).Distinct())}");
+
+    // Les interventions de l'approbatrice font partie de la traçabilité publiée
+    var interventionTurns = outcome.Turns.Where(t => t.IsIntervention && t.Speaker == approverName).ToList();
+    if (interventionTurns.Count > 0)
+    {
+        sb.AppendLine();
+        sb.AppendLine($"### Interventions de {approverName}");
+        sb.AppendLine();
+        foreach (var iv in interventionTurns)
+            sb.AppendLine($"- (round {iv.Round}) {iv.Content}");
+    }
+
     sb.AppendLine();
     sb.AppendLine("### Décision finale");
     sb.AppendLine();
