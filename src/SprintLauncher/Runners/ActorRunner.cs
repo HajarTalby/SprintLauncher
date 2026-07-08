@@ -179,16 +179,25 @@ public sealed class ActorRunner : IDisposable
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
 
-        // Write prompt via sync path in Task.Run — WriteAsync on anonymous Windows pipes uses
-        // AsyncOverSyncWithIoCancellation which fails for large prompts (>64 KB).
-        await Task.Run(() =>
-        {
-            process.StandardInput.Write(stdinContent);
-            process.StandardInput.Close();
-        });
-
+        // Le timeout doit couvrir AUSSI l'écriture du prompt : si l'acteur ne lit
+        // jamais stdin (ex. codex figé par un conflit OAuth), Write bloque sur le
+        // tube plein et un timeout limité à WaitForExit ne se déclencherait jamais
+        // (constaté au run réel sprint 6 : 35 min de blocage silencieux).
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeoutCts.CancelAfter(_actorTimeout);
+
+        // Write prompt via sync path in Task.Run — WriteAsync on anonymous Windows pipes uses
+        // AsyncOverSyncWithIoCancellation which fails for large prompts (>64 KB).
+        var stdinTask = Task.Run(() =>
+        {
+            try
+            {
+                process.StandardInput.Write(stdinContent);
+                process.StandardInput.Close();
+            }
+            catch (IOException) { }                  // tube cassé après kill — géré par le timeout
+            catch (ObjectDisposedException) { }      // process déjà terminé
+        });
 
         try
         {
@@ -205,12 +214,15 @@ public sealed class ActorRunner : IDisposable
             {
                 // The process exited between cancellation and the kill attempt.
             }
+            await stdinTask; // se débloque une fois le tube cassé par le kill
 
             var reason = ct.IsCancellationRequested
                 ? "Actor execution cancelled."
-                : $"Actor execution timed out after {_actorTimeout.TotalSeconds:0} seconds.";
+                : $"Actor execution timed out after {_actorTimeout.TotalSeconds:0} seconds (prompt non lu ou acteur figé — vérifier les sessions OAuth concurrentes).";
             return Fail(role, reason);
         }
+
+        await stdinTask;
 
         var outputText = stdout.ToString();
         var errorText = stderr.ToString();
