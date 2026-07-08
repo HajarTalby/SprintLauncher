@@ -56,8 +56,52 @@ public partial class MainWindow : Window
         InitializeComponent();
         _repoRoot = FindRepoRoot(AppContext.BaseDirectory) ?? Directory.GetCurrentDirectory();
         BuildActorList();
-        _timer.Tick += (_, _) => TxtTimer.Text = _elapsed.Elapsed.ToString(@"mm\:ss");
+        _timer.Tick += (_, _) =>
+        {
+            TxtTimer.Text = _elapsed.Elapsed.ToString(@"mm\:ss");
+            RefreshLiveOutput();
+        };
         ActorList.ItemsSource = _actors;
+    }
+
+    // ─── Sortie live : ce que fait l'acteur PENDANT son tour ───────────────────
+    private long _liveLastLength = -1;
+
+    private void RefreshLiveOutput()
+    {
+        if (_artifactsDir is null || TabMain.SelectedIndex != 1) return;
+        if (ActorList.SelectedItem is not ActorItem item || item.IsHeader || item.Status != "running") return;
+
+        var livePath = Path.Combine(_artifactsDir, $"live-{item.DisplayName}.txt");
+        if (!File.Exists(livePath))
+        {
+            if (_liveLastLength != 0)
+            {
+                _liveLastLength = 0;
+                TxtSelectedActor.Text = $"{item.DisplayName} — en cours d'exécution…";
+                OutputViewer.Document = new FlowDocument(new Paragraph(new Run(
+                    "L'acteur travaille — sa sortie s'affichera ici au fil de l'eau " +
+                    "(les acteurs claude n'émettent leur sortie qu'à la fin du tour).")));
+            }
+            return;
+        }
+
+        try
+        {
+            var info = new FileInfo(livePath);
+            if (info.Length == _liveLastLength) return; // rien de nouveau
+            _liveLastLength = info.Length;
+
+            using var fs = new FileStream(livePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            using var reader = new StreamReader(fs, System.Text.Encoding.UTF8);
+            var content = reader.ReadToEnd();
+
+            TxtSelectedActor.Text = $"{item.DisplayName} — en cours (sortie live, {content.Length} car.)";
+            OutputViewer.Document = MarkdownToFlow(content);
+            if (OutputViewer.Template?.FindName("PART_ContentHost", OutputViewer) is System.Windows.Controls.ScrollViewer sv)
+                sv.ScrollToEnd();
+        }
+        catch (IOException) { /* fichier en cours d'écriture — prochain tick */ }
     }
 
     // ─── Actor list ────────────────────────────────────────────────────────────

@@ -15,6 +15,12 @@ public sealed class ActorRunner : IDisposable
     // Kills all child processes if the launcher exits for any reason (window close, crash, taskkill).
     private readonly WindowsJobObject? _job = WindowsJobObject.TryCreate();
 
+    // Dossier des sorties live : chaque ligne stdout d'un acteur y est ajoutée au fil
+    // de l'eau (live-<role>.txt) pour que l'UI montre ce que l'acteur fait PENDANT
+    // son tour, pas seulement à la fin. codex streame sa progression ; claude -p
+    // n'émet sa sortie qu'à la fin (limite du mode -p).
+    public string? LiveOutputDir { get; set; }
+
     public ActorRunner(
         string? claudeBin = null,
         string? codexBin = null,
@@ -171,7 +177,24 @@ public sealed class ActorRunner : IDisposable
         var stdout = new StringBuilder();
         var stderr = new StringBuilder();
 
-        process.OutputDataReceived += (_, e) => { if (e.Data is not null) stdout.AppendLine(e.Data); };
+        string? liveFile = null;
+        StreamWriter? liveWriter = null;
+        if (LiveOutputDir is not null)
+        {
+            try
+            {
+                liveFile = Path.Combine(LiveOutputDir, $"live-{role}.txt");
+                liveWriter = new StreamWriter(liveFile, append: false, Encoding.UTF8) { AutoFlush = true };
+            }
+            catch (IOException) { liveWriter = null; }
+        }
+
+        process.OutputDataReceived += (_, e) =>
+        {
+            if (e.Data is null) return;
+            stdout.AppendLine(e.Data);
+            try { liveWriter?.WriteLine(e.Data); } catch (ObjectDisposedException) { }
+        };
         process.ErrorDataReceived += (_, e) => { if (e.Data is not null) stderr.AppendLine(e.Data); };
 
         process.Start();
@@ -215,6 +238,7 @@ public sealed class ActorRunner : IDisposable
                 // The process exited between cancellation and the kill attempt.
             }
             await stdinTask; // se débloque une fois le tube cassé par le kill
+            liveWriter?.Dispose(); // le live-<role>.txt reste comme trace du blocage
 
             var reason = ct.IsCancellationRequested
                 ? "Actor execution cancelled."
@@ -223,6 +247,10 @@ public sealed class ActorRunner : IDisposable
         }
 
         await stdinTask;
+
+        liveWriter?.Dispose();
+        if (liveFile is not null)
+            try { File.Delete(liveFile); } catch (IOException) { } // le fichier final output-<role>.txt prend le relais
 
         var outputText = stdout.ToString();
         var errorText = stderr.ToString();

@@ -355,6 +355,7 @@ var sprintTag = sprintArg is not null ? $"sprint{sprintArg}" : "run";
 var artifactsDir = Path.Combine("artifacts", sprintTag, string.Join("-", issueKeys));
 Directory.CreateDirectory(artifactsDir);
 Console.WriteLine($"Artefacts dans : {Path.GetFullPath(artifactsDir)}");
+runner.LiveOutputDir = Path.GetFullPath(artifactsDir); // sorties acteurs visibles au fil de l'eau dans l'UI
 
 EventEmitter.Emit("manifest", new
 {
