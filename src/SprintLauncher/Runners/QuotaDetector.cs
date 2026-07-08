@@ -11,12 +11,22 @@ public static class QuotaDetector
 {
     private static readonly Regex Patterns = new(
         @"rate.?limit|usage.?limit|quota|too many requests|\b429\b|limit (?:has been )?reached|" +
-        @"out of credits|insufficient credits|usage cap|upgrade to continue|plan limit",
+        @"out of credits|insufficient credits|usage cap|upgrade to continue|plan limit|" +
+        // Message réel claude.exe constaté au run sprint 6 : "You've hit your session limit · resets 9:50pm"
+        @"session limit|daily limit|hit your .{0,20}limit|limite (de session|journali[eè]re|atteinte)",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     public static bool IsQuotaExhausted(string? output, string? errorOutput) =>
         (errorOutput is not null && Patterns.IsMatch(errorOutput)) ||
         (output is not null && Patterns.IsMatch(output));
+
+    /// <summary>
+    /// claude.exe peut imprimer le message de limite et sortir en code 0 : une sortie
+    /// TRÈS courte contenant un motif de quota est un épuisement, pas un livrable
+    /// (constaté : sortie de 66 caractères "You've hit your session limit…" en exit 0).
+    /// </summary>
+    public static bool IsQuotaExhaustedOutput(string? output) =>
+        output is not null && output.Trim().Length < 300 && Patterns.IsMatch(output);
 }
 
 /// <summary>

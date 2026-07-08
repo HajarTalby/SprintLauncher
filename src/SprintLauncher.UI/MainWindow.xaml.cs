@@ -907,7 +907,9 @@ public partial class MainWindow : Window
     private void ShowOutputFile(string path, string actorName)
     {
         _selectedOutputFile = path;
-        TxtSelectedActor.Text = actorName;
+        // Horodatage visible : une sortie d'un run précédent ne doit pas passer pour actuelle
+        var ts = File.GetLastWriteTime(path);
+        TxtSelectedActor.Text = $"{actorName} — sortie du {ts:dd/MM HH:mm}";
         try
         {
             var content = File.ReadAllText(path);

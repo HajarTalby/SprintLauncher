@@ -256,14 +256,19 @@ public sealed class ActorRunner : IDisposable
         var errorText = stderr.ToString();
         bool success = process.ExitCode == 0;
 
+        // Quota : échec avec motif quota, OU exit 0 avec pour seule sortie un message
+        // de limite (claude.exe imprime "You've hit your session limit…" et sort en 0).
+        bool quotaExhausted = (!success && QuotaDetector.IsQuotaExhausted(outputText, errorText))
+            || QuotaDetector.IsQuotaExhaustedOutput(outputText);
+
         return new ActorRunResult(
             Role: role,
-            Success: success,
+            Success: success && !quotaExhausted, // un message de quota n'est jamais un livrable
             Output: outputText,
             ErrorOutput: errorText,
             ExitCode: process.ExitCode,
             IsSemiManual: false,
-            IsQuotaExhausted: !success && QuotaDetector.IsQuotaExhausted(outputText, errorText));
+            IsQuotaExhausted: quotaExhausted);
     }
 
     private static ActorRunResult Fail(ActorRole role, string message) =>
