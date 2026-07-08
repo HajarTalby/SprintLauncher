@@ -670,6 +670,14 @@ async Task RunImplementationPhaseAsync(
     JiraCommentPublisher publisher,
     CancellationToken ct)
 {
+    // ── Mode parallèle : les deux moteurs travaillent en même temps, chacun sur
+    // sa file front/back (périmètres disjoints = pas de chevauchement de code).
+    if (config.ParallelImplementation)
+    {
+        await RunImplementationParallelAsync(issues, artifactsDir, state, stateFile, builder, runner, publisher, ct);
+        return;
+    }
+
     Console.WriteLine("  [implémentation per-US — tour de rôle ccode/codex, relève sur quota]");
 
     foreach (var issue in issues)
@@ -768,6 +776,147 @@ async Task RunImplementationPhaseAsync(
         {
             Console.WriteLine($"  ✗ {issue.Key} — échec {engine} (non-quota). US suivante ; --resume rejouera celle-ci.");
         }
+    }
+}
+
+// ─── Implémentation PARALLÈLE : moteur front et moteur back en même temps ──────
+// Chaque moteur déroule SA file d'US (périmètres disjoints par classification).
+// L'état partagé (state.json, rapport) est protégé par un verrou ; les revues
+// croisées sont exécutées en fin de phase, quand les deux moteurs sont libres.
+async Task RunImplementationParallelAsync(
+    IReadOnlyList<SprintLauncher.Jira.JiraIssue> issues,
+    string artifactsDir,
+    SprintState state,
+    string stateFile,
+    PromptBuilder builder,
+    ActorRunner runner,
+    JiraCommentPublisher publisher,
+    CancellationToken ct)
+{
+    Console.WriteLine("  [implémentation PARALLÈLE — front et backend en simultané, revues croisées en fin de phase]");
+
+    var frontQueue = new Queue<SprintLauncher.Jira.JiraIssue>();
+    var backQueue = new Queue<SprintLauncher.Jira.JiraIssue>();
+    bool toggle = false;
+    foreach (var issue in issues)
+    {
+        if (state.CompletedUsImplementations.Contains(issue.Key))
+        {
+            Console.WriteLine($"  ○ {issue.Key,-28} [déjà implémentée — ignorée]");
+            continue;
+        }
+        var type = UsTypeClassifier.Classify(issue.Summary, issue.Description);
+        var target = type switch
+        {
+            UsType.Front   => frontQueue,
+            UsType.Backend => backQueue,
+            _              => (toggle = !toggle) ? backQueue : frontQueue, // non typées réparties
+        };
+        target.Enqueue(issue);
+        Console.WriteLine($"  · {issue.Key} [{(target == frontQueue ? "front" : "backend")}] → file {(target == frontQueue ? config.EngineFront : config.EngineBack)}");
+    }
+
+    var stateLock = new SemaphoreSlim(1, 1);
+    var doneForReview = new System.Collections.Concurrent.ConcurrentQueue<(SprintLauncher.Jira.JiraIssue Issue, ActorRole Engine, string Output)>();
+
+    async Task WorkerAsync(Queue<SprintLauncher.Jira.JiraIssue> queue, ActorRole engine)
+    {
+        foreach (var issue in queue)
+        {
+            if (ct.IsCancellationRequested) return;
+            if (state.QuotaExhaustedEngines.Contains(engine.ToString())) return; // le solde de la file sera repris en séquentiel
+
+            Console.WriteLine($"  ▶ {issue.Key} → {engine} (parallèle)");
+            EventEmitter.Emit("implementation-us", new { key = issue.Key, engine = engine.ToString(), relief = false, parallel = true });
+
+            var prompt = builder.Build(engine, [issue], issue.Key, mode: sessionMode, frameworks: frameworks, memory: agentMemory);
+            var result = await RunDialogueTurnAsync(engine, prompt, artifactsDir, runner, ct);
+
+            if (result.IsQuotaExhausted)
+            {
+                await stateLock.WaitAsync(CancellationToken.None);
+                try { state.QuotaExhaustedEngines.Add(engine.ToString()); await SprintStateManager.SaveAsync(stateFile, state); }
+                finally { stateLock.Release(); }
+                Console.WriteLine($"  ⚠ {engine} à quota épuisé — sa file sera reprise en séquentiel par l'autre moteur.");
+                EventEmitter.Emit("quota", new { engine = engine.ToString(), key = issue.Key });
+                return;
+            }
+
+            if (result.Success && ImplementationOutputGuard.IsAwaitingGo(result.Output))
+            {
+                Console.WriteLine($"  ! {issue.Key} — {engine} s'est arrêté à une demande de GO : US NON implémentée.");
+                EventEmitter.Emit("implementation-blocked", new { key = issue.Key, engine = engine.ToString() });
+                continue;
+            }
+
+            if (!result.Success)
+            {
+                if (ct.IsCancellationRequested) return;
+                Console.WriteLine($"  ✗ {issue.Key} — échec {engine} (non-quota). US suivante ; --resume rejouera celle-ci.");
+                continue;
+            }
+
+            await File.WriteAllTextAsync(Path.Combine(artifactsDir, $"output-{engine}-{issue.Key}.txt"), result.Output);
+            var pub = await publisher.PublishAsync(issue.Key, result, ct);
+            PrintPublishResult(issue.Key, engine, pub);
+
+            await stateLock.WaitAsync(CancellationToken.None);
+            try
+            {
+                state.CompletedUsImplementations.Add(issue.Key);
+                state.LastImplementer = engine.ToString();
+                await SprintStateManager.SaveAsync(stateFile, state);
+            }
+            finally { stateLock.Release(); }
+
+            doneForReview.Enqueue((issue, engine, result.Output));
+        }
+    }
+
+    var engineFront = Enum.Parse<ActorRole>(config.EngineFront);
+    var engineBack = Enum.Parse<ActorRole>(config.EngineBack);
+    await Task.WhenAll(WorkerAsync(frontQueue, engineFront), WorkerAsync(backQueue, engineBack));
+
+    // File(s) restante(s) après épuisement d'un moteur → reprise séquentielle avec relève
+    var leftovers = frontQueue.Concat(backQueue)
+        .Where(i => !state.CompletedUsImplementations.Contains(i.Key))
+        .ToList();
+    foreach (var issue in leftovers)
+    {
+        if (ct.IsCancellationRequested) break;
+        var reliefName = ImplementationRotation.PickEngine(state.LastImplementer, state.QuotaExhaustedEngines);
+        if (reliefName is null)
+        {
+            Console.WriteLine("  ⚠ Les deux moteurs sont à quota épuisé — US restantes en attente (--resume après reset).");
+            break;
+        }
+        var relief = Enum.Parse<ActorRole>(reliefName);
+        Console.WriteLine($"  ▶ {issue.Key} → {relief} (reprise de file)");
+        EventEmitter.Emit("implementation-us", new { key = issue.Key, engine = relief.ToString(), relief = true });
+        var prompt = builder.Build(relief, [issue], issue.Key, mode: sessionMode, frameworks: frameworks, memory: agentMemory);
+        var result = await RunDialogueTurnAsync(relief, prompt, artifactsDir, runner, ct);
+        if (result.Success && !ImplementationOutputGuard.IsAwaitingGo(result.Output))
+        {
+            await File.WriteAllTextAsync(Path.Combine(artifactsDir, $"output-{relief}-{issue.Key}.txt"), result.Output);
+            var pub = await publisher.PublishAsync(issue.Key, result, ct);
+            PrintPublishResult(issue.Key, relief, pub);
+            state.CompletedUsImplementations.Add(issue.Key);
+            state.LastImplementer = relief.ToString();
+            await SprintStateManager.SaveAsync(stateFile, state);
+            doneForReview.Enqueue((issue, relief, result.Output));
+        }
+        else if (result.IsQuotaExhausted)
+        {
+            state.QuotaExhaustedEngines.Add(relief.ToString());
+            await SprintStateManager.SaveAsync(stateFile, state);
+        }
+    }
+
+    // ── Phase revues croisées (les deux moteurs sont libres) ──────────────────
+    if (config.CrossReviewEnabled)
+    {
+        while (doneForReview.TryDequeue(out var item) && !ct.IsCancellationRequested)
+            await RunCrossReviewAsync(item.Issue, item.Engine, item.Output, artifactsDir, state, stateFile, builder, runner, publisher, ct);
     }
 }
 
@@ -1049,17 +1198,21 @@ async Task<ActorRunResult> RunDialogueTurnAsync(
     var outputFile = Path.Combine(artifactsDir, $"output-{role}.txt");
     await File.WriteAllTextAsync(outputFile, runResult.Output);
 
-    reportEntries.Add(new ActorReportEntry(
-        Role: role,
-        Success: runResult.Success,
-        IsSemiManual: runResult.IsSemiManual,
-        IsSkipped: false,
-        ExitCode: runResult.ExitCode,
-        ElapsedSeconds: (int)sw.Elapsed.TotalSeconds,
-        OutputChars: runResult.Output.Length,
-        ErrorSnippet: runResult.ErrorOutput?.Trim() is { Length: > 0 } errC ? errC[..Math.Min(300, errC.Length)] : null,
-        OutputFilePath: outputFile,
-        SemiManualPromptPath: null));
+    // Verrouillé : en implémentation parallèle, deux moteurs ajoutent en concurrence.
+    lock (reportEntries)
+    {
+        reportEntries.Add(new ActorReportEntry(
+            Role: role,
+            Success: runResult.Success,
+            IsSemiManual: runResult.IsSemiManual,
+            IsSkipped: false,
+            ExitCode: runResult.ExitCode,
+            ElapsedSeconds: (int)sw.Elapsed.TotalSeconds,
+            OutputChars: runResult.Output.Length,
+            ErrorSnippet: runResult.ErrorOutput?.Trim() is { Length: > 0 } errC ? errC[..Math.Min(300, errC.Length)] : null,
+            OutputFilePath: outputFile,
+            SemiManualPromptPath: null));
+    }
 
     return runResult;
 }

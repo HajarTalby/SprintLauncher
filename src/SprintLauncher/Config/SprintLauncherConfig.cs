@@ -20,6 +20,10 @@ public sealed class SprintLauncherConfig
     // true : checkpoint d'intervention après chaque prise de parole (INTERVENTION_MODE=turn) ;
     // false (défaut) : entre les rounds seulement.
     public bool InterventionEveryTurn { get; init; }
+    // Implémentation parallèle : les deux moteurs avancent EN MÊME TEMPS, chacun sur
+    // sa file (front/back) — possible car les périmètres de code sont disjoints.
+    // Les revues croisées sont faites en fin de phase (le réviseur est occupé pendant).
+    public bool ParallelImplementation { get; init; }
     public string ProjectName { get; init; } = "SERZENIA";
     public string ApproverName { get; init; } = "Hajar";
     public string[] FrameworkKeys { get; init; } = ["SERZENIA-70", "SERZENIA-89", "SERZENIA-91"];
@@ -48,6 +52,7 @@ public sealed class SprintLauncherConfig
             EngineBack = Environment.GetEnvironmentVariable("ENGINE_BACK") ?? "ClaudeImplementation",
             CrossReviewEnabled = !string.Equals(Environment.GetEnvironmentVariable("CROSS_REVIEW"), "false", StringComparison.OrdinalIgnoreCase),
             InterventionEveryTurn = string.Equals(Environment.GetEnvironmentVariable("INTERVENTION_MODE"), "turn", StringComparison.OrdinalIgnoreCase),
+            ParallelImplementation = string.Equals(Environment.GetEnvironmentVariable("PARALLEL_IMPLEMENTATION"), "true", StringComparison.OrdinalIgnoreCase),
             ProjectName = Environment.GetEnvironmentVariable("PROJECT_NAME") ?? "SERZENIA",
             ApproverName = Environment.GetEnvironmentVariable("APPROVER_NAME") ?? "Hajar",
             FrameworkKeys = (Environment.GetEnvironmentVariable("FRAMEWORK_KEYS") ?? "SERZENIA-70,SERZENIA-89,SERZENIA-91")
