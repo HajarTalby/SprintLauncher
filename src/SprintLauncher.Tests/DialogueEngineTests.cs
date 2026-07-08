@@ -144,6 +144,47 @@ public class DialogueEngineTests : IDisposable
         Assert.Equal(2, persisted!.Count);
     }
 
+    [Fact]
+    public async Task Multiple_interventions_can_be_chained_at_one_checkpoint()
+    {
+        var engine = new DialogueEngine(maxRounds: 2, approverName: "Hajar");
+        var script = new Queue<DialogueIntervention>([
+            new(InterventionKind.Message, "Directive 1 : priorisez la sécurité."),
+            new(InterventionKind.Message, "Directive 2 : écartez l'option C."),
+            new(InterventionKind.Continue),
+        ]);
+
+        var outcome = await engine.RunAsync(
+            TwoParticipants,
+            FakePrompt,
+            (role, _, _) => Task.FromResult(Ok(role, "Contribution. ")),
+            _ => Task.FromResult(script.TryDequeue(out var i) ? i : new DialogueIntervention(InterventionKind.Conclude)),
+            TranscriptBase);
+
+        // Les deux directives sont dans le transcript, dans l'ordre
+        var interventions = outcome.Turns.Where(t => t.IsIntervention).ToList();
+        Assert.Equal(2, interventions.Count);
+        Assert.Contains("Directive 1", interventions[0].Content);
+        Assert.Contains("Directive 2", interventions[1].Content);
+    }
+
+    [Fact]
+    public async Task Every_turn_mode_offers_checkpoint_after_each_speaker()
+    {
+        var engine = new DialogueEngine(maxRounds: 2, approverName: "Hajar", interventionEveryTurn: true);
+        int checkpoints = 0;
+
+        await engine.RunAsync(
+            TwoParticipants,
+            FakePrompt,
+            (role, _, _) => Task.FromResult(Ok(role, "Contribution.")),
+            _ => { checkpoints++; return Task.FromResult(new DialogueIntervention(InterventionKind.Continue)); },
+            TranscriptBase);
+
+        // 2 rounds × 2 participants = 4 tours + synthèse ; checkpoint après chaque tour (dès le 1er)
+        Assert.True(checkpoints >= 3, $"attendu >= 3 checkpoints, obtenu {checkpoints}");
+    }
+
     // ── Échec acteur ───────────────────────────────────────────────────────────
 
     [Fact]

@@ -897,7 +897,7 @@ async Task RunDialogueGroupAsync(
             EventEmitter.Emit("turn", new { group = group.ToString(), speaker = t.Speaker, round = t.Round, isIntervention = t.IsIntervention, content = t.Content, resumed = true });
     }
 
-    var engine = new DialogueEngine(config.MaxDialogueRounds, config.ApproverName);
+    var engine = new DialogueEngine(config.MaxDialogueRounds, config.ApproverName, config.InterventionEveryTurn);
 
     // Le round/synthèse du tour courant est capturé par buildPrompt pour l'événement "turn"
     // (runTurn ne connaît pas le round ; les deux delegates sont appelés séquentiellement).

@@ -17,6 +17,9 @@ public sealed class SprintLauncherConfig
     // Revue croisée post-dev : l'autre moteur relit chaque US implémentée
     // (observations), les correctifs restent chez l'implémenteur. CROSS_REVIEW=false pour couper.
     public bool CrossReviewEnabled { get; init; } = true;
+    // true : checkpoint d'intervention après chaque prise de parole (INTERVENTION_MODE=turn) ;
+    // false (défaut) : entre les rounds seulement.
+    public bool InterventionEveryTurn { get; init; }
     public string ProjectName { get; init; } = "SERZENIA";
     public string ApproverName { get; init; } = "Hajar";
     public string[] FrameworkKeys { get; init; } = ["SERZENIA-70", "SERZENIA-89", "SERZENIA-91"];
@@ -44,6 +47,7 @@ public sealed class SprintLauncherConfig
             EngineFront = Environment.GetEnvironmentVariable("ENGINE_FRONT") ?? "GptImplementation",
             EngineBack = Environment.GetEnvironmentVariable("ENGINE_BACK") ?? "ClaudeImplementation",
             CrossReviewEnabled = !string.Equals(Environment.GetEnvironmentVariable("CROSS_REVIEW"), "false", StringComparison.OrdinalIgnoreCase),
+            InterventionEveryTurn = string.Equals(Environment.GetEnvironmentVariable("INTERVENTION_MODE"), "turn", StringComparison.OrdinalIgnoreCase),
             ProjectName = Environment.GetEnvironmentVariable("PROJECT_NAME") ?? "SERZENIA",
             ApproverName = Environment.GetEnvironmentVariable("APPROVER_NAME") ?? "Hajar",
             FrameworkKeys = (Environment.GetEnvironmentVariable("FRAMEWORK_KEYS") ?? "SERZENIA-70,SERZENIA-89,SERZENIA-91")

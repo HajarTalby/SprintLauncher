@@ -63,12 +63,15 @@ public sealed class DialogueEngine
 
     private readonly int _maxRounds;
     private readonly string _approverLabel;
+    private readonly bool _interventionEveryTurn;
 
-    public DialogueEngine(int maxRounds, string approverName)
+    public DialogueEngine(int maxRounds, string approverName, bool interventionEveryTurn = false)
     {
         _maxRounds = maxRounds > 0 ? maxRounds : 3;
         // Le nom seul, sans titre ni qualificatif (demande explicite de Hajar).
         _approverLabel = approverName;
+        // true : checkpoint après CHAQUE prise de parole (pas seulement entre rounds).
+        _interventionEveryTurn = interventionEveryTurn;
     }
 
     public static bool HasConvergenceMarker(string content) =>
@@ -128,25 +131,30 @@ public sealed class DialogueEngine
 
             int actorTurns = turns.Count(t => !t.IsIntervention);
             int round = actorTurns / participants.Count + 1;
-            bool atRoundBoundary = actorTurns > 0 && actorTurns % participants.Count == 0;
+            bool atCheckpoint = actorTurns > 0 &&
+                (_interventionEveryTurn || actorTurns % participants.Count == 0);
 
-            // ── Checkpoint intervention entre rounds ──────────────────────────
-            if (atRoundBoundary && !concludeRequested && requestIntervention is not null)
+            // ── Checkpoint intervention (entre rounds, ou à chaque tour) ──────
+            // Boucle : l'approbatrice peut enchaîner PLUSIEURS interventions au
+            // même checkpoint — la discussion ne repart que sur GO/Conclure.
+            while (atCheckpoint && !concludeRequested && requestIntervention is not null)
             {
                 var intervention = await requestIntervention(round);
-                switch (intervention.Kind)
+                if (intervention.Kind == InterventionKind.Stop)
+                    return new DialogueOutcome(turns, DialogueEndReason.Stopped, null);
+                if (intervention.Kind == InterventionKind.Conclude)
                 {
-                    case InterventionKind.Stop:
-                        return new DialogueOutcome(turns, DialogueEndReason.Stopped, null);
-                    case InterventionKind.Conclude:
-                        concludeRequested = true;
-                        break;
-                    case InterventionKind.Message when !string.IsNullOrWhiteSpace(intervention.Text):
-                        turns.Add(new DialogueTurn(_approverLabel, intervention.Text.Trim(),
-                            DateTimeOffset.UtcNow, round, IsIntervention: true));
-                        await PersistAsync(turns, transcriptBasePath, ct);
-                        break;
+                    concludeRequested = true;
+                    break;
                 }
+                if (intervention.Kind == InterventionKind.Message && !string.IsNullOrWhiteSpace(intervention.Text))
+                {
+                    turns.Add(new DialogueTurn(_approverLabel, intervention.Text.Trim(),
+                        DateTimeOffset.UtcNow, round, IsIntervention: true));
+                    await PersistAsync(turns, transcriptBasePath, ct);
+                    continue; // re-propose le checkpoint : intervention suivante possible
+                }
+                break; // Continue → la discussion repart
             }
 
             // ── Plafond atteint ou clôture demandée → tour de synthèse forcé ──
