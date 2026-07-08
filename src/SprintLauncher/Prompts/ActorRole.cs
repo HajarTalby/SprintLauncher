@@ -136,6 +136,7 @@ public static class ActorRoleExtensions
             or ActorGroup.Qa;
 
     public static bool NeedsReadOnlySandbox(this ActorRole role) => role is
+        ActorRole.GptPilotage or   // pilotage automatisé via codex : lecture seule
         ActorRole.AnalysisCodex or // l'analyse ne modifie rien
         ActorRole.CommitteePilotageGptChat or
         ActorRole.CommitteeGptChat or

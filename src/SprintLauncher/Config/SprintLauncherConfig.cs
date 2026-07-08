@@ -8,6 +8,8 @@ public sealed class SprintLauncherConfig
     public string ClaudeModel { get; init; } = "claude-opus-4-8";
     public string CodexModel { get; init; } = "gpt-5.5";
     public int ActorTimeoutSeconds { get; init; } = 600;
+    // Timeout dédié aux acteurs d'implémentation (un vrai dev prend 15-45 min).
+    public int ImplementationTimeoutSeconds { get; init; } = 3600;
     // Nombre maximum d'allers-retours d'une discussion multi-tours (SERZENIA-143).
     public int MaxDialogueRounds { get; init; } = 3;
     // Spécialisation front/backend des moteurs d'implémentation — les US UI vont
@@ -24,6 +26,9 @@ public sealed class SprintLauncherConfig
     // sa file (front/back) — possible car les périmètres de code sont disjoints.
     // Les revues croisées sont faites en fin de phase (le réviseur est occupé pendant).
     public bool ParallelImplementation { get; init; }
+    // GptPilotage automatique via codex (défaut) ; GPT_PILOTAGE=semi-manual pour
+    // revenir au flux copier/coller ChatGPT web historique.
+    public bool GptPilotageAuto { get; init; } = true;
     public string ProjectName { get; init; } = "SERZENIA";
     public string ApproverName { get; init; } = "Hajar";
     public string[] FrameworkKeys { get; init; } = ["SERZENIA-70", "SERZENIA-89", "SERZENIA-91"];
@@ -48,11 +53,13 @@ public sealed class SprintLauncherConfig
             CodexModel = Environment.GetEnvironmentVariable("CODEX_MODEL") ?? "gpt-5.5",
             ActorTimeoutSeconds = ReadPositiveInt("ACTOR_TIMEOUT_SECONDS", 600),
             MaxDialogueRounds = ReadPositiveInt("MAX_DIALOGUE_ROUNDS", 3),
+            ImplementationTimeoutSeconds = ReadPositiveInt("IMPL_TIMEOUT_SECONDS", 3600),
             EngineFront = Environment.GetEnvironmentVariable("ENGINE_FRONT") ?? "GptImplementation",
             EngineBack = Environment.GetEnvironmentVariable("ENGINE_BACK") ?? "ClaudeImplementation",
             CrossReviewEnabled = !string.Equals(Environment.GetEnvironmentVariable("CROSS_REVIEW"), "false", StringComparison.OrdinalIgnoreCase),
             InterventionEveryTurn = string.Equals(Environment.GetEnvironmentVariable("INTERVENTION_MODE"), "turn", StringComparison.OrdinalIgnoreCase),
             ParallelImplementation = string.Equals(Environment.GetEnvironmentVariable("PARALLEL_IMPLEMENTATION"), "true", StringComparison.OrdinalIgnoreCase),
+            GptPilotageAuto = !(Environment.GetEnvironmentVariable("GPT_PILOTAGE") ?? "auto").StartsWith("semi", StringComparison.OrdinalIgnoreCase),
             ProjectName = Environment.GetEnvironmentVariable("PROJECT_NAME") ?? "SERZENIA",
             ApproverName = Environment.GetEnvironmentVariable("APPROVER_NAME") ?? "Hajar",
             FrameworkKeys = (Environment.GetEnvironmentVariable("FRAMEWORK_KEYS") ?? "SERZENIA-70,SERZENIA-89,SERZENIA-91")

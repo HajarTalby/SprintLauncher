@@ -400,9 +400,10 @@ public partial class MainWindow : Window
                     {
                         var next = data.TryGetProperty("next", out var n) ? n.GetString() : "prochain groupe";
                         TxtCheckpointTitle.Text = $"Groupe terminé — Prêt pour : {next}";
-                        TxtCheckpointHint.Text  = "Revoyez les sorties dans le panneau central. Cliquez GO pour continuer ou ARRET pour sauvegarder et quitter.";
-                        PnlInterventionInput.Visibility = Visibility.Collapsed;
+                        TxtCheckpointHint.Text  = "GO = continuer · écris une directive : elle sera appliquée avec autorité au groupe suivant · ARRET = sauvegarder et quitter.";
+                        PnlInterventionInput.Visibility = Visibility.Visible;
                         PnlInteractive.Visibility = Visibility.Visible;
+                        TxtIntervention.Focus();
                     }
                     AppendLog("");
                     AppendLog(">>> Checkpoint — en attente de ta décision");

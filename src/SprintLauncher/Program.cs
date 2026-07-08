@@ -345,7 +345,9 @@ using var runner = new ActorRunner(
     claudeModel: config.ClaudeModel,
     codexModel: config.CodexModel,
     actorTimeout: TimeSpan.FromSeconds(config.ActorTimeoutSeconds),
-    repoRoot: config.SerzeniaRepoRoot);
+    repoRoot: config.SerzeniaRepoRoot,
+    implementationTimeout: TimeSpan.FromSeconds(config.ImplementationTimeoutSeconds),
+    gptPilotageAuto: config.GptPilotageAuto);
 var publisher = new JiraCommentPublisher(httpClient, config.JiraBaseUrl, config.JiraEmail, config.JiraApiToken, dryRun);
 
 // Collect entries for the HTML report
@@ -409,6 +411,9 @@ else
 // Step 3: Run actors group by group
 ActorGroup? lastGroupPrinted = null;
 bool implementationPhaseDone = false;
+// Directive saisie par Hajar à un checkpoint de groupe — injectée avec autorité
+// dans le groupe suivant (discussion ou acteurs simples), puis consommée.
+string? pendingApproverDirective = null;
 
 foreach (var group in sessionMode.GetGroupOrder())
 {
@@ -481,12 +486,16 @@ foreach (var group in sessionMode.GetGroupOrder())
         continue;
     }
 
+    // Directive de Hajar en attente : elle s'applique à CE groupe puis est consommée.
+    var groupDirective = pendingApproverDirective;
+    pendingApproverDirective = null;
+
     if (isCollectiveGroup)
     {
         await RunDialogueGroupAsync(
             group, rolesInGroup, issues, pilotageKey,
             sprintState, stateFile, artifactsDir,
-            builder, runner, publisher, shutdownCts.Token);
+            builder, runner, publisher, groupDirective, shutdownCts.Token);
     }
     else
     {
@@ -522,7 +531,7 @@ foreach (var group in sessionMode.GetGroupOrder())
             await RunSingleActorAsync(
                 role, issues, currentKey, publishKeys, artifactsDir,
                 sprintState, stateFile,
-                builder, runner, publisher, shutdownCts.Token);
+                builder, runner, publisher, groupDirective, shutdownCts.Token);
         }
     }
 
@@ -541,12 +550,18 @@ foreach (var group in sessionMode.GetGroupOrder())
         if (nextGroup != default)
         {
             EventEmitter.Emit("checkpoint", new { kind = "group", group = group.ToString(), next = nextGroup.GetGroupLabel().Trim('─', ' ') });
-            Console.Write($"  GO pour continuer avec {nextGroup.GetGroupLabel()} ? [Entrée=oui / n=arrêt] > ");
-            var answer = Console.ReadLine()?.Trim().ToLowerInvariant();
-            if (answer == "n" || answer == "non" || answer == "no")
+            Console.Write($"  GO pour continuer avec {nextGroup.GetGroupLabel()} ? [Entrée=oui / n=arrêt / texte=directive pour la suite] > ");
+            var answer = Console.ReadLine()?.Trim();
+            if (answer?.ToLowerInvariant() is "n" or "non" or "no")
             {
                 Console.WriteLine("  Arrêt demandé. Utilisez --resume pour reprendre depuis ce point.");
                 shutdownCts.Cancel();
+            }
+            else if (!string.IsNullOrEmpty(answer))
+            {
+                pendingApproverDirective = answer;
+                Console.WriteLine($"  ⚑ Directive de {config.ApproverName} enregistrée — elle s'applique au groupe suivant.");
+                EventEmitter.Emit("turn", new { group = nextGroup.ToString(), speaker = config.ApproverName, round = 0, isIntervention = true, content = answer });
             }
         }
     }
@@ -592,9 +607,12 @@ async Task RunSingleActorAsync(
     PromptBuilder builder,
     ActorRunner runner,
     JiraCommentPublisher publisher,
+    string? approverDirective,
     CancellationToken ct)
 {
     var prompt = builder.Build(role, issues, primaryKey, mode: sessionMode, frameworks: frameworks, memory: agentMemory);
+    if (!string.IsNullOrWhiteSpace(approverDirective))
+        prompt = prompt with { UserPrompt = prompt.UserPrompt + $"\n\n## Directive de {config.ApproverName} — à respecter\n{approverDirective}" };
 
     var promptFile = Path.Combine(artifactsDir, $"prompt-{role}.txt");
     await File.WriteAllTextAsync(promptFile, $"=== SYSTEM ===\n{prompt.SystemPrompt}\n\n=== USER ===\n{prompt.UserPrompt}");
@@ -1034,6 +1052,7 @@ async Task RunDialogueGroupAsync(
     PromptBuilder builder,
     ActorRunner runner,
     JiraCommentPublisher publisher,
+    string? approverDirective,
     CancellationToken ct)
 {
     var transcriptBase = Path.Combine(artifactsDir, $"dialogue-{group}");
@@ -1045,6 +1064,13 @@ async Task RunDialogueGroupAsync(
         Console.WriteLine($"  Reprise discussion — {resumedTurns.Count} tour(s) déjà joué(s)");
         foreach (var t in resumedTurns)
             EventEmitter.Emit("turn", new { group = group.ToString(), speaker = t.Speaker, round = t.Round, isIntervention = t.IsIntervention, content = t.Content, resumed = true });
+    }
+
+    // Directive du checkpoint précédent : injectée en tête de discussion avec autorité.
+    if (!string.IsNullOrWhiteSpace(approverDirective))
+    {
+        var directiveTurn = new DialogueTurn(config.ApproverName, approverDirective, DateTimeOffset.UtcNow, 1, IsIntervention: true);
+        resumedTurns = (resumedTurns ?? []).Append(directiveTurn).ToList();
     }
 
     var engine = new DialogueEngine(config.MaxDialogueRounds, config.ApproverName, config.InterventionEveryTurn);

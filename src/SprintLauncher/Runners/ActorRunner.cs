@@ -11,7 +11,11 @@ public sealed class ActorRunner : IDisposable
     private readonly string _claudeModel;
     private readonly string _codexModel;
     private readonly TimeSpan _actorTimeout;
+    private readonly TimeSpan _implementationTimeout;
     private readonly string? _repoRoot;
+    // GptPilotage : true (défaut) = exécuté automatiquement via codex (read-only) ;
+    // false = flux semi-manuel historique (prompt à coller dans ChatGPT web).
+    private readonly bool _gptPilotageAuto;
     // Kills all child processes if the launcher exits for any reason (window close, crash, taskkill).
     private readonly WindowsJobObject? _job = WindowsJobObject.TryCreate();
 
@@ -27,22 +31,34 @@ public sealed class ActorRunner : IDisposable
         string? claudeModel = null,
         string? codexModel = null,
         TimeSpan? actorTimeout = null,
-        string? repoRoot = null)
+        string? repoRoot = null,
+        TimeSpan? implementationTimeout = null,
+        bool gptPilotageAuto = true)
     {
+        _gptPilotageAuto = gptPilotageAuto;
         _claudeBin = claudeBin ?? BinaryLocator.FindClaude();
         _codexBin = codexBin ?? BinaryLocator.FindCodex();
         _claudeModel = claudeModel ?? "claude-opus-4-8";
         _codexModel = codexModel ?? "gpt-5.5";
         _actorTimeout = actorTimeout ?? TimeSpan.FromMinutes(10);
+        // Un vrai dev d'US prend 15-45 min — le timeout dialogue (10 min) tuait
+        // les implémentations en plein travail (constaté au run sprint 6).
+        _implementationTimeout = implementationTimeout ?? TimeSpan.FromMinutes(60);
         _repoRoot = repoRoot;
     }
+
+    private static bool IsImplementationRole(ActorRole role) =>
+        role is ActorRole.ClaudeImplementation or ActorRole.GptImplementation;
+
+    private TimeSpan TimeoutFor(ActorRole role) =>
+        IsImplementationRole(role) ? _implementationTimeout : _actorTimeout;
 
     public void Dispose() => _job?.Dispose();
 
     public async Task<ActorRunResult> RunAsync(
         ActorPrompt prompt, CancellationToken ct = default)
     {
-        if (prompt.Role.IsSemiManual())
+        if (prompt.Role.IsSemiManual() && !_gptPilotageAuto)
             return RunSemiManual(prompt);
 
         if (prompt.Role.IsClaudeFamily())
@@ -76,6 +92,14 @@ public sealed class ActorRunner : IDisposable
         psi.ArgumentList.Add("-p");
         psi.ArgumentList.Add("--model");
         psi.ArgumentList.Add(_claudeModel);
+        // Implémentation : les outils (édition, bash, git) doivent s'exécuter sans
+        // approbation interactive — le GO est porté par le lancement du run (SERZENIA-70).
+        // Sans ce mode, claude -p refuse les outils et l'acteur "analyse" au lieu de coder.
+        if (IsImplementationRole(prompt.Role))
+        {
+            psi.ArgumentList.Add("--permission-mode");
+            psi.ArgumentList.Add("bypassPermissions");
+        }
         // Point claude.exe at the SERZENIA source repo so agents can read/write code
         // regardless of where the launcher binary is located.
         if (_repoRoot is not null)
@@ -130,6 +154,11 @@ public sealed class ActorRunner : IDisposable
         {
             psi.ArgumentList.Add("--sandbox");
             psi.ArgumentList.Add("read-only");
+        }
+        else if (IsImplementationRole(prompt.Role))
+        {
+            // Exécution sans approbations interactives (headless) — écriture workspace.
+            psi.ArgumentList.Add("--full-auto");
         }
         // Prompt delivered via stdin, not as CLI arg — avoids Windows 32767-char limit
 
@@ -206,8 +235,9 @@ public sealed class ActorRunner : IDisposable
         // jamais stdin (ex. codex figé par un conflit OAuth), Write bloque sur le
         // tube plein et un timeout limité à WaitForExit ne se déclencherait jamais
         // (constaté au run réel sprint 6 : 35 min de blocage silencieux).
+        var timeout = TimeoutFor(role);
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeoutCts.CancelAfter(_actorTimeout);
+        timeoutCts.CancelAfter(timeout);
 
         // Write prompt via sync path in Task.Run — WriteAsync on anonymous Windows pipes uses
         // AsyncOverSyncWithIoCancellation which fails for large prompts (>64 KB).
@@ -242,7 +272,7 @@ public sealed class ActorRunner : IDisposable
 
             var reason = ct.IsCancellationRequested
                 ? "Actor execution cancelled."
-                : $"Actor execution timed out after {_actorTimeout.TotalSeconds:0} seconds (prompt non lu ou acteur figé — vérifier les sessions OAuth concurrentes).";
+                : $"Actor execution timed out after {timeout.TotalSeconds:0} seconds (prompt non lu ou acteur figé — vérifier les sessions OAuth concurrentes).";
             return Fail(role, reason);
         }
 
