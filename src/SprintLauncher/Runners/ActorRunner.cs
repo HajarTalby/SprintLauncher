@@ -150,6 +150,9 @@ public sealed class ActorRunner : IDisposable
         psi.ArgumentList.Add("exec");
         psi.ArgumentList.Add("--model");
         psi.ArgumentList.Add(_codexModel);
+        // Sans ce flag, codex exec refuse de démarrer hors d'un dépôt git « trusted »
+        // ("Not inside a trusted directory") — constaté en test isolé.
+        psi.ArgumentList.Add("--skip-git-repo-check");
         if (prompt.Role.NeedsReadOnlySandbox() || prompt.ForceReadOnly)
         {
             psi.ArgumentList.Add("--sandbox");
