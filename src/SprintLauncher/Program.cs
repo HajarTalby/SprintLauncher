@@ -852,7 +852,13 @@ async Task RunImplementationParallelAsync(
         foreach (var issue in queue)
         {
             if (ct.IsCancellationRequested) return;
-            if (state.QuotaExhaustedEngines.Contains(engine.ToString())) return; // le solde de la file sera repris en séquentiel
+            if (state.QuotaExhaustedEngines.Contains(engine.ToString()))
+            {
+                // Jamais de retrait silencieux : Hajar doit voir pourquoi un moteur ne travaille pas.
+                Console.WriteLine($"  ⚠ Worker {engine} retiré (quota épuisé) — sa file sera reprise par l'autre moteur en fin de phase.");
+                EventEmitter.Emit("quota", new { engine = engine.ToString(), key = issue.Key });
+                return;
+            }
 
             Console.WriteLine($"  ▶ {issue.Key} → {engine} (parallèle)");
             EventEmitter.Emit("implementation-us", new { key = issue.Key, engine = engine.ToString(), relief = false, parallel = true });
