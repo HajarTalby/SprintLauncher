@@ -392,6 +392,13 @@ if (resume)
         Keys = issueKeys,
         CompletedRoles = []
     };
+    // L'épuisement de quota est temporel (fenêtres d'abonnement) : un nouveau
+    // lancement repart avec les deux moteurs — la détection re-marquera si besoin.
+    if (sprintState.QuotaExhaustedEngines.Count > 0)
+    {
+        Console.WriteLine($"  Quota : {string.Join(", ", sprintState.QuotaExhaustedEngines)} réactivé(s) pour ce run (épuisement précédent effacé).");
+        sprintState.QuotaExhaustedEngines.Clear();
+    }
     if (sprintState.CompletedRoles.Count > 0)
         Console.WriteLine($"  Reprise — acteurs déjà faits : {string.Join(", ", sprintState.CompletedRoles)}");
     if (sprintState.InterruptedRoles.Count > 0)
