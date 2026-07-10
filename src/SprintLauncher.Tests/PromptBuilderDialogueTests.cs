@@ -64,6 +64,21 @@ public class PromptBuilderDialogueTests
     }
 
     [Fact]
+    public void Decisions_registry_is_injected_with_do_not_reask_instruction()
+    {
+        var builder = new PromptBuilder("SERZENIA", "Hajar");
+        builder.DecisionsRegistry = "### [SERZ-1] (2026-07-08)\nDécision de Hajar : Google ET Apple à développer.";
+
+        var prompt = builder.BuildDialogueTurn(
+            ActorRole.CommitteePilotageClaudeChat, Issues, "SERZ-1",
+            transcript: [], round: 1, maxRounds: 3, isFinalSynthesis: false);
+
+        Assert.Contains("DÉCISIONS DÉJÀ ACTÉES PAR HAJAR", prompt.UserPrompt);
+        Assert.Contains("NE LES REDEMANDE JAMAIS", prompt.UserPrompt);
+        Assert.Contains("Google ET Apple", prompt.UserPrompt);
+    }
+
+    [Fact]
     public void Sprint_context_is_present_in_every_turn()
     {
         var prompt = _builder.BuildDialogueTurn(

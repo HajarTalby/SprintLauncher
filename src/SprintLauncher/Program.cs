@@ -341,6 +341,26 @@ if (agentMemory.HasEntries)
 
 // Step 2: Build prompts and run actors
 var builder = new PromptBuilder(config.ProjectName, config.ApproverName, config.FrameworkKeys);
+
+// Registre des décisions déjà actées (scan des commentaires du sprint) : injecté
+// dans tous les prompts — les acteurs ne redemandent plus une décision prise.
+var decisionEntries = issues
+    .SelectMany(i => i.Comments.Select(c => (Issue: i.Key, Comment: c)))
+    .Where(x => x.Comment.Body.Contains("Décision de Hajar", StringComparison.OrdinalIgnoreCase)
+             || x.Comment.Body.Contains("[decision:", StringComparison.OrdinalIgnoreCase)
+             || x.Comment.Body.Contains($"Décision de {config.ApproverName}", StringComparison.OrdinalIgnoreCase))
+    .Select(x =>
+    {
+        var body = x.Comment.Body.Trim();
+        if (body.Length > 700) body = body[..700] + " (…)";
+        return $"### [{x.Issue}] ({x.Comment.Created})\n{body}";
+    })
+    .ToList();
+if (decisionEntries.Count > 0)
+{
+    builder.DecisionsRegistry = string.Join("\n\n", decisionEntries);
+    Console.WriteLine($"  Registre des décisions : {decisionEntries.Count} décision(s) actée(s) injectée(s) dans tous les prompts.");
+}
 using var runner = new ActorRunner(
     claudeModel: config.ClaudeModel,
     codexModel: config.CodexModel,

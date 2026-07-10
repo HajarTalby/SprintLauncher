@@ -11,6 +11,11 @@ public sealed class PromptBuilder
     private readonly string _permKey;   // framework key for permissions policy (index 0)
     private readonly string _arbitrageKey; // framework key for arbitrage (index 2)
 
+    // Registre consolidé des décisions déjà actées par l'approbatrice (extrait des
+    // commentaires Jira du sprint) — injecté dans TOUS les prompts pour que les
+    // acteurs ne redemandent jamais une décision déjà prise.
+    public string? DecisionsRegistry { get; set; }
+
     public PromptBuilder(string projectName = "SERZENIA", string approverName = "Hajar", string[]? frameworkKeys = null)
     {
         _project      = projectName;
@@ -501,13 +506,24 @@ public sealed class PromptBuilder
         return sb.ToString();
     }
 
-    // Sections communes à tous les prompts : contexte sprint, frameworks, mémoire projet.
-    private static void AppendSharedContext(
+    // Sections communes à tous les prompts : décisions actées, contexte sprint,
+    // frameworks, mémoire projet.
+    private void AppendSharedContext(
         System.Text.StringBuilder sb,
         string sprintContext,
         FrameworkContext? frameworks,
         AgentMemoryContext? memory)
     {
+        if (!string.IsNullOrWhiteSpace(DecisionsRegistry))
+        {
+            sb.AppendLine();
+            sb.AppendLine("---");
+            sb.AppendLine();
+            sb.AppendLine($"## DÉCISIONS DÉJÀ ACTÉES PAR {_approver.ToUpperInvariant()} — APPLIQUE-LES ET CITE-LES, NE LES REDEMANDE JAMAIS");
+            sb.AppendLine();
+            sb.AppendLine(DecisionsRegistry);
+        }
+
         sb.AppendLine();
         sb.AppendLine("---");
         sb.AppendLine();
