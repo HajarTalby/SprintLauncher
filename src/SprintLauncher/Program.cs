@@ -359,6 +359,11 @@ Directory.CreateDirectory(artifactsDir);
 Console.WriteLine($"Artefacts dans : {Path.GetFullPath(artifactsDir)}");
 runner.LiveOutputDir = Path.GetFullPath(artifactsDir); // sorties acteurs visibles au fil de l'eau dans l'UI
 
+// Sorties périmées : les live-* d'un run précédent ne doivent jamais passer
+// pour l'activité du run courant (constat Hajar : anciennes sorties affichées).
+foreach (var stale in Directory.GetFiles(artifactsDir, "live-*.txt"))
+    try { File.Delete(stale); } catch (IOException) { }
+
 EventEmitter.Emit("manifest", new
 {
     keys = issueKeys,
@@ -766,6 +771,7 @@ async Task RunImplementationPhaseAsync(
         }
 
         var engine = Enum.Parse<ActorRole>(engineName);
+        ActorRole? reliefFrom = null; // renseigné si l'US est reprise par l'autre moteur en cours de route
         var typeLabel = usType switch { UsType.Front => " [front]", UsType.Backend => " [backend]", _ => "" };
         Console.WriteLine($"  ▶ {issue.Key}{typeLabel} → {engine}");
         EventEmitter.Emit("implementation-us", new { key = issue.Key, engine = engine.ToString(), relief = false, usType = usType.ToString() });
@@ -805,6 +811,7 @@ async Task RunImplementationPhaseAsync(
                 EventEmitter.Emit("quota", new { engine = relief.ToString(), key = issue.Key });
                 break;
             }
+            reliefFrom = engine; // la revue devra couvrir les DEUX contributions
             engine = relief;
         }
 
@@ -824,9 +831,10 @@ async Task RunImplementationPhaseAsync(
             var pub = await publisher.PublishAsync(issue.Key, result, ct);
             PrintPublishResult(issue.Key, engine, pub);
 
-            // Revue croisée : l'autre moteur relit, l'implémenteur corrige (lot 7)
+            // Revue croisée : l'autre moteur relit, l'implémenteur corrige (lot 7).
+            // Après une relève, la revue couvre les deux contributions (réconciliation).
             if (config.CrossReviewEnabled && !ct.IsCancellationRequested)
-                await RunCrossReviewAsync(issue, engine, result.Output, artifactsDir, state, stateFile, builder, runner, publisher, ct);
+                await RunCrossReviewAsync(issue, engine, result.Output, artifactsDir, state, stateFile, builder, runner, publisher, ct, reliefFrom);
 
             state.LastImplementer = engine.ToString();
             state.CompletedUsImplementations.Add(issue.Key);
@@ -1003,7 +1011,8 @@ async Task RunCrossReviewAsync(
     PromptBuilder builder,
     ActorRunner runner,
     JiraCommentPublisher publisher,
-    CancellationToken ct)
+    CancellationToken ct,
+    ActorRole? reliefFrom = null)
 {
     var reviewerName = ImplementationRotation.PickRelief(implementer.ToString(), state.QuotaExhaustedEngines);
     if (reviewerName is null)
@@ -1015,7 +1024,7 @@ async Task RunCrossReviewAsync(
     var reviewer = Enum.Parse<ActorRole>(reviewerName);
     Console.WriteLine($"  ⟲ {issue.Key} — revue croisée : {reviewer} relit {implementer}");
 
-    var reviewPrompt = builder.BuildCrossReview(reviewer, issue, implementer, implementationOutput);
+    var reviewPrompt = builder.BuildCrossReview(reviewer, issue, implementer, implementationOutput, reliefFrom);
     var review = await RunDialogueTurnAsync(reviewer, reviewPrompt, artifactsDir, runner, ct);
     if (!review.Success)
     {
@@ -1083,9 +1092,12 @@ static ActorPrompt BuildHandoffPrompt(ActorPrompt basePrompt, ActorRole failedEn
 {
     var handoffSection =
         "\n\n## RELÈVE — contexte de handoff\n" +
-        $"Le moteur précédent ({failedEngine}) a été interrompu par un épuisement de quota sur cette US. " +
-        "Vérifie l'état réel du dépôt (git status / git diff) avant d'agir : une partie du travail est peut-être déjà commitée ou en cours. " +
-        "Reprends là où il s'est arrêté — ne repars pas de zéro et ne défais pas son travail.\n" +
+        $"Le moteur précédent ({failedEngine}) a été interrompu sur cette US. " +
+        "AVANT TOUTE ÉCRITURE : fais l'inventaire complet de son travail — `git status`, `git diff`, " +
+        "`git log -5` — et liste ce qui est déjà fait. INTERDICTIONS STRICTES (chevauchement constaté au sprint 6) : " +
+        "ne réimplémente PAS ce qui existe déjà, ne crée pas de doublon de fichier/classe/service, " +
+        "ne supprime ni n'écrase son travail. COMPLÈTE uniquement ce qui manque, en réutilisant ses structures. " +
+        "Si son travail partiel est incohérent, répare a minima en le signalant explicitement dans ta sortie.\n" +
         (string.IsNullOrWhiteSpace(partialOutput)
             ? "Aucune sortie partielle disponible du moteur précédent."
             : $"### Sortie partielle du moteur précédent\n{partialOutput}");

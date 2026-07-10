@@ -303,12 +303,17 @@ public sealed class PromptBuilder
     /// de l'implémenteur — observations uniquement, les correctifs restent chez lui.
     /// </summary>
     public ActorPrompt BuildCrossReview(
-        ActorRole reviewer, JiraIssue issue, ActorRole implementer, string implementationOutput)
+        ActorRole reviewer, JiraIssue issue, ActorRole implementer, string implementationOutput,
+        ActorRole? reliefFrom = null)
     {
         var reviewerTag = reviewer.IsClaudeFamily() ? "claude-code" : "codex";
+        var reliefNote = reliefFrom is null ? "" :
+            $" ATTENTION : cette US a été implémentée EN DEUX TEMPS ({reliefFrom} puis {implementer}, relève). " +
+            "Revois l'ENSEMBLE des deux contributions : cohérence entre elles, doublons de code, " +
+            "conflits, morceaux orphelins du premier moteur.";
         var systemPrompt =
             $"Tu es le réviseur croisé du projet {_project}. Tu relis le travail d'implémentation " +
-            $"de {implementer} sur l'US {issue.Key}. Tu ne modifies RIEN — OBSERVATIONS uniquement : " +
+            $"de {implementer} sur l'US {issue.Key}.{reliefNote} Tu ne modifies RIEN — OBSERVATIONS uniquement : " +
             "anomalies, risques, écarts de périmètre, tests manquants, points forts. " +
             $"Les correctifs restent chez {implementer}. Vérifie l'état réel du dépôt (git diff / git log) si accessible. " +
             $"Tu te signes [agent: {reviewerTag} | role: revue-croisee | us: {issue.Key}]." + FormatDirective;
