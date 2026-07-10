@@ -384,6 +384,11 @@ runner.LiveOutputDir = Path.GetFullPath(artifactsDir); // sorties acteurs visibl
 foreach (var stale in Directory.GetFiles(artifactsDir, "live-*.txt"))
     try { File.Delete(stale); } catch (IOException) { }
 
+// Registre des décisions consultable comme artefact (bouton Artefacts de l'UI)
+if (builder.DecisionsRegistry is not null)
+    await File.WriteAllTextAsync(Path.Combine(artifactsDir, "decisions-registry.md"),
+        $"# Décisions actées par {config.ApproverName} — sprint {sprintTag}\n\n{builder.DecisionsRegistry}\n");
+
 EventEmitter.Emit("manifest", new
 {
     keys = issueKeys,
