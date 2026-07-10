@@ -421,6 +421,9 @@ bool implementationPhaseDone = false;
 // Directive saisie par Hajar à un checkpoint de groupe — injectée avec autorité
 // dans le groupe suivant (discussion ou acteurs simples), puis consommée.
 string? pendingApproverDirective = null;
+// Verrou de consommation du fichier pending-directive.txt (directives déposées
+// en cours de run) — deux workers parallèles peuvent le lire en concurrence.
+var pendingDirectiveLock = new SemaphoreSlim(1, 1);
 
 foreach (var group in sessionMode.GetGroupOrder())
 {
@@ -687,6 +690,38 @@ async Task RunSingleActorAsync(
     await SprintStateManager.SaveAsync(stateFile, state);
 }
 
+// ─── Directive déposée par Hajar EN COURS DE RUN (fichier pending-directive.txt
+// écrit par l'UI à tout moment) : consommée avant chaque US, injectée dans le
+// prompt et publiée sur Jira par l'outil.
+async Task<string?> ConsumePendingDirectiveAsync(string artifactsDir, JiraCommentPublisher publisher, CancellationToken ct)
+{
+    var file = Path.Combine(artifactsDir, "pending-directive.txt");
+    await pendingDirectiveLock.WaitAsync(CancellationToken.None);
+    try
+    {
+        if (!File.Exists(file)) return null;
+        string text;
+        try
+        {
+            text = (await File.ReadAllTextAsync(file, ct)).Trim();
+            File.Delete(file);
+        }
+        catch (IOException) { return null; } // en cours d'écriture par l'UI — prochain passage
+
+        if (text.Length == 0) return null;
+        Console.WriteLine($"  ⚑ Directive de {config.ApproverName} (déposée en cours de run) — appliquée à partir de la prochaine US.");
+        var pub = await publisher.PublishDecisionAsync(pilotageKey, config.ApproverName, text, ct);
+        Console.WriteLine($"  {(pub.Status == PublishStatus.Posted ? "✓" : "~")} [{pilotageKey}] décision {pub.Status}");
+        return text;
+    }
+    finally { pendingDirectiveLock.Release(); }
+}
+
+static ActorPrompt WithDirective(ActorPrompt prompt, string? directive, string approverName) =>
+    string.IsNullOrWhiteSpace(directive)
+        ? prompt
+        : prompt with { UserPrompt = prompt.UserPrompt + $"\n\n## Directive de {approverName} — à respecter\n{directive}" };
+
 // ─── Phase implémentation : tour de rôle per-US + relève sur quota (lot 5) ─────
 async Task RunImplementationPhaseAsync(
     IReadOnlyList<SprintLauncher.Jira.JiraIssue> issues,
@@ -736,6 +771,7 @@ async Task RunImplementationPhaseAsync(
         EventEmitter.Emit("implementation-us", new { key = issue.Key, engine = engine.ToString(), relief = false, usType = usType.ToString() });
 
         var prompt = builder.Build(engine, [issue], issue.Key, mode: sessionMode, frameworks: frameworks, memory: agentMemory);
+        prompt = WithDirective(prompt, await ConsumePendingDirectiveAsync(artifactsDir, publisher, ct), config.ApproverName);
         var result = await RunDialogueTurnAsync(engine, prompt, artifactsDir, runner, ct);
 
         // ── Relève : quota épuisé → l'autre moteur reprend avec le handoff ────
@@ -864,6 +900,7 @@ async Task RunImplementationParallelAsync(
             EventEmitter.Emit("implementation-us", new { key = issue.Key, engine = engine.ToString(), relief = false, parallel = true });
 
             var prompt = builder.Build(engine, [issue], issue.Key, mode: sessionMode, frameworks: frameworks, memory: agentMemory);
+            prompt = WithDirective(prompt, await ConsumePendingDirectiveAsync(artifactsDir, publisher, ct), config.ApproverName);
             var result = await RunDialogueTurnAsync(engine, prompt, artifactsDir, runner, ct);
 
             if (result.IsQuotaExhausted)

@@ -364,7 +364,12 @@ public sealed class PromptBuilder
                 "Voici le contexte complet du sprint (user stories + commentaires Jira incluant les " +
                 "décisions de pilotage). Implémente les user stories dans l'ordre de priorité validé. " +
                 "Respecte les conventions du projet (C#/.NET MAUI, Domain/Application/Infrastructure/App, " +
-                "tests xUnit, nullable enable). Commit et push à chaque user story complète.",
+                "tests xUnit, nullable enable). Commit et push à chaque user story complète. " +
+                "DISCIPLINE GIT (un autre moteur peut travailler dans le MÊME dépôt en parallèle) : " +
+                "`git add` UNIQUEMENT les fichiers de TON périmètre — jamais `git add -A` ni `git add .` ; " +
+                "message de commit préfixé de la clé US ; ne réécris jamais l'historique ; " +
+                "si un commit échoue (lock, droits), termine ta sortie par la liste exacte " +
+                "'FICHIERS MODIFIÉS:' un par ligne, pour commit par l'orchestrateur.",
 
             ActorRole.AnalysisCcode =>
                 "Voici les US du sprint à analyser avant implémentation. " +

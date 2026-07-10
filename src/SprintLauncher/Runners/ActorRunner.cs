@@ -160,8 +160,11 @@ public sealed class ActorRunner : IDisposable
         }
         else if (IsImplementationRole(prompt.Role))
         {
-            // Exécution sans approbations interactives (headless) — écriture workspace.
-            psi.ArgumentList.Add("--full-auto");
+            // --full-auto laissait .git en lecture seule ("git add: Permission denied
+            // sur .git/index.lock", constaté sur SERZENIA-98) : l'acteur codait sans
+            // pouvoir committer. L'implémentation exige les droits complets — le GO
+            // est porté par le lancement du run validé (SERZENIA-70).
+            psi.ArgumentList.Add("--dangerously-bypass-approvals-and-sandbox");
         }
         // Prompt delivered via stdin, not as CLI arg — avoids Windows 32767-char limit
 

@@ -31,6 +31,22 @@ public partial class MainWindow : Window
     private bool _publishMode; // run courant = --publish-from-artifacts / --create-us (pas de pipeline acteurs)
     private string? _usProposalsRefKey;
     private readonly List<UsProposalDialog.ProposalView> _usProposals = [];
+    // true = le CLI attend une réponse (checkpoint) → le champ envoie sur stdin ;
+    // false = run en cours → le champ dépose pending-directive.txt (consommé à la prochaine US).
+    private bool _checkpointActive;
+
+    // Panneau en mode « run » : directive déposable à tout moment, boutons de checkpoint inactifs.
+    private void ShowRunModePanel()
+    {
+        _checkpointActive = false;
+        TxtCheckpointTitle.Text = "Run en cours";
+        TxtCheckpointHint.Text = "Dépose une directive à tout moment : l'outil la publiera sur Jira et l'appliquera à partir de la prochaine US ou du prochain checkpoint.";
+        BtnGo.IsEnabled = false;
+        BtnStop.IsEnabled = false;
+        BtnConclude.IsEnabled = false;
+        PnlInterventionInput.Visibility = Visibility.Visible;
+        PnlInteractive.Visibility = Visibility.Visible;
+    }
 
     // Liste de secours affichée avant réception du manifeste CLI (événement "manifest").
     private static readonly (string Name, string Group, string GroupName)[] Definitions =
@@ -183,8 +199,7 @@ public partial class MainWindow : Window
         BtnOpenReport.IsEnabled = false;
         BtnOpenArtifacts.IsEnabled = false;
         BtnPublish.IsEnabled = false;
-        PnlInteractive.Visibility = Visibility.Collapsed;
-        PnlInterventionInput.Visibility = Visibility.Collapsed;
+        ShowRunModePanel();
         _htmlReportPath = null;
         _artifactsDir = null;
         _selectedOutputFile = null;
@@ -375,6 +390,10 @@ public partial class MainWindow : Window
                 case "checkpoint":
                 {
                     var kind = data.GetProperty("kind").GetString();
+                    _checkpointActive = true;
+                    BtnGo.IsEnabled = true;
+                    BtnStop.IsEnabled = true;
+                    BtnConclude.IsEnabled = kind is "round" or "review";
                     if (kind == "review")
                     {
                         var group = data.GetProperty("group").GetString() ?? "";
@@ -964,7 +983,8 @@ public partial class MainWindow : Window
     // ─── Interactive checkpoint + intervention ─────────────────────────────────
     private void BtnGo_Click(object sender, RoutedEventArgs e)
     {
-        HideCheckpoint();
+        if (!_checkpointActive) return;
+        ShowRunModePanel();
         TxtStatus.Text = "GO — la discussion continue...";
         AppendLog(">>> GO");
         SendStdin("\n");
@@ -972,6 +992,7 @@ public partial class MainWindow : Window
 
     private void BtnStop_Click(object sender, RoutedEventArgs e)
     {
+        if (!_checkpointActive) return;
         HideCheckpoint();
         AppendLog(">>> ARRET");
         SendStdin("n\n");
@@ -988,23 +1009,46 @@ public partial class MainWindow : Window
     {
         var text = TxtIntervention.Text.Trim();
         TxtIntervention.Clear();
-        HideCheckpoint();
 
-        if (string.IsNullOrEmpty(text))
+        // À un checkpoint : réponse directe au CLI (stdin)
+        if (_checkpointActive)
         {
-            AppendLog(">>> GO");
-            SendStdin("\n");
+            ShowRunModePanel();
+            if (string.IsNullOrEmpty(text))
+            {
+                AppendLog(">>> GO");
+                SendStdin("\n");
+                return;
+            }
+            TxtStatus.Text = "Intervention envoyée — prise en compte immédiatement.";
+            AppendLog($">>> Intervention : {text}");
+            SendStdin(text + "\n");
             return;
         }
 
-        TxtStatus.Text = "Intervention envoyée — la discussion en tient compte au prochain tour.";
-        AppendLog($">>> Intervention : {text}");
-        SendStdin(text + "\n");
+        // Hors checkpoint : directive déposée, consommée avant la prochaine US
+        if (string.IsNullOrEmpty(text)) return;
+        if (_artifactsDir is null || _process is not { HasExited: false })
+        {
+            AppendLog("(directive non déposée : aucun run actif)");
+            return;
+        }
+        try
+        {
+            File.WriteAllText(Path.Combine(_artifactsDir, "pending-directive.txt"), text);
+            AppendLog($">>> Directive déposée : {text}");
+            TxtStatus.Text = "Directive déposée — publiée et appliquée à partir de la prochaine US.";
+        }
+        catch (IOException ex)
+        {
+            AppendLog($"(directive non déposée : {ex.Message})");
+        }
     }
 
     private void BtnConclude_Click(object sender, RoutedEventArgs e)
     {
-        HideCheckpoint();
+        if (!_checkpointActive) return;
+        ShowRunModePanel();
         TxtStatus.Text = "Clôture demandée — tour de synthèse finale en cours...";
         AppendLog(">>> Conclure maintenant");
         SendStdin("fin\n");
