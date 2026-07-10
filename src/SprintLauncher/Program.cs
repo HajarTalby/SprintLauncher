@@ -1344,6 +1344,10 @@ async Task RunDialogueGroupAsync(
 {
     var transcriptBase = Path.Combine(artifactsDir, $"dialogue-{group}");
 
+    // Directive déposée à tout moment : consommée aussi à l'entrée d'une discussion
+    // (pas seulement avant les US d'implémentation).
+    approverDirective ??= await ConsumePendingDirectiveAsync(artifactsDir, publisher, ct);
+
     // Reprise : le transcript persisté est rechargé, la discussion continue au tour suivant.
     var resumedTurns = resume ? await DialogueEngine.TryLoadTranscriptAsync(transcriptBase, ct) : null;
     if (resumedTurns is { Count: > 0 })
