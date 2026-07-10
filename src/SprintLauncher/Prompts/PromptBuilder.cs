@@ -406,7 +406,7 @@ public sealed class PromptBuilder
         return new ActorPrompt(implementer, systemPrompt, sb.ToString());
     }
 
-    private static string BuildUserPrompt(ActorRole role, string sprintContext, string? previousContributions, SessionMode mode = SessionMode.Execution, FrameworkContext? frameworks = null, AgentMemoryContext? memory = null)
+    private string BuildUserPrompt(ActorRole role, string sprintContext, string? previousContributions, SessionMode mode = SessionMode.Execution, FrameworkContext? frameworks = null, AgentMemoryContext? memory = null)
     {
         var instruction = role switch
         {
