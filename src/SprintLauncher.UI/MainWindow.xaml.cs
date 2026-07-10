@@ -464,6 +464,29 @@ public partial class MainWindow : Window
                     break;
                 }
 
+                case "actor-heartbeat":
+                {
+                    var role = data.GetProperty("role").GetString();
+                    var secs = data.GetProperty("seconds").GetInt32();
+                    TxtStatus.Text = $"{role} travaille depuis {secs / 60} min (vivant — sortie à la fin du tour ou en live)";
+                    break;
+                }
+
+                case "quota-wait":
+                {
+                    var minutes = data.GetProperty("minutes").GetInt32();
+                    TxtStatus.Text = $"⏳ Quota épuisé des deux côtés — nouvelle tentative automatique dans {minutes} min";
+                    AppendLog($"!! Quota epuise des deux cotes — l'outil reste ouvert et retente dans {minutes} min.");
+                    break;
+                }
+
+                case "quota-retry":
+                {
+                    TxtStatus.Text = "⏳ Fenêtre de quota retentée — moteurs réactivés";
+                    AppendLog("Quota : moteurs reactives, reprise automatique.");
+                    break;
+                }
+
                 case "quota":
                 {
                     var engine = data.GetProperty("engine").GetString() ?? "";

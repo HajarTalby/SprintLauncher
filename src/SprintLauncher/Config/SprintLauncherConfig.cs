@@ -29,6 +29,10 @@ public sealed class SprintLauncherConfig
     // GptPilotage automatique via codex (défaut) ; GPT_PILOTAGE=semi-manual pour
     // revenir au flux copier/coller ChatGPT web historique.
     public bool GptPilotageAuto { get; init; } = true;
+    // Quand les DEUX moteurs sont à quota épuisé : l'outil reste ouvert et retente
+    // après QUOTA_WAIT_MINUTES (les fenêtres d'abonnement se rouvrent d'elles-mêmes).
+    public bool QuotaWaitEnabled { get; init; } = true;
+    public int QuotaWaitMinutes { get; init; } = 30;
     public string ProjectName { get; init; } = "SERZENIA";
     public string ApproverName { get; init; } = "Hajar";
     public string[] FrameworkKeys { get; init; } = ["SERZENIA-70", "SERZENIA-89", "SERZENIA-91"];
@@ -60,6 +64,8 @@ public sealed class SprintLauncherConfig
             InterventionEveryTurn = string.Equals(Environment.GetEnvironmentVariable("INTERVENTION_MODE"), "turn", StringComparison.OrdinalIgnoreCase),
             ParallelImplementation = string.Equals(Environment.GetEnvironmentVariable("PARALLEL_IMPLEMENTATION"), "true", StringComparison.OrdinalIgnoreCase),
             GptPilotageAuto = !(Environment.GetEnvironmentVariable("GPT_PILOTAGE") ?? "auto").StartsWith("semi", StringComparison.OrdinalIgnoreCase),
+            QuotaWaitEnabled = !string.Equals(Environment.GetEnvironmentVariable("QUOTA_WAIT"), "false", StringComparison.OrdinalIgnoreCase),
+            QuotaWaitMinutes = ReadPositiveInt("QUOTA_WAIT_MINUTES", 30),
             ProjectName = Environment.GetEnvironmentVariable("PROJECT_NAME") ?? "SERZENIA",
             ApproverName = Environment.GetEnvironmentVariable("APPROVER_NAME") ?? "Hajar",
             FrameworkKeys = (Environment.GetEnvironmentVariable("FRAMEWORK_KEYS") ?? "SERZENIA-70,SERZENIA-89,SERZENIA-91")

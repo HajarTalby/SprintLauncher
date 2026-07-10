@@ -695,6 +695,25 @@ async Task RunSingleActorAsync(
     await SprintStateManager.SaveAsync(stateFile, state);
 }
 
+// ─── Attente de fenêtre de quota : quand les deux moteurs sont épuisés, l'outil
+// reste ouvert et retente après un délai — les fenêtres d'abonnement se rouvrent
+// d'elles-mêmes ; le run n'exige plus de relance manuelle (demande Hajar).
+async Task<bool> WaitForQuotaWindowAsync(SprintState state, string stateFile, CancellationToken ct)
+{
+    if (!config.QuotaWaitEnabled || ct.IsCancellationRequested) return false;
+    var minutes = config.QuotaWaitMinutes;
+    Console.WriteLine($"  ⏳ Les deux moteurs sont à quota épuisé — nouvelle tentative dans {minutes} min (l'outil reste ouvert ; ARRET/Ctrl+C pour interrompre, reprise via --resume).");
+    EventEmitter.Emit("quota-wait", new { minutes });
+    try { await Task.Delay(TimeSpan.FromMinutes(minutes), ct); }
+    catch (TaskCanceledException) { return false; }
+    if (ct.IsCancellationRequested) return false;
+    state.QuotaExhaustedEngines.Clear();
+    await SprintStateManager.SaveAsync(stateFile, state);
+    Console.WriteLine("  ⏳ Fenêtre de quota retentée — moteurs réactivés.");
+    EventEmitter.Emit("quota-retry", new { });
+    return true;
+}
+
 // ─── Directive déposée par Hajar EN COURS DE RUN (fichier pending-directive.txt
 // écrit par l'UI à tout moment) : consommée avant chaque US, injectée dans le
 // prompt et publiée sur Jira par l'outil.
@@ -766,8 +785,16 @@ async Task RunImplementationPhaseAsync(
             config.EngineFront, config.EngineBack);
         if (engineName is null)
         {
-            Console.WriteLine("  ⚠ Les deux moteurs sont à quota épuisé — US restantes en attente. Reprendre avec --resume après reset du quota.");
-            break;
+            // Attente automatique de la réouverture de fenêtre plutôt qu'un abandon
+            if (await WaitForQuotaWindowAsync(state, stateFile, ct))
+                engineName = ImplementationRotation.PickEngineForUs(
+                    usType, state.LastImplementer, state.QuotaExhaustedEngines,
+                    config.EngineFront, config.EngineBack);
+            if (engineName is null)
+            {
+                Console.WriteLine("  ⚠ US restantes en attente — reprise via --resume.");
+                break;
+            }
         }
 
         var engine = Enum.Parse<ActorRole>(engineName);
@@ -966,8 +993,13 @@ async Task RunImplementationParallelAsync(
         var reliefName = ImplementationRotation.PickEngine(state.LastImplementer, state.QuotaExhaustedEngines);
         if (reliefName is null)
         {
-            Console.WriteLine("  ⚠ Les deux moteurs sont à quota épuisé — US restantes en attente (--resume après reset).");
-            break;
+            if (await WaitForQuotaWindowAsync(state, stateFile, ct))
+                reliefName = ImplementationRotation.PickEngine(state.LastImplementer, state.QuotaExhaustedEngines);
+            if (reliefName is null)
+            {
+                Console.WriteLine("  ⚠ US restantes en attente — reprise via --resume.");
+                break;
+            }
         }
         var relief = Enum.Parse<ActorRole>(reliefName);
         Console.WriteLine($"  ▶ {issue.Key} → {relief} (reprise de file)");
@@ -1387,7 +1419,23 @@ static string BuildDialogueComment(ActorGroup group, DialogueOutcome outcome, in
 // ─── Timer helper ─────────────────────────────────────────────────────────────
 static Task StartTimerTask(string label, Stopwatch sw, CancellationToken ct)
 {
-    if (Console.IsOutputRedirected) return Task.CompletedTask;
+    // Mode UI : battement de cœur par minute — un acteur silencieux (réflexion
+    // longue) ne doit plus ressembler à un blocage.
+    if (Console.IsOutputRedirected)
+    {
+        return Task.Run(async () =>
+        {
+            try
+            {
+                while (true)
+                {
+                    await Task.Delay(60_000, ct);
+                    EventEmitter.Emit("actor-heartbeat", new { role = label, seconds = (int)sw.Elapsed.TotalSeconds });
+                }
+            }
+            catch (TaskCanceledException) { }
+        }, ct);
+    }
 
     return Task.Run(async () =>
     {
