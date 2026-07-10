@@ -92,6 +92,11 @@ public sealed class ActorRunner : IDisposable
         psi.ArgumentList.Add("-p");
         psi.ArgumentList.Add("--model");
         psi.ArgumentList.Add(_claudeModel);
+        // Flux événementiel : réflexion/outils/texte visibles EN TEMPS RÉEL dans
+        // l'UI (demande Hajar), le résultat final est extrait de l'événement result.
+        psi.ArgumentList.Add("--output-format");
+        psi.ArgumentList.Add("stream-json");
+        psi.ArgumentList.Add("--verbose");
         // Implémentation : les outils (édition, bash, git) doivent s'exécuter sans
         // approbation interactive — le GO est porté par le lancement du run (SERZENIA-70).
         // Sans ce mode, claude -p refuse les outils et l'acteur "analyse" au lieu de coder.
@@ -122,7 +127,7 @@ public sealed class ActorRunner : IDisposable
         psi.EnvironmentVariables.Remove("CLAUDE_CODE_ENABLE_TASKS");
         psi.EnvironmentVariables.Remove("MCP_CONNECTION_NONBLOCKING");
 
-        return await RunProcessWithStdinAsync(prompt.Role, psi, fullPrompt, ct);
+        return await RunProcessWithStdinAsync(prompt.Role, psi, fullPrompt, ct, streamJson: true);
     }
 
     // GPT actors (Codex): codex exec (reads task from stdin) — subscription, no OPENAI_API_KEY
@@ -206,11 +211,12 @@ public sealed class ActorRunner : IDisposable
     }
 
     private async Task<ActorRunResult> RunProcessWithStdinAsync(
-        ActorRole role, ProcessStartInfo psi, string stdinContent, CancellationToken ct)
+        ActorRole role, ProcessStartInfo psi, string stdinContent, CancellationToken ct, bool streamJson = false)
     {
         using var process = new Process { StartInfo = psi };
         var stdout = new StringBuilder();
         var stderr = new StringBuilder();
+        var interpreter = streamJson ? new StreamJsonInterpreter() : null;
 
         string? liveFile = null;
         StreamWriter? liveWriter = null;
@@ -228,7 +234,9 @@ public sealed class ActorRunner : IDisposable
         {
             if (e.Data is null) return;
             stdout.AppendLine(e.Data);
-            try { liveWriter?.WriteLine(e.Data); } catch (ObjectDisposedException) { }
+            var liveLine = interpreter is not null ? interpreter.Interpret(e.Data) : e.Data;
+            if (liveLine is not null)
+                try { liveWriter?.WriteLine(liveLine); } catch (ObjectDisposedException) { }
         };
         process.ErrorDataReceived += (_, e) => { if (e.Data is not null) stderr.AppendLine(e.Data); };
 
@@ -288,7 +296,8 @@ public sealed class ActorRunner : IDisposable
         if (liveFile is not null)
             try { File.Delete(liveFile); } catch (IOException) { } // le fichier final output-<role>.txt prend le relais
 
-        var outputText = stdout.ToString();
+        // Flux événementiel : le livrable est le résultat extrait, pas le JSON brut
+        var outputText = interpreter is not null ? interpreter.Output : stdout.ToString();
         var errorText = stderr.ToString();
         bool success = process.ExitCode == 0;
 

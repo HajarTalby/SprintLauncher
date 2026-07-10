@@ -35,6 +35,11 @@ public sealed class SprintLauncherConfig
     public int QuotaWaitMinutes { get; init; } = 30;
     // QA outillée : commande exécutée réellement avant le verdict QA, logs injectés.
     public string QaCommand { get; init; } = "dotnet build --nologo && dotnet test --nologo";
+    // Smoke E2E : génération de la release applicative + lancement réel avec
+    // vidéo/captures injectés au verdict QA. Non configuré = écart DoD signalé.
+    public string? ReleaseCommand { get; init; }
+    public string? AppExe { get; init; }
+    public string? FfmpegPath { get; init; }
     // Boucle de remédiation : cycles max de traitement des écarts avant décision Hajar.
     public int MaxRemediationCycles { get; init; } = 2;
     public string ProjectName { get; init; } = "SERZENIA";
@@ -71,6 +76,9 @@ public sealed class SprintLauncherConfig
             QuotaWaitEnabled = !string.Equals(Environment.GetEnvironmentVariable("QUOTA_WAIT"), "false", StringComparison.OrdinalIgnoreCase),
             QuotaWaitMinutes = ReadPositiveInt("QUOTA_WAIT_MINUTES", 30),
             QaCommand = Environment.GetEnvironmentVariable("QA_COMMAND") ?? "dotnet build --nologo && dotnet test --nologo",
+            ReleaseCommand = Environment.GetEnvironmentVariable("RELEASE_COMMAND"),
+            AppExe = Environment.GetEnvironmentVariable("APP_EXE"),
+            FfmpegPath = Environment.GetEnvironmentVariable("FFMPEG"),
             MaxRemediationCycles = ReadPositiveInt("MAX_REMEDIATION_CYCLES", 2),
             ProjectName = Environment.GetEnvironmentVariable("PROJECT_NAME") ?? "SERZENIA",
             ApproverName = Environment.GetEnvironmentVariable("APPROVER_NAME") ?? "Hajar",

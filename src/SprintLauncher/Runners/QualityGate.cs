@@ -60,6 +60,115 @@ public static class QaExecutor
 }
 
 /// <summary>
+/// Smoke E2E sur RELEASE RÉELLE (SERZENIA-143 lot 8) : l'outil génère la release
+/// de l'application (RELEASE_COMMAND), la LANCE réellement, l'enregistre en vidéo
+/// (ffmpeg) avec capture d'écran, et injecte le tout au verdict QA — la QA juge
+/// l'application vivante, pas seulement les tests unitaires.
+/// </summary>
+public static class ReleaseSmoke
+{
+    public static async Task<string> RunAsync(
+        string? releaseCommand, string? appExeRelative, string? repoRoot,
+        string sprintTag, string? ffmpegPath, TimeSpan buildTimeout, CancellationToken ct)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("## SMOKE RELEASE RÉELLE");
+
+        if (repoRoot is null || string.IsNullOrWhiteSpace(releaseCommand) || string.IsNullOrWhiteSpace(appExeRelative))
+        {
+            sb.AppendLine("NON CONFIGURÉ : définir RELEASE_COMMAND (génération de la release) et APP_EXE " +
+                          "(chemin relatif de l'exe produit) dans .env — à traiter comme un écart DoD.");
+            return sb.ToString();
+        }
+
+        // 1. Génération de la release
+        sb.AppendLine($"$ {releaseCommand}");
+        var buildLog = await QaExecutor.RunAsync(releaseCommand, repoRoot, buildTimeout, ct);
+        sb.AppendLine(buildLog.Length > 4000 ? "…(tronqué)…\n" + buildLog[^4000..] : buildLog);
+
+        var appExe = Path.Combine(repoRoot, appExeRelative);
+        if (!File.Exists(appExe))
+        {
+            sb.AppendLine($"ÉCHEC : exe introuvable après génération ({appExeRelative}).");
+            return sb.ToString();
+        }
+
+        var proofDir = Path.Combine(repoRoot, "artifacts", sprintTag, "RELEASE-SMOKE");
+        Directory.CreateDirectory(Path.Combine(proofDir, "screenshots"));
+        Directory.CreateDirectory(Path.Combine(proofDir, "videos"));
+
+        // 2. Lancement réel + vidéo + capture
+        Process? app = null;
+        Process? ffmpeg = null;
+        try
+        {
+            app = Process.Start(new ProcessStartInfo { FileName = appExe, UseShellExecute = true, WorkingDirectory = Path.GetDirectoryName(appExe)! });
+            sb.AppendLine($"Application lancée (PID {app?.Id}).");
+
+            var videoPath = Path.Combine(proofDir, "videos", "release-smoke.mp4");
+            if (ffmpegPath is not null && File.Exists(ffmpegPath))
+            {
+                ffmpeg = Process.Start(new ProcessStartInfo
+                {
+                    FileName = ffmpegPath,
+                    Arguments = $"-y -f gdigrab -framerate 10 -t 20 -i desktop \"{videoPath}\"",
+                    UseShellExecute = false, CreateNoWindow = true,
+                    RedirectStandardError = true, RedirectStandardOutput = true,
+                });
+                sb.AppendLine("Enregistrement vidéo 20 s (ffmpeg gdigrab)…");
+            }
+            else sb.AppendLine("Vidéo : ffmpeg non configuré (variable FFMPEG) — captures uniquement.");
+
+            await Task.Delay(TimeSpan.FromSeconds(8), ct);
+
+            if (app is { HasExited: true })
+                sb.AppendLine($"ÉCHEC : l'application s'est fermée en {8}s (exit {app.ExitCode}) — crash au démarrage probable.");
+            else
+            {
+                var shot = Path.Combine(proofDir, "screenshots", "release-smoke-startup.png");
+                var psScript = "Add-Type -AssemblyName System.Windows.Forms,System.Drawing; " +
+                    "$b=[System.Windows.Forms.Screen]::PrimaryScreen.Bounds; " +
+                    "$bmp=New-Object System.Drawing.Bitmap($b.Width,$b.Height); " +
+                    "$g=[System.Drawing.Graphics]::FromImage($bmp); " +
+                    "$g.CopyFromScreen($b.Location,[System.Drawing.Point]::Empty,$b.Size); " +
+                    $"$bmp.Save('{shot.Replace("'", "''")}'); $g.Dispose(); $bmp.Dispose()";
+                var ps = Process.Start(new ProcessStartInfo
+                {
+                    FileName = "powershell.exe",
+                    Arguments = $"-NoProfile -Command \"{psScript.Replace("\"", "\\\"")}\"",
+                    UseShellExecute = false, CreateNoWindow = true,
+                });
+                if (ps is not null) await ps.WaitForExitAsync(ct);
+                sb.AppendLine(File.Exists(shot)
+                    ? $"Capture au démarrage : {Path.GetFileName(shot)} ({new FileInfo(shot).Length / 1024} Ko)."
+                    : "ÉCHEC capture d'écran.");
+            }
+
+            if (ffmpeg is not null)
+            {
+                await ffmpeg.WaitForExitAsync(ct);
+                sb.AppendLine(File.Exists(videoPath)
+                    ? $"Vidéo : {Path.GetFileName(videoPath)} ({new FileInfo(videoPath).Length / 1024} Ko)."
+                    : "ÉCHEC vidéo ffmpeg.");
+            }
+
+            sb.AppendLine(app is { HasExited: false }
+                ? "Application STABLE pendant le smoke (pas de crash)."
+                : "Application terminée pendant le smoke — vérifier.");
+        }
+        catch (OperationCanceledException) { sb.AppendLine("Smoke interrompu."); }
+        finally
+        {
+            try { if (app is { HasExited: false }) app.Kill(entireProcessTree: true); } catch (InvalidOperationException) { }
+            try { if (ffmpeg is { HasExited: false }) ffmpeg.Kill(entireProcessTree: true); } catch (InvalidOperationException) { }
+        }
+
+        sb.AppendLine($"Preuves du smoke : artifacts/{sprintTag}/RELEASE-SMOKE/ (à référencer dans le verdict).");
+        return sb.ToString();
+    }
+}
+
+/// <summary>
 /// Audit automatique des preuves DoD (SERZENIA-91) : présence par US des
 /// captures/vidéos/résultats de tests dans artifacts/sprintN/&lt;US&gt;/.
 /// Le résultat est injecté aux acteurs QA — une preuve absente devient un écart.

@@ -807,7 +807,10 @@ async Task<string> BuildQaContextAsync(CancellationToken ct)
     var log = await QaExecutor.RunAsync(config.QaCommand, config.SerzeniaRepoRoot,
         TimeSpan.FromSeconds(config.ImplementationTimeoutSeconds), ct);
     var audit = ProofAuditor.Audit(config.SerzeniaRepoRoot, sprintTag, issueKeys);
-    var context = log + "\n\n" + audit;
+    Console.WriteLine("  [QA outillée] smoke sur release réelle...");
+    var smoke = await ReleaseSmoke.RunAsync(config.ReleaseCommand, config.AppExe, config.SerzeniaRepoRoot,
+        sprintTag, config.FfmpegPath, TimeSpan.FromSeconds(config.ImplementationTimeoutSeconds), ct);
+    var context = log + "\n\n" + audit + "\n\n" + smoke;
     await File.WriteAllTextAsync(Path.Combine(artifactsDir, "qa-execution.log"), context, CancellationToken.None);
     Console.WriteLine("  [QA outillée] logs + audit preuves écrits (qa-execution.log)");
     return context;

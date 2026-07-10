@@ -40,6 +40,43 @@ public class EcartParserTests
     }
 }
 
+public class StreamJsonInterpreterTests
+{
+    [Fact]
+    public void Assistant_text_is_streamed_and_accumulated()
+    {
+        var i = new StreamJsonInterpreter();
+        var live = i.Interpret("""{"type":"assistant","message":{"content":[{"type":"text","text":"Analyse du module A."}]}}""");
+        Assert.Equal("Analyse du module A.", live);
+        Assert.Contains("module A", i.AccumulatedText);
+    }
+
+    [Fact]
+    public void Tool_use_becomes_readable_live_line()
+    {
+        var i = new StreamJsonInterpreter();
+        var live = i.Interpret("""{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"dotnet test"}}]}}""");
+        Assert.Contains("🔧 Bash dotnet test", live);
+    }
+
+    [Fact]
+    public void Result_event_wins_as_final_output()
+    {
+        var i = new StreamJsonInterpreter();
+        i.Interpret("""{"type":"assistant","message":{"content":[{"type":"text","text":"brouillon"}]}}""");
+        i.Interpret("""{"type":"result","subtype":"success","result":"## Livrable final propre"}""");
+        Assert.Equal("## Livrable final propre", i.Output);
+    }
+
+    [Fact]
+    public void Non_json_lines_pass_through()
+    {
+        var i = new StreamJsonInterpreter();
+        Assert.Equal("sortie brute", i.Interpret("sortie brute"));
+        Assert.Contains("sortie brute", i.Output);
+    }
+}
+
 public class ProofAuditorTests : IDisposable
 {
     private readonly string _repo;
