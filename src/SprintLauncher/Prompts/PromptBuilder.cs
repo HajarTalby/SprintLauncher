@@ -218,6 +218,9 @@ public sealed class PromptBuilder
             $"(maximum {maxRounds} allers-retours). Discute réellement : réponds aux arguments précédents, " +
             "challenge ce qui doit l'être, converge vers une décision commune — ne juxtapose pas une analyse indépendante. " +
             $"Les interventions de {_approver} ont autorité : toute directive de sa part oriente ou tranche la discussion. " +
+            $"PORTÉE DES VALIDATIONS : un accusé ponctuel de {_approver} (« ok ») sur un point précis ne vaut JAMAIS " +
+            "GO global du sprint ni validation de clôture — seule une décision explicite avec portée claire compte ; " +
+            "en cas de doute, considère le point comme réservé. " +
             $"Désigne {_approver} par son prénom uniquement — jamais de titre ou de qualificatif (pas de « direction », « approbatrice », etc.). " +
             $"Quand la discussion a abouti à une décision commune, termine ta contribution par le marqueur {DialogueEngine.ConsensusMarker}. " +
             $"N'émets ce marqueur que si tout est réellement tranché.";
@@ -238,6 +241,20 @@ public sealed class PromptBuilder
                 "'## SYNTHESE SPRINT' (vision transverse). " +
                 "En cas de désaccord non résolu entre membres, ajoute un marqueur [LITIGE: <sujet>] " +
                 "dans la synthèse — il déclenche la convocation du comité d'arbitrage.";
+        }
+
+        // QA : verdict par critère DoD + section ÉCARTS structurée — c'est elle qui
+        // pilote la boucle de remédiation de l'outil (le sprint n'est pas terminé
+        // tant qu'elle n'est pas vide).
+        if (role.GetGroup() == ActorGroup.Qa)
+        {
+            dialogueDirective +=
+                "\n\nVERDICT STRUCTURÉ OBLIGATOIRE : rends un verdict PAR CRITÈRE DoD (SERZENIA-91) en t'appuyant " +
+                "sur les LOGS D'EXÉCUTION RÉELS et l'AUDIT DES PREUVES fournis — pas seulement sur les déclarations des acteurs. " +
+                "Ta conclusion DOIT contenir une section '## ECARTS' listant chaque écart au format exact " +
+                "'- [CLE-US] description → action requise' (une ligne par écart ; '[GLOBAL]' pour un écart transverse). " +
+                "Si aucun écart : '## ECARTS' suivi de 'AUCUN'. Preuve visuelle absente sur une US à critère visuel = écart. " +
+                "Sois exigeant : documenter un écart ne le résout pas.";
         }
 
         // Cadrage : la conclusion doit produire le bloc structuré des US à créer (SERZENIA-89).
@@ -332,6 +349,36 @@ public sealed class PromptBuilder
         return new ActorPrompt(reviewer, systemPrompt, sb.ToString(), ForceReadOnly: true);
     }
 
+    /// <summary>
+    /// Remédiation d'écarts (SERZENIA-143 lot 8) : le moteur traite INTÉGRALEMENT
+    /// les écarts QA de son US — code, tests, preuves — pas de simple documentation.
+    /// </summary>
+    public ActorPrompt BuildRemediation(
+        ActorRole engine, JiraIssue issue, IReadOnlyList<string> ecarts, string? approverDirective)
+    {
+        var systemPrompt = GetSystemPrompt(engine, issue.Key);
+
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine($"REMÉDIATION — le verdict QA a identifié des écarts sur {issue.Key}. " +
+            "Traite-les INTÉGRALEMENT : implémente les correctifs, complète les tests, produis les preuves manquantes " +
+            "(captures du scénario réel dans artifacts/sprint6/" + issue.Key + "/screenshots/, résultats de tests). " +
+            "Documenter un écart ne le résout pas. Commit préfixé de la clé US.");
+        sb.AppendLine();
+        sb.AppendLine("## Écarts à traiter");
+        foreach (var e in ecarts) sb.AppendLine($"- {e}");
+        if (!string.IsNullOrWhiteSpace(approverDirective))
+        {
+            sb.AppendLine();
+            sb.AppendLine($"## Directive de {_approver} — à respecter");
+            sb.AppendLine(approverDirective);
+        }
+        sb.AppendLine();
+        sb.AppendLine($"## [{issue.Key}] {issue.Summary}");
+        sb.AppendLine(issue.Description);
+
+        return new ActorPrompt(engine, systemPrompt, sb.ToString());
+    }
+
     /// <summary>Retour de la revue croisée vers l'implémenteur : il applique ou écarte, en justifiant.</summary>
     public ActorPrompt BuildReviewCorrections(
         ActorRole implementer, JiraIssue issue, string reviewObservations, string? approverDirective)
@@ -374,7 +421,14 @@ public sealed class PromptBuilder
                 "`git add` UNIQUEMENT les fichiers de TON périmètre — jamais `git add -A` ni `git add .` ; " +
                 "message de commit préfixé de la clé US ; ne réécris jamais l'historique ; " +
                 "si un commit échoue (lock, droits), termine ta sortie par la liste exacte " +
-                "'FICHIERS MODIFIÉS:' un par ligne, pour commit par l'orchestrateur.",
+                "'FICHIERS MODIFIÉS:' un par ligne, pour commit par l'orchestrateur. " +
+                "PREUVES DoD OBLIGATOIRES (SERZENIA-91) : exécute réellement build + tests + smoke ; " +
+                "pour toute US à critère visuel, lance l'application, joue le scénario fonctionnel et " +
+                "enregistre des captures d'écran étape par étape dans artifacts/sprint6/<CLE-US>/screenshots/ " +
+                "(PowerShell System.Drawing CopyFromScreen), résultats de tests dans test-results/, logs dans logs/. " +
+                "VIDÉO : si la variable d'environnement FFMPEG est définie, enregistre le scénario en vidéo " +
+                "(`& $env:FFMPEG -f gdigrab -framerate 10 -t <durée> -i desktop videos/<scenario>.mp4`) pendant que tu le joues. " +
+                "Une US sans preuves n'est PAS terminée.",
 
             ActorRole.AnalysisCcode =>
                 "Voici les US du sprint à analyser avant implémentation. " +

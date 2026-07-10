@@ -457,6 +457,28 @@ public partial class MainWindow : Window
                     break;
                 }
 
+                case "qa-execution":
+                    AppendLog("QA outillée : exécution réelle de build+tests en cours (logs injectés au verdict)...");
+                    TxtStatus.Text = "QA outillée — exécution réelle des tests";
+                    break;
+
+                case "ecarts":
+                {
+                    var count = data.GetProperty("count").GetInt32();
+                    var cycle = data.GetProperty("cycle").GetInt32();
+                    if (count == 0)
+                    {
+                        AppendLog("DoD : AUCUN ecart au verdict QA — sprint cloturable (decision finale : Hajar).");
+                        TxtStatus.Text = "✔ DoD : aucun écart — sprint clôturable";
+                    }
+                    else
+                    {
+                        AppendLog($"!! {count} ecart(s) au verdict QA — remediation (cycle {cycle + 1}).");
+                        TxtStatus.Text = $"⚠ {count} écart(s) — remédiation en cours";
+                    }
+                    break;
+                }
+
                 case "implementation-blocked":
                 {
                     var key = data.GetProperty("key").GetString();

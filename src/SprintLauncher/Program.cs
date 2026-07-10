@@ -507,10 +507,15 @@ foreach (var group in sessionMode.GetGroupOrder())
 
     if (isCollectiveGroup)
     {
+        // QA outillée : exécution réelle + audit des preuves injectés au verdict
+        string? qaContext = group == ActorGroup.Qa
+            ? await BuildQaContextAsync(shutdownCts.Token)
+            : null;
+
         await RunDialogueGroupAsync(
             group, rolesInGroup, issues, pilotageKey,
             sprintState, stateFile, artifactsDir,
-            builder, runner, publisher, groupDirective, shutdownCts.Token);
+            builder, runner, publisher, groupDirective, qaContext, shutdownCts.Token);
     }
     else
     {
@@ -583,6 +588,104 @@ foreach (var group in sessionMode.GetGroupOrder())
             }
         }
     }
+}
+
+// ─── BOUCLE DE REMÉDIATION (lot 8) : le sprint n'est PAS terminé tant que le ────
+// verdict QA liste des écarts. L'outil les fait traiter INTÉGRALEMENT (code,
+// tests, preuves) par le moteur du périmètre, puis relance une QA outillée —
+// jusqu'à zéro écart, plafond de cycles, ou décision de Hajar.
+while (!shutdownCts.IsCancellationRequested)
+{
+    var qaVerdictFile = Path.Combine(artifactsDir, "output-Qa-collective.txt");
+    if (!File.Exists(qaVerdictFile)) break;
+
+    var ecarts = EcartParser.Parse(await File.ReadAllTextAsync(qaVerdictFile));
+    EventEmitter.Emit("ecarts", new { count = ecarts.Count, cycle = sprintState.RemediationCycles });
+
+    if (ecarts.Count == 0)
+    {
+        Console.WriteLine($"\n✔ DoD : aucun écart au verdict QA — sprint clôturable (décision finale : {config.ApproverName}).");
+        break;
+    }
+
+    Console.WriteLine($"\n── REMÉDIATION — {ecarts.Count} écart(s) détecté(s), cycle {sprintState.RemediationCycles + 1}/{config.MaxRemediationCycles} ──");
+    foreach (var (k, d) in ecarts) Console.WriteLine($"  - [{k}] {d}");
+
+    if (sprintState.RemediationCycles >= config.MaxRemediationCycles)
+    {
+        Console.WriteLine($"  ⚠ Plafond de cycles de remédiation atteint — écarts restants soumis à la décision de {config.ApproverName}.");
+        break;
+    }
+
+    string? remediationDirective = null;
+    if (interactive)
+    {
+        EventEmitter.Emit("checkpoint", new { kind = "group", group = "Remediation", next = $"REMÉDIATION cycle {sprintState.RemediationCycles + 1} ({ecarts.Count} écarts)" });
+        Console.Write("  GO pour traiter intégralement ces écarts ? [Entrée=oui / n=arrêt / texte=directive] > ");
+        var answer = Console.ReadLine()?.Trim();
+        if (answer?.ToLowerInvariant() is "n" or "non" or "no") break;
+        if (!string.IsNullOrEmpty(answer))
+        {
+            remediationDirective = answer;
+            var decPub = await publisher.PublishDecisionAsync(pilotageKey, config.ApproverName, answer, shutdownCts.Token);
+            Console.WriteLine($"  {(decPub.Status == PublishStatus.Posted ? "✓" : "~")} [{pilotageKey}] décision {decPub.Status}");
+        }
+    }
+
+    foreach (var byUs in ecarts.GroupBy(e => e.Key))
+    {
+        if (shutdownCts.IsCancellationRequested) break;
+
+        var targetKey = byUs.Key is "GLOBAL" or "TRANSVERSE" ? pilotageKey : byUs.Key;
+        var issue = issues.FirstOrDefault(i => i.Key == targetKey) ?? issues[0];
+        var usType = UsTypeClassifier.Classify(issue.Summary, issue.Description);
+        var engineName = ImplementationRotation.PickEngineForUs(
+            usType, sprintState.LastImplementer, sprintState.QuotaExhaustedEngines,
+            config.EngineFront, config.EngineBack);
+        if (engineName is null && await WaitForQuotaWindowAsync(sprintState, stateFile, shutdownCts.Token))
+            engineName = ImplementationRotation.PickEngineForUs(
+                usType, sprintState.LastImplementer, sprintState.QuotaExhaustedEngines,
+                config.EngineFront, config.EngineBack);
+        if (engineName is null) break;
+
+        var engine = Enum.Parse<ActorRole>(engineName);
+        Console.WriteLine($"  ▶ Remédiation {issue.Key} → {engine}");
+        EventEmitter.Emit("implementation-us", new { key = issue.Key, engine = engineName, relief = false, remediation = true });
+
+        var remPrompt = builder.BuildRemediation(engine, issue, byUs.Select(e => e.Description).ToList(), remediationDirective);
+        var remResult = await RunDialogueTurnAsync(engine, remPrompt, artifactsDir, runner, shutdownCts.Token);
+
+        if (remResult.IsQuotaExhausted)
+        {
+            sprintState.QuotaExhaustedEngines.Add(engineName);
+            await SprintStateManager.SaveAsync(stateFile, sprintState);
+            EventEmitter.Emit("quota", new { engine = engineName, key = issue.Key });
+            continue;
+        }
+        if (remResult.Success && !ImplementationOutputGuard.IsAwaitingGo(remResult.Output))
+        {
+            var remPub = await publisher.PublishAsync(issue.Key, remResult, shutdownCts.Token);
+            PrintPublishResult(issue.Key, engine, remPub);
+            sprintState.LastImplementer = engineName;
+            await SprintStateManager.SaveAsync(stateFile, sprintState);
+        }
+    }
+    if (shutdownCts.IsCancellationRequested) break;
+
+    // Re-vérification : QA outillée rejouée sur l'état remédié
+    sprintState.RemediationCycles++;
+    sprintState.CompletedGroups.Remove(ActorGroup.Qa.ToString());
+    foreach (var f in new[] { Path.Combine(artifactsDir, "dialogue-Qa.json"), Path.Combine(artifactsDir, "dialogue-Qa.md") })
+        try { File.Delete(f); } catch (IOException) { }
+    await SprintStateManager.SaveAsync(stateFile, sprintState);
+
+    Console.WriteLine("\n── QA (re-vérification post-remédiation) ──");
+    var qaRoles = Enum.GetValues<ActorRole>().Where(r => r.GetGroup() == ActorGroup.Qa).ToArray();
+    var freshQaContext = await BuildQaContextAsync(shutdownCts.Token);
+    await RunDialogueGroupAsync(
+        ActorGroup.Qa, qaRoles, issues, pilotageKey,
+        sprintState, stateFile, artifactsDir,
+        builder, runner, publisher, null, freshQaContext, shutdownCts.Token);
 }
 
 await SprintStateManager.WriteHandoffAsync(handoffFile, sprintState);
@@ -693,6 +796,21 @@ async Task RunSingleActorAsync(
     }
 
     await SprintStateManager.SaveAsync(stateFile, state);
+}
+
+// ─── QA outillée : exécution réelle de QA_COMMAND + audit automatique des preuves
+// DoD (SERZENIA-91) — le verdict QA s'appuie sur des faits, pas des déclarations.
+async Task<string> BuildQaContextAsync(CancellationToken ct)
+{
+    Console.WriteLine($"  [QA outillée] exécution réelle : {config.QaCommand}");
+    EventEmitter.Emit("qa-execution", new { command = config.QaCommand });
+    var log = await QaExecutor.RunAsync(config.QaCommand, config.SerzeniaRepoRoot,
+        TimeSpan.FromSeconds(config.ImplementationTimeoutSeconds), ct);
+    var audit = ProofAuditor.Audit(config.SerzeniaRepoRoot, sprintTag, issueKeys);
+    var context = log + "\n\n" + audit;
+    await File.WriteAllTextAsync(Path.Combine(artifactsDir, "qa-execution.log"), context, CancellationToken.None);
+    Console.WriteLine("  [QA outillée] logs + audit preuves écrits (qa-execution.log)");
+    return context;
 }
 
 // ─── Attente de fenêtre de quota : quand les deux moteurs sont épuisés, l'outil
@@ -858,10 +976,9 @@ async Task RunImplementationPhaseAsync(
             var pub = await publisher.PublishAsync(issue.Key, result, ct);
             PrintPublishResult(issue.Key, engine, pub);
 
-            // Revue croisée : l'autre moteur relit, l'implémenteur corrige (lot 7).
-            // Après une relève, la revue couvre les deux contributions (réconciliation).
-            if (config.CrossReviewEnabled && !ct.IsCancellationRequested)
-                await RunCrossReviewAsync(issue, engine, result.Output, artifactsDir, state, stateFile, builder, runner, publisher, ct, reliefFrom);
+            // Revue croisée due — PERSISTÉE (survit aux interruptions), exécutée en fin de phase
+            if (config.CrossReviewEnabled)
+                state.PendingReviews.Add(new PendingReview(issue.Key, engine.ToString(), reliefFrom?.ToString()));
 
             state.LastImplementer = engine.ToString();
             state.CompletedUsImplementations.Add(issue.Key);
@@ -874,6 +991,50 @@ async Task RunImplementationPhaseAsync(
         else
         {
             Console.WriteLine($"  ✗ {issue.Key} — échec {engine} (non-quota). US suivante ; --resume rejouera celle-ci.");
+        }
+    }
+
+    if (config.CrossReviewEnabled)
+        await ProcessPendingReviewsAsync(issues, artifactsDir, state, stateFile, builder, runner, publisher, ct);
+}
+
+// ─── Revues croisées en attente (persistées dans le state — lot 8) ─────────────
+async Task ProcessPendingReviewsAsync(
+    IReadOnlyList<SprintLauncher.Jira.JiraIssue> issues,
+    string artifactsDir,
+    SprintState state,
+    string stateFile,
+    PromptBuilder builder,
+    ActorRunner runner,
+    JiraCommentPublisher publisher,
+    CancellationToken ct)
+{
+    if (state.PendingReviews.Count == 0) return;
+    Console.WriteLine($"  [revues croisées : {state.PendingReviews.Count} en attente]");
+
+    foreach (var pending in state.PendingReviews.ToList())
+    {
+        if (ct.IsCancellationRequested) break;
+
+        var issue = issues.FirstOrDefault(i => i.Key == pending.Key);
+        if (issue is null)
+        {
+            state.PendingReviews.Remove(pending);
+            continue;
+        }
+
+        var implementer = Enum.Parse<ActorRole>(pending.Implementer);
+        var outputFile = Path.Combine(artifactsDir, $"output-{pending.Implementer}-{pending.Key}.txt");
+        var implOutput = File.Exists(outputFile)
+            ? await File.ReadAllTextAsync(outputFile, ct)
+            : "(sortie d'implémentation indisponible — revue basée sur l'état réel du dépôt : git log/diff)";
+        ActorRole? reliefFrom = pending.ReliefFrom is null ? null : Enum.Parse<ActorRole>(pending.ReliefFrom);
+
+        var done = await RunCrossReviewAsync(issue, implementer, implOutput, artifactsDir, state, stateFile, builder, runner, publisher, ct, reliefFrom);
+        if (done && !ct.IsCancellationRequested)
+        {
+            state.PendingReviews.Remove(pending);
+            await SprintStateManager.SaveAsync(stateFile, state);
         }
     }
 }
@@ -916,7 +1077,6 @@ async Task RunImplementationParallelAsync(
     }
 
     var stateLock = new SemaphoreSlim(1, 1);
-    var doneForReview = new System.Collections.Concurrent.ConcurrentQueue<(SprintLauncher.Jira.JiraIssue Issue, ActorRole Engine, string Output)>();
 
     async Task WorkerAsync(Queue<SprintLauncher.Jira.JiraIssue> queue, ActorRole engine)
     {
@@ -971,11 +1131,11 @@ async Task RunImplementationParallelAsync(
             {
                 state.CompletedUsImplementations.Add(issue.Key);
                 state.LastImplementer = engine.ToString();
+                if (config.CrossReviewEnabled)
+                    state.PendingReviews.Add(new PendingReview(issue.Key, engine.ToString(), null));
                 await SprintStateManager.SaveAsync(stateFile, state);
             }
             finally { stateLock.Release(); }
-
-            doneForReview.Enqueue((issue, engine, result.Output));
         }
     }
 
@@ -1013,8 +1173,9 @@ async Task RunImplementationParallelAsync(
             PrintPublishResult(issue.Key, relief, pub);
             state.CompletedUsImplementations.Add(issue.Key);
             state.LastImplementer = relief.ToString();
+            if (config.CrossReviewEnabled)
+                state.PendingReviews.Add(new PendingReview(issue.Key, relief.ToString(), null));
             await SprintStateManager.SaveAsync(stateFile, state);
-            doneForReview.Enqueue((issue, relief, result.Output));
         }
         else if (result.IsQuotaExhausted)
         {
@@ -1023,17 +1184,16 @@ async Task RunImplementationParallelAsync(
         }
     }
 
-    // ── Phase revues croisées (les deux moteurs sont libres) ──────────────────
+    // ── Phase revues croisées (les deux moteurs sont libres) — persistées ──────
     if (config.CrossReviewEnabled)
-    {
-        while (doneForReview.TryDequeue(out var item) && !ct.IsCancellationRequested)
-            await RunCrossReviewAsync(item.Issue, item.Engine, item.Output, artifactsDir, state, stateFile, builder, runner, publisher, ct);
-    }
+        await ProcessPendingReviewsAsync(issues, artifactsDir, state, stateFile, builder, runner, publisher, ct);
 }
 
 // ─── Revue croisée post-dev (lot 7) : observations par l'autre moteur, ─────────
 // correctifs chez l'implémenteur, intervention de Hajar possible entre les deux.
-async Task RunCrossReviewAsync(
+// Retourne false si la revue n'a pas pu être faite (réviseur indisponible/échec) —
+// elle reste alors en attente persistée pour un prochain passage.
+async Task<bool> RunCrossReviewAsync(
     SprintLauncher.Jira.JiraIssue issue,
     ActorRole implementer,
     string implementationOutput,
@@ -1049,8 +1209,8 @@ async Task RunCrossReviewAsync(
     var reviewerName = ImplementationRotation.PickRelief(implementer.ToString(), state.QuotaExhaustedEngines);
     if (reviewerName is null)
     {
-        Console.WriteLine($"  ○ {issue.Key} — revue croisée sautée (réviseur à quota épuisé).");
-        return;
+        Console.WriteLine($"  ○ {issue.Key} — revue croisée reportée (réviseur à quota épuisé) — reste en attente.");
+        return false;
     }
 
     var reviewer = Enum.Parse<ActorRole>(reviewerName);
@@ -1065,8 +1225,8 @@ async Task RunCrossReviewAsync(
             state.QuotaExhaustedEngines.Add(reviewer.ToString());
             await SprintStateManager.SaveAsync(stateFile, state);
         }
-        Console.WriteLine($"  ○ {issue.Key} — revue croisée abandonnée (échec {reviewer}), l'implémentation reste valide.");
-        return;
+        Console.WriteLine($"  ○ {issue.Key} — revue croisée reportée (échec {reviewer}), l'implémentation reste valide.");
+        return false;
     }
 
     await File.WriteAllTextAsync(Path.Combine(artifactsDir, $"output-Review-{issue.Key}.txt"), review.Output);
@@ -1085,7 +1245,7 @@ async Task RunCrossReviewAsync(
             var reviewOnly = $"## Revue croisée {issue.Key}\n\n### Observations ({reviewer})\n\n{review.Output.Trim()}\n\n_Correctifs non appliqués (décision de Hajar)._";
             var pubR = await publisher.PublishAsync(issue.Key, new ActorRunResult(implementer, true, reviewOnly, null, 0, false), ct);
             PrintPublishResult(issue.Key, implementer, pubR);
-            return;
+            return true;
         }
         if (!string.IsNullOrEmpty(answer)) directive = answer;
     }
@@ -1116,6 +1276,7 @@ async Task RunCrossReviewAsync(
 
     var pub = await publisher.PublishAsync(issue.Key, new ActorRunResult(implementer, true, body.ToString(), null, 0, false), ct);
     PrintPublishResult(issue.Key, implementer, pub);
+    return true;
 }
 
 // Le handoff donne au moteur de relève l'état réel : travail partiel + consigne
@@ -1150,6 +1311,7 @@ async Task RunDialogueGroupAsync(
     ActorRunner runner,
     JiraCommentPublisher publisher,
     string? approverDirective,
+    string? qaContext,
     CancellationToken ct)
 {
     var transcriptBase = Path.Combine(artifactsDir, $"dialogue-{group}");
@@ -1183,8 +1345,11 @@ async Task RunDialogueGroupAsync(
         {
             currentRound = round;
             currentIsFinal = isFinal;
-            return builder.BuildDialogueTurn(role, issues, publishKey, transcript, round,
+            var p = builder.BuildDialogueTurn(role, issues, publishKey, transcript, round,
                 config.MaxDialogueRounds, isFinal, sessionMode, frameworks, agentMemory);
+            if (qaContext is not null)
+                p = p with { UserPrompt = p.UserPrompt + "\n\n---\n\n## LOGS D'EXÉCUTION RÉELS (QA_COMMAND) + AUDIT DES PREUVES\n" + qaContext };
+            return p;
         },
         runTurn: async (role, prompt, token) =>
         {

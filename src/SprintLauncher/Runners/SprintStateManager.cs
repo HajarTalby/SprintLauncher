@@ -23,8 +23,16 @@ public sealed class SprintState
     public string? LastImplementer { get; set; }
     public HashSet<string> QuotaExhaustedEngines { get; set; } = [];
     public HashSet<string> CompletedUsImplementations { get; set; } = [];
+    // Revues croisées dues — PERSISTÉES : elles survivent aux interruptions/relances
+    // (constat sprint 6 : file en mémoire → 1 seule revue faite sur 9 US).
+    public List<PendingReview> PendingReviews { get; set; } = [];
+    // Cycles de remédiation déjà joués (bornés par MAX_REMEDIATION_CYCLES).
+    public int RemediationCycles { get; set; }
     public DateTimeOffset? LastCompletedAt { get; set; }
 }
+
+/// <summary>Revue croisée due sur une US implémentée (réviseur = l'autre moteur).</summary>
+public sealed record PendingReview(string Key, string Implementer, string? ReliefFrom);
 
 public static class SprintStateManager
 {

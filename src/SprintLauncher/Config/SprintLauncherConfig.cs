@@ -33,6 +33,10 @@ public sealed class SprintLauncherConfig
     // après QUOTA_WAIT_MINUTES (les fenêtres d'abonnement se rouvrent d'elles-mêmes).
     public bool QuotaWaitEnabled { get; init; } = true;
     public int QuotaWaitMinutes { get; init; } = 30;
+    // QA outillée : commande exécutée réellement avant le verdict QA, logs injectés.
+    public string QaCommand { get; init; } = "dotnet build --nologo && dotnet test --nologo";
+    // Boucle de remédiation : cycles max de traitement des écarts avant décision Hajar.
+    public int MaxRemediationCycles { get; init; } = 2;
     public string ProjectName { get; init; } = "SERZENIA";
     public string ApproverName { get; init; } = "Hajar";
     public string[] FrameworkKeys { get; init; } = ["SERZENIA-70", "SERZENIA-89", "SERZENIA-91"];
@@ -66,6 +70,8 @@ public sealed class SprintLauncherConfig
             GptPilotageAuto = !(Environment.GetEnvironmentVariable("GPT_PILOTAGE") ?? "auto").StartsWith("semi", StringComparison.OrdinalIgnoreCase),
             QuotaWaitEnabled = !string.Equals(Environment.GetEnvironmentVariable("QUOTA_WAIT"), "false", StringComparison.OrdinalIgnoreCase),
             QuotaWaitMinutes = ReadPositiveInt("QUOTA_WAIT_MINUTES", 30),
+            QaCommand = Environment.GetEnvironmentVariable("QA_COMMAND") ?? "dotnet build --nologo && dotnet test --nologo",
+            MaxRemediationCycles = ReadPositiveInt("MAX_REMEDIATION_CYCLES", 2),
             ProjectName = Environment.GetEnvironmentVariable("PROJECT_NAME") ?? "SERZENIA",
             ApproverName = Environment.GetEnvironmentVariable("APPROVER_NAME") ?? "Hajar",
             FrameworkKeys = (Environment.GetEnvironmentVariable("FRAMEWORK_KEYS") ?? "SERZENIA-70,SERZENIA-89,SERZENIA-91")
