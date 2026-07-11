@@ -223,6 +223,7 @@ public partial class MainWindow : Window
         var selectedMode = (CmbMode.SelectedItem as System.Windows.Controls.ComboBoxItem)?.Tag?.ToString() ?? "execution";
         _lastRunKeys = keys;
         _lastRunWasDryRun = ChkWrite.IsChecked != true;
+        _runStartTime = DateTime.Now;
 
         var cliArgs = new List<string>(keys.Split(' ', StringSplitOptions.RemoveEmptyEntries))
         {
@@ -986,12 +987,17 @@ public partial class MainWindow : Window
         ShowOutputFile(path, name);
     }
 
+    private DateTime _runStartTime = DateTime.MinValue;
+
     private void ShowOutputFile(string path, string actorName)
     {
         _selectedOutputFile = path;
-        // Horodatage visible : une sortie d'un run précédent ne doit pas passer pour actuelle
+        // Horodatage + alerte explicite : une sortie antérieure au run courant est marquée
         var ts = File.GetLastWriteTime(path);
-        TxtSelectedActor.Text = $"{actorName} — sortie du {ts:dd/MM HH:mm}";
+        var stale = _runStartTime != DateTime.MinValue && ts < _runStartTime;
+        TxtSelectedActor.Text = stale
+            ? $"⚠ RUN PRÉCÉDENT — {actorName} (sortie du {ts:dd/MM HH:mm}, avant le run en cours)"
+            : $"{actorName} — sortie du {ts:dd/MM HH:mm}";
         try
         {
             var content = File.ReadAllText(path);

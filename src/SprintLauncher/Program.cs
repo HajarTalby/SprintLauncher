@@ -384,6 +384,26 @@ runner.LiveOutputDir = Path.GetFullPath(artifactsDir); // sorties acteurs visibl
 foreach (var stale in Directory.GetFiles(artifactsDir, "live-*.txt"))
     try { File.Delete(stale); } catch (IOException) { }
 
+// Archivage des sorties d'AFFICHAGE du run précédent : la vue UI ne montre que
+// le run courant (vision claire). Conservés pour la reprise : state, transcripts
+// dialogue-*, collectifs, sorties per-US (revues en attente les relisent).
+var displayFiles = Enum.GetValues<ActorRole>()
+    .SelectMany(r => new[]
+    {
+        Path.Combine(artifactsDir, $"output-{r}.txt"),
+        Path.Combine(artifactsDir, $"prompt-{r}.txt"),
+    })
+    .Where(File.Exists)
+    .ToList();
+if (displayFiles.Count > 0)
+{
+    var archiveDir = Path.Combine(artifactsDir, "archive", DateTime.Now.ToString("yyyyMMdd-HHmmss"));
+    Directory.CreateDirectory(archiveDir);
+    foreach (var f in displayFiles)
+        try { File.Move(f, Path.Combine(archiveDir, Path.GetFileName(f)), overwrite: true); } catch (IOException) { }
+    Console.WriteLine($"  Sorties du run précédent archivées ({displayFiles.Count} fichiers → archive/).");
+}
+
 // Pré-directives déposées AVANT le lancement (fichier au répertoire courant,
 // écrit par l'UI) : publiées immédiatement + injectées au registre de CE run.
 var preDirectiveFile = Path.Combine(Directory.GetCurrentDirectory(), "pending-directive.txt");
