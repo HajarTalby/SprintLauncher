@@ -384,6 +384,25 @@ runner.LiveOutputDir = Path.GetFullPath(artifactsDir); // sorties acteurs visibl
 foreach (var stale in Directory.GetFiles(artifactsDir, "live-*.txt"))
     try { File.Delete(stale); } catch (IOException) { }
 
+// Pré-directives déposées AVANT le lancement (fichier au répertoire courant,
+// écrit par l'UI) : publiées immédiatement + injectées au registre de CE run.
+var preDirectiveFile = Path.Combine(Directory.GetCurrentDirectory(), "pending-directive.txt");
+if (File.Exists(preDirectiveFile))
+{
+    var preText = (await File.ReadAllTextAsync(preDirectiveFile)).Trim();
+    try { File.Delete(preDirectiveFile); } catch (IOException) { }
+    if (preText.Length > 0)
+    {
+        var refKey = issueKeys[0]; // US de pilotage du sprint
+        Console.WriteLine($"  ⚑ Pré-directive(s) de {config.ApproverName} détectée(s) — publication et injection immédiates.");
+        var prePub = await publisher.PublishDecisionAsync(refKey, config.ApproverName, preText, shutdownCts.Token);
+        Console.WriteLine($"  {(prePub.Status == PublishStatus.Posted ? "✓" : "~")} [{refKey}] décision {prePub.Status}");
+        var preEntry = $"### [{refKey}] (pré-directive de ce run)\n{preText}";
+        builder.DecisionsRegistry = builder.DecisionsRegistry is null ? preEntry : builder.DecisionsRegistry + "\n\n" + preEntry;
+        EventEmitter.Emit("turn", new { group = "PreRun", speaker = config.ApproverName, round = 0, isIntervention = true, content = preText });
+    }
+}
+
 // Registre des décisions consultable comme artefact (bouton Artefacts de l'UI)
 if (builder.DecisionsRegistry is not null)
     await File.WriteAllTextAsync(Path.Combine(artifactsDir, "decisions-registry.md"),

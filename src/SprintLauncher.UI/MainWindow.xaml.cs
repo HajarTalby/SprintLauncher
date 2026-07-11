@@ -78,6 +78,21 @@ public partial class MainWindow : Window
             RefreshLiveOutput();
         };
         ActorList.ItemsSource = _actors;
+        ShowPreRunPanel(); // directives déposables AVANT même le lancement
+    }
+
+    // Avant tout run : le champ est déjà là — les directives déposées seront
+    // publiées et appliquées dès le démarrage du prochain run.
+    private void ShowPreRunPanel()
+    {
+        _checkpointActive = false;
+        TxtCheckpointTitle.Text = "Prêt — directives déposables dès maintenant";
+        TxtCheckpointHint.Text = "Écris tes décisions/directives (une par envoi, elles s'accumulent) : le prochain run les publiera sur l'US de pilotage et les appliquera dès le départ.";
+        BtnGo.IsEnabled = false;
+        BtnStop.IsEnabled = false;
+        BtnConclude.IsEnabled = false;
+        PnlInterventionInput.Visibility = Visibility.Visible;
+        PnlInteractive.Visibility = Visibility.Visible;
     }
 
     // ─── Sortie live : ce que fait l'acteur PENDANT son tour ───────────────────
@@ -614,6 +629,7 @@ public partial class MainWindow : Window
                     ? $"Publication Jira terminée — {_elapsed.Elapsed:mm\\:ss}"
                     : $"Publication échouée (exit {code}) — voir le journal";
                 AppendLog(code == 0 ? "Publication terminée." : $"Publication échouée exit {code}.");
+                ShowPreRunPanel();
                 return;
             }
 
@@ -626,6 +642,7 @@ public partial class MainWindow : Window
                 BtnOpenReport.IsEnabled = true;
             if (_artifactsDir is not null && Directory.Exists(_artifactsDir))
                 BtnOpenArtifacts.IsEnabled = true;
+            ShowPreRunPanel(); // le champ reste disponible entre les runs
         });
     }
 
@@ -1071,18 +1088,20 @@ public partial class MainWindow : Window
             return;
         }
 
-        // Hors checkpoint : directive déposée, consommée avant la prochaine US
+        // Hors checkpoint : directive déposée (elles s'ACCUMULENT), consommée par le
+        // run en cours à la prochaine US/discussion — ou par le prochain run si aucun
+        // run n'est actif (dépôt AVANT lancement).
         if (string.IsNullOrEmpty(text)) return;
-        if (_artifactsDir is null || _process is not { HasExited: false })
-        {
-            AppendLog("(directive non déposée : aucun run actif)");
-            return;
-        }
+        var targetDir = _process is { HasExited: false } && _artifactsDir is not null
+            ? _artifactsDir
+            : AppContext.BaseDirectory; // pré-directive : ramassée au démarrage du prochain run
         try
         {
-            File.WriteAllText(Path.Combine(_artifactsDir, "pending-directive.txt"), text);
+            File.AppendAllText(Path.Combine(targetDir, "pending-directive.txt"), text + Environment.NewLine);
             AppendLog($">>> Directive déposée : {text}");
-            TxtStatus.Text = "Directive déposée — publiée et appliquée à partir de la prochaine US.";
+            TxtStatus.Text = _process is { HasExited: false }
+                ? "Directive déposée — publiée et appliquée à partir de la prochaine étape."
+                : "Directive pré-déposée — elle sera publiée et appliquée dès le lancement du prochain run.";
         }
         catch (IOException ex)
         {
