@@ -1019,22 +1019,39 @@ public partial class MainWindow : Window
     }
 
     // ─── Actor selection ───────────────────────────────────────────────────────
+    // Un acteur sans sortie dans le run courant (ex. complété lors d'un run précédent,
+    // repris) affiche sa dernière sortie ARCHIVÉE, avec le bandeau RUN PRÉCÉDENT.
+    private string? FindArchivedFile(string fileName)
+    {
+        if (_artifactsDir is null) return null;
+        var archiveRoot = Path.Combine(_artifactsDir, "archive");
+        if (!Directory.Exists(archiveRoot)) return null;
+        return Directory.GetDirectories(archiveRoot)
+            .OrderByDescending(d => d)
+            .Select(d => Path.Combine(d, fileName))
+            .FirstOrDefault(File.Exists);
+    }
+
     private void ActorList_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
         if (ActorList.SelectedItem is not ActorItem item || item.IsHeader) return;
         if (_artifactsDir is null) return;
         var path = Path.Combine(_artifactsDir, $"output-{item.DisplayName}.txt");
+        if (!File.Exists(path))
+            path = FindArchivedFile($"output-{item.DisplayName}.txt") ?? path;
         if (File.Exists(path)) ShowOutputFile(path, item.DisplayName);
         else
         {
             OutputViewer.Document = new FlowDocument(
-                new Paragraph(new Run("Sortie non disponible — acteur non encore exécuté.")));
+                new Paragraph(new Run("Sortie non disponible — acteur jamais exécuté sur ce sprint.")));
             TxtSelectedActor.Text = item.DisplayName;
             BtnOpenOutputFile.IsEnabled = false;
         }
 
         // Onglet PROMPT : ce qui a réellement été envoyé à l'acteur
         var promptPath = Path.Combine(_artifactsDir, $"prompt-{item.DisplayName}.txt");
+        if (!File.Exists(promptPath))
+            promptPath = FindArchivedFile($"prompt-{item.DisplayName}.txt") ?? promptPath;
         if (File.Exists(promptPath))
         {
             TxtPromptActor.Text = $"{item.DisplayName} — prompt envoyé (dernier tour)";
