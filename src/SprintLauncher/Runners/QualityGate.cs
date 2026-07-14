@@ -213,17 +213,91 @@ public static class EcartParser
         @"##\s*ECARTS\s*\n(?<body>.*?)(?=\n##\s|\Z)",
         RegexOptions.Singleline | RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
+    // Fallback : les acteurs QA n'émettent pas toujours la section '## ECARTS'
+    // structurée. Un verdict qui liste des « Conditions de revalidation », des
+    // « Réserves », des « Écarts » ou des « Points bloquants » DÉCRIT des écarts —
+    // le tool doit les traiter, pas clôturer le sprint. Analyse LIGNE PAR LIGNE
+    // (prévisible et portable, contrairement à un méga-regex multiligne).
+
+    // Titre de section signalant des écarts, une fois les marqueurs markdown retirés.
+    private static readonly Regex EcartHeaderKeywords = new(
+        @"^(?:conditions?\s+de\s+(?:revalidation|cl[ôo]ture)|r[ée]serves?|[eé]carts?" +
+        @"|points?\s+bloquants?|non[- ]?conformit[ée]s?|blocages?|anomalies?\s+bloquantes?)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    // Dernière signature d'US du verdict (ex. '[agent: gpt-chat | ... | us: SERZENIA-98]').
+    private static readonly Regex SignatureUs = new(
+        @"\bus:[ \t]*(?<key>[A-Z][A-Z0-9]+-\d+)",
+        RegexOptions.Compiled);
+
     public static List<(string Key, string Description)> Parse(string qaVerdict)
     {
-        var section = EcartsSection.Match(qaVerdict);
-        if (!section.Success) return [];
-        var body = section.Groups["body"].Value;
-        if (body.Contains("AUCUN", StringComparison.OrdinalIgnoreCase) && !EcartLine.IsMatch(body))
-            return [];
+        if (string.IsNullOrWhiteSpace(qaVerdict)) return [];
 
-        return EcartLine.Matches(body)
-            .Select(m => (m.Groups["key"].Value, m.Groups["desc"].Value.Trim()))
-            .Where(e => e.Item2.Length > 5)
-            .ToList();
+        // 1) Format structuré préféré : section '## ECARTS' avec lignes '- [CLE] ...'
+        var section = EcartsSection.Match(qaVerdict);
+        if (section.Success)
+        {
+            var body = section.Groups["body"].Value;
+            var keyed = EcartLine.Matches(body)
+                .Select(m => (m.Groups["key"].Value, m.Groups["desc"].Value.Trim()))
+                .Where(e => e.Item2.Length > 5)
+                .ToList();
+            if (keyed.Count > 0) return keyed;
+            // 'AUCUN' explicite et aucune ligne d'écart → sprint propre.
+            if (body.Contains("AUCUN", StringComparison.OrdinalIgnoreCase)) return [];
+        }
+
+        // 2) Fallback ligne par ligne : sections d'écarts en prose. On entre dans une
+        // section sur un titre-clé, on collecte ses puces, on sort sur un autre titre
+        // markdown ou la signature de l'acteur.
+        var fallbackKey = DefaultKey(qaVerdict);
+        var results = new List<(string Key, string Description)>();
+        var inEcartSection = false;
+
+        foreach (var raw in qaVerdict.Replace("\r\n", "\n").Split('\n'))
+        {
+            var line = raw.Trim();
+            if (line.Length == 0) continue; // les lignes vides n'interrompent pas la liste
+
+            // Signature d'acteur / marqueur de décision → fin de section.
+            if (line.StartsWith('[') &&
+                (line.Contains("agent:") || line.Contains("collectif:") || line.Contains("decision:")))
+            { inEcartSection = false; continue; }
+
+            var isBullet = line.StartsWith("- ") || line.StartsWith("* ");
+
+            if (IsEcartHeader(line)) { inEcartSection = true; continue; }
+
+            if (inEcartSection && isBullet)
+            {
+                var own = EcartLine.Match(raw);
+                var key = own.Success ? own.Groups["key"].Value : fallbackKey;
+                var desc = (own.Success ? own.Groups["desc"].Value : line[2..]).Trim().TrimEnd('.', ' ');
+                if (desc.Length > 5 && !results.Any(r => r.Key == key && r.Description == desc))
+                    results.Add((key, desc));
+            }
+            else if (inEcartSection && !isBullet && (line.StartsWith('#') || line.StartsWith("**")))
+            {
+                inEcartSection = false; // nouveau titre non-écart → on sort
+            }
+        }
+        return results;
+    }
+
+    // Un titre est une section d'écarts si, une fois retirés les # / ** / : de markdown,
+    // il commence par un mot-clé d'écart (conditions de revalidation, réserves, écarts…).
+    private static bool IsEcartHeader(string line)
+    {
+        var t = line.Trim().Trim('#', '*', ' ').TrimEnd(':', ' ', '*').Trim();
+        return t.Length <= 60 && EcartHeaderKeywords.IsMatch(t);
+    }
+
+    // US de rattachement des écarts en prose : dernière signature 'us: KEY', sinon GLOBAL
+    // (mappé sur le ticket de pilotage par la boucle de remédiation).
+    private static string DefaultKey(string verdict)
+    {
+        var matches = SignatureUs.Matches(verdict);
+        return matches.Count > 0 ? matches[^1].Groups["key"].Value : "GLOBAL";
     }
 }

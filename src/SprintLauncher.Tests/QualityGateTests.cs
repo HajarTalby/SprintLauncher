@@ -38,6 +38,63 @@ public class EcartParserTests
     {
         Assert.Empty(EcartParser.Parse("PASS sans section structurée."));
     }
+
+    [Fact]
+    public void Clean_go_verdict_without_reservations_is_empty()
+    {
+        var verdict = """
+        ## Verdict par critère
+        - build : OK
+        - preuves : OK
+
+        GO sans réserve — tous les critères DoD satisfaits.
+
+        [agent: gpt-chat | role: qa-verdict | us: SERZENIA-98]
+        """;
+        Assert.Empty(EcartParser.Parse(verdict));
+    }
+
+    // Régression sprint 6 : le verdict QA réel liste ses écarts en prose sous
+    // « Conditions De Revalidation » (pas de section '## ECARTS'). Le parseur DOIT
+    // quand même les détecter et les rattacher à l'US de la signature — sinon la
+    // remédiation croit le sprint propre et le clôture à tort.
+    [Fact]
+    public void Prose_revalidation_conditions_are_detected_as_ecarts()
+    {
+        var verdict = """
+        ## Verdict QA — SERZENIA-98
+
+        Le rendu n'est pas prouvé.
+
+        **Conditions De Revalidation**
+
+        - Produire et poster les captures attendues : Home v2, Mer calme, Aube lumineuse.
+        - Fournir preuve UI non-headless ou captures device/Windows exploitables.
+        - Compléter artefacts 98 : checklist, mapping preuve/ticket, test-results, screenshots.
+
+        [agent: gpt-chat | role: qa-verdict | us: SERZENIA-98]
+        [CONSENSUS]
+        """;
+
+        var ecarts = EcartParser.Parse(verdict);
+        Assert.Equal(3, ecarts.Count);
+        Assert.All(ecarts, e => Assert.Equal("SERZENIA-98", e.Key));
+        Assert.Contains(ecarts, e => e.Description.Contains("captures attendues"));
+    }
+
+    [Fact]
+    public void Prose_ecarts_without_signature_fall_back_to_global()
+    {
+        var verdict = """
+        ## Réserves
+
+        - Bottom nav non prouvée par logs ou captures.
+        - Traçabilité Git à nettoyer.
+        """;
+        var ecarts = EcartParser.Parse(verdict);
+        Assert.Equal(2, ecarts.Count);
+        Assert.All(ecarts, e => Assert.Equal("GLOBAL", e.Key));
+    }
 }
 
 public class StreamJsonInterpreterTests
