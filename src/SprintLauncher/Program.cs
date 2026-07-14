@@ -649,6 +649,7 @@ foreach (var group in sessionMode.GetGroupOrder())
                 // La décision est tracée sur Jira PAR L'OUTIL (ticket pilotage)
                 var decisionPub = await publisher.PublishDecisionAsync(pilotageKey, config.ApproverName, answer, shutdownCts.Token);
                 Console.WriteLine($"  {(decisionPub.Status == PublishStatus.Posted ? "✓" : "~")} [{pilotageKey}] décision {decisionPub.Status}");
+                await RecordDecisionInRegistryAsync(pilotageKey, answer);
             }
         }
     }
@@ -693,6 +694,7 @@ while (!shutdownCts.IsCancellationRequested)
             remediationDirective = answer;
             var decPub = await publisher.PublishDecisionAsync(pilotageKey, config.ApproverName, answer, shutdownCts.Token);
             Console.WriteLine($"  {(decPub.Status == PublishStatus.Posted ? "✓" : "~")} [{pilotageKey}] décision {decPub.Status}");
+            await RecordDecisionInRegistryAsync(pilotageKey, answer);
         }
     }
 
@@ -921,9 +923,26 @@ async Task<string?> ConsumePendingDirectiveAsync(string artifactsDir, JiraCommen
         Console.WriteLine($"  ⚑ Directive de {config.ApproverName} (déposée en cours de run) — appliquée à partir de la prochaine US.");
         var pub = await publisher.PublishDecisionAsync(pilotageKey, config.ApproverName, text, ct);
         Console.WriteLine($"  {(pub.Status == PublishStatus.Posted ? "✓" : "~")} [{pilotageKey}] décision {pub.Status}");
+        await RecordDecisionInRegistryAsync(pilotageKey, text);
         return text;
     }
     finally { pendingDirectiveLock.Release(); }
+}
+
+// ─── Registre des décisions : toute décision donnée EN COURS DE RUN y entre ────
+// immédiatement (mémoire + fichier decisions-registry.md). Les prompts de TOUS
+// les acteurs suivants du même run la reçoivent — garantie qu'une décision déjà
+// donnée n'est jamais redemandée, sans attendre le rescan Jira du prochain run.
+async Task RecordDecisionInRegistryAsync(string usKey, string text)
+{
+    var entry = $"### [{usKey}] (donnée en cours de run, {DateTime.Now:dd/MM HH:mm})\n{text}";
+    builder.DecisionsRegistry = builder.DecisionsRegistry is null ? entry : builder.DecisionsRegistry + "\n\n" + entry;
+    try
+    {
+        await File.WriteAllTextAsync(Path.Combine(artifactsDir, "decisions-registry.md"),
+            $"# Décisions actées par {config.ApproverName} — sprint {sprintTag}\n\n{builder.DecisionsRegistry}\n");
+    }
+    catch (IOException) { } // fichier momentanément verrouillé — la mémoire reste à jour
 }
 
 static ActorPrompt WithDirective(ActorPrompt prompt, string? directive, string approverName) =>
@@ -1314,7 +1333,15 @@ async Task<bool> RunCrossReviewAsync(
             PrintPublishResult(issue.Key, implementer, pubR);
             return true;
         }
-        if (!string.IsNullOrEmpty(answer)) directive = answer;
+        if (!string.IsNullOrEmpty(answer))
+        {
+            directive = answer;
+            // Directive donnée au checkpoint de revue : tracée sur Jira PAR L'OUTIL
+            // et versée au registre comme toute décision donnée en cours de run.
+            var dirPub = await publisher.PublishDecisionAsync(issue.Key, config.ApproverName, answer, ct);
+            Console.WriteLine($"  {(dirPub.Status == PublishStatus.Posted ? "✓" : "~")} [{issue.Key}] décision {dirPub.Status}");
+            await RecordDecisionInRegistryAsync(issue.Key, answer);
+        }
     }
 
     var corrPrompt = builder.BuildReviewCorrections(implementer, issue, review.Output, directive);
@@ -1578,7 +1605,7 @@ async Task<ActorRunResult> RunDialogueTurnAsync(
 
 // ─── Checkpoint d'intervention entre rounds (mode --interactive) ──────────────
 // « GO pour continuer » est le motif reconnu par l'UI pour afficher le panneau GO/ARRÊT.
-Task<DialogueIntervention> RequestInterventionAsync(ActorGroup group, int round)
+async Task<DialogueIntervention> RequestInterventionAsync(ActorGroup group, int round)
 {
     Console.WriteLine();
     Console.WriteLine($"  ▶ Round {round - 1} terminé — discussion {group.GetGroupLabel()}");
@@ -1598,11 +1625,16 @@ Task<DialogueIntervention> RequestInterventionAsync(ActorGroup group, int round)
     {
         Console.WriteLine($"  ⚑ Intervention de {config.ApproverName} injectée dans la discussion.");
         EventEmitter.Emit("turn", new { group = group.ToString(), speaker = config.ApproverName, round, isIntervention = true, content = intervention.Text });
+        // Une intervention a autorité : tracée sur Jira PAR L'OUTIL et versée au
+        // registre — les acteurs des groupes suivants (et des runs futurs) la voient.
+        var pub = await publisher.PublishDecisionAsync(pilotageKey, config.ApproverName, intervention.Text!, shutdownCts.Token);
+        Console.WriteLine($"  {(pub.Status == PublishStatus.Posted ? "✓" : "~")} [{pilotageKey}] décision {pub.Status}");
+        await RecordDecisionInRegistryAsync(pilotageKey, intervention.Text!);
     }
     if (intervention.Kind == InterventionKind.Stop)
         Console.WriteLine("  Arrêt demandé. Utilisez --resume pour reprendre la discussion.");
 
-    return Task.FromResult(intervention);
+    return intervention;
 }
 
 // ─── Commentaire Jira de la discussion : synthèse + traçabilité ───────────────

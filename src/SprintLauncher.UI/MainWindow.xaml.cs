@@ -76,6 +76,7 @@ public partial class MainWindow : Window
         {
             TxtTimer.Text = _elapsed.Elapsed.ToString(@"mm\:ss");
             RefreshLiveOutput();
+            RefreshDecisions();
         };
         ActorList.ItemsSource = _actors;
         ShowPreRunPanel(); // directives déposables AVANT même le lancement
@@ -996,7 +997,7 @@ public partial class MainWindow : Window
         var ts = File.GetLastWriteTime(path);
         var stale = _runStartTime != DateTime.MinValue && ts < _runStartTime;
         TxtSelectedActor.Text = stale
-            ? $"⚠ RUN PRÉCÉDENT — {actorName} (sortie du {ts:dd/MM HH:mm}, avant le run en cours)"
+            ? $"⚠ RUN PRÉCÉDENT — {actorName} (sortie du {ts:dd/MM HH:mm}, avant le run en cours) — les décisions demandées ici ont pu être actées depuis : voir onglet DÉCISIONS"
             : $"{actorName} — sortie du {ts:dd/MM HH:mm}";
         try
         {
@@ -1016,6 +1017,50 @@ public partial class MainWindow : Window
     {
         TxtLog.AppendText(line + "\n");
         LogScroll.ScrollToEnd();
+    }
+
+    // ─── Onglet DÉCISIONS : registre des décisions actées par Hajar ───────────
+    // Le registre est reconstruit au démarrage de chaque run (scan des commentaires
+    // Jira du sprint) et injecté dans chaque prompt — cet onglet le rend visible
+    // pour vérifier qu'une réponse donnée a bien été enregistrée.
+    private DateTime _decisionsLastWrite = DateTime.MinValue;
+
+    private void RefreshDecisions()
+    {
+        if (TabMain.SelectedIndex != 4) return;
+        var path = _artifactsDir is null ? null : Path.Combine(_artifactsDir, "decisions-registry.md");
+        if (path is null || !File.Exists(path))
+        {
+            if (_decisionsLastWrite != DateTime.MinValue || DecisionsViewer.Document is null)
+            {
+                _decisionsLastWrite = DateTime.MinValue;
+                TxtDecisionsHeader.Text = "Aucun registre pour l'instant — il est reconstruit au démarrage de chaque run (scan des commentaires Jira du sprint).";
+                DecisionsViewer.Document = new FlowDocument(new Paragraph(new Run(
+                    "Les décisions que tu donnes aux checkpoints sont publiées sur l'US de pilotage, " +
+                    "puis reprises ici au prochain démarrage et injectées dans chaque prompt d'acteur " +
+                    "avec la consigne « NE LES REDEMANDE JAMAIS ».")));
+            }
+            return;
+        }
+        try
+        {
+            var ts = File.GetLastWriteTime(path);
+            if (ts == _decisionsLastWrite) return; // rien de nouveau
+            _decisionsLastWrite = ts;
+            TxtDecisionsHeader.Text =
+                $"Registre des décisions actées — reconstruit au démarrage du run ({ts:dd/MM HH:mm}), injecté dans chaque prompt avec « NE LES REDEMANDE JAMAIS »";
+            DecisionsViewer.Document = MarkdownToFlow(File.ReadAllText(path));
+        }
+        catch (IOException ex)
+        {
+            DecisionsViewer.Document = new FlowDocument(new Paragraph(new Run($"Lecture impossible : {ex.Message}")));
+        }
+    }
+
+    private void TabMain_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    {
+        if (!ReferenceEquals(e.OriginalSource, TabMain)) return;
+        RefreshDecisions();
     }
 
     // ─── Actor selection ───────────────────────────────────────────────────────

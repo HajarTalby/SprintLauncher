@@ -215,7 +215,7 @@
       <!-- TabControl: Journal (live run) + Sortie acteur (on-demand) -->
       <TabControl Grid.Column="2" x:Name="TabMain"
                   Background="#181825" BorderBrush="#313244" BorderThickness="0,1,0,0"
-                  Padding="0">
+                  Padding="0" SelectionChanged="TabMain_SelectionChanged">
         <TabControl.Resources>
           <Style TargetType="TabItem">
             <Setter Property="Background" Value="#11111b"/>
@@ -317,6 +317,26 @@
                           HorizontalScrollBarVisibility="Disabled">
               <TextBox x:Name="TxtPrompt" Style="{StaticResource LogBox}"/>
             </ScrollViewer>
+          </Grid>
+        </TabItem>
+
+        <!-- Onglet 5 : Décisions déjà actées par Hajar (registre injecté aux acteurs) -->
+        <TabItem Header="DÉCISIONS">
+          <Grid Background="#11111b">
+            <Grid.RowDefinitions>
+              <RowDefinition Height="Auto"/>
+              <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+            <Border Grid.Row="0" Padding="12,8" BorderBrush="#313244" BorderThickness="0,0,0,1">
+              <TextBlock x:Name="TxtDecisionsHeader"
+                         Text="Registre des décisions actées — injecté dans chaque prompt d'acteur"
+                         FontSize="11" FontWeight="SemiBold" Foreground="#a6e3a1"/>
+            </Border>
+            <FlowDocumentScrollViewer Grid.Row="1" x:Name="DecisionsViewer"
+                                      Background="Transparent"
+                                      VerticalScrollBarVisibility="Auto"
+                                      IsToolBarVisible="False"
+                                      Padding="8,4"/>
           </Grid>
         </TabItem>
 
