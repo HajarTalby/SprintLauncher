@@ -79,6 +79,38 @@ public class PromptBuilderDialogueTests
     }
 
     [Fact]
+    public void Qa_coverage_guard_flags_missing_us()
+    {
+        // La QA ne mentionne que SERZENIA-98 → les backend sont un trou de couverture.
+        var keys = new[] { "SERZENIA-98", "SERZENIA-116", "SERZENIA-112" };
+        var verdict = "## Verdict SERZENIA-98\nOK.\n\n## ECARTS\n- [SERZENIA-98] captures manquantes";
+        var issue = AnalysisSections.ValidateQaCoverage(verdict, keys);
+        Assert.NotNull(issue);
+        Assert.Contains("SERZENIA-116", issue);
+        Assert.Contains("SERZENIA-112", issue);
+
+        var full = verdict + "\n## Verdict SERZENIA-116\nSentry OK\n## Verdict SERZENIA-112\nGoogle OK";
+        Assert.Null(AnalysisSections.ValidateQaCoverage(full, keys));
+    }
+
+    [Fact]
+    public void Qa_prompt_requires_per_us_coverage_and_stop_conditions()
+    {
+        var issues = new List<JiraIssue>
+        {
+            new("SERZ-98", "UI", "desc", []),
+            new("SERZ-116", "Sentry", "desc", []),
+        };
+        var prompt = _builder.BuildDialogueTurn(
+            ActorRole.ClaudeQaVerdict, issues, "SERZ-98",
+            transcript: [], round: 1, maxRounds: 3, isFinalSynthesis: false);
+
+        Assert.Contains("COUVERTURE OBLIGATOIRE", prompt.SystemPrompt);
+        Assert.Contains("SERZ-116", prompt.SystemPrompt);
+        Assert.Contains("STOP-CONDITIONS", prompt.SystemPrompt);
+    }
+
+    [Fact]
     public void Sprint_context_is_present_in_every_turn()
     {
         var prompt = _builder.BuildDialogueTurn(

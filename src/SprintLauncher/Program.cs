@@ -1516,11 +1516,15 @@ async Task RunDialogueGroupAsync(
         requestIntervention: interactive ? round => RequestInterventionAsync(group, round) : null,
         transcriptBasePath: transcriptBase,
         resumedTurns: resumedTurns,
-        // Garde de complétude : l'analyse ne peut pas conclure tant que chaque US
-        // n'a pas sa section '## ANALYSE <KEY>' (tour de rattrapage sinon).
-        validateConclusion: group == ActorGroup.Analysis
-            ? text => AnalysisSections.ValidateCoverage(text, issues.Select(i => i.Key).ToList())
-            : null,
+        // Garde de complétude : analyse → une section '## ANALYSE <KEY>' par US ;
+        // QA → chaque US du sprint doit être mentionnée dans le verdict (sinon tour
+        // de rattrapage). Empêche la QA de ne verdicter qu'une US (retour de Hajar).
+        validateConclusion: group switch
+        {
+            ActorGroup.Analysis => text => AnalysisSections.ValidateCoverage(text, issues.Select(i => i.Key).ToList()),
+            ActorGroup.Qa       => text => AnalysisSections.ValidateQaCoverage(text, issues.Select(i => i.Key).ToList()),
+            _                   => null
+        },
         ct: ct);
 
     if (outcome.EndReason == DialogueEndReason.Stopped)

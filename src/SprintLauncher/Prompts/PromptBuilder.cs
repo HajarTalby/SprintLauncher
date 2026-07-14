@@ -253,13 +253,24 @@ public sealed class PromptBuilder
         // tant qu'elle n'est pas vide).
         if (role.GetGroup() == ActorGroup.Qa)
         {
+            var qaKeyList = string.Join(", ", issues.Select(i => i.Key));
             dialogueDirective +=
-                "\n\nVERDICT STRUCTURÉ OBLIGATOIRE : rends un verdict PAR CRITÈRE DoD (SERZENIA-91) en t'appuyant " +
-                "sur les LOGS D'EXÉCUTION RÉELS et l'AUDIT DES PREUVES fournis — pas seulement sur les déclarations des acteurs. " +
+                $"\n\nCOUVERTURE OBLIGATOIRE — {issues.Count} US à vérifier : {qaKeyList}. " +
+                "Rends un verdict PAR US pour CHACUNE (pas seulement une seule) : une US non mentionnée " +
+                "est un TROU de QA, pas un succès. Ne conclus JAMAIS et n'émets JAMAIS le consensus tant " +
+                "qu'une US n'a pas son verdict.\n" +
+                "VERDICT STRUCTURÉ OBLIGATOIRE : verdict PAR CRITÈRE DoD (SERZENIA-91) en t'appuyant sur les " +
+                "LOGS D'EXÉCUTION RÉELS et l'AUDIT DES PREUVES fournis — pas seulement sur les déclarations des acteurs.\n" +
+                "STOP-CONDITIONS / INPUTS EXTERNES : une US « implémentée en code » mais dont la PREUVE RÉELLE " +
+                "était bloquée faute d'input (ex. DSN Sentry, config provider) n'est PAS terminée. Vérifie si " +
+                "l'input est désormais fourni (variables .env, secrets, décisions de Hajar au registre) : " +
+                "s'il l'est, EXIGE la preuve réelle (intégration branchée + preuve d'exécution) — sinon c'est un " +
+                "écart '[CLE-US] preuve réelle à produire (input fourni)'. S'il manque encore, écart " +
+                "'[CLE-US] bloqué — <input> manquant'.\n" +
                 "Ta conclusion DOIT contenir une section '## ECARTS' listant chaque écart au format exact " +
                 "'- [CLE-US] description → action requise' (une ligne par écart ; '[GLOBAL]' pour un écart transverse). " +
-                "Si aucun écart : '## ECARTS' suivi de 'AUCUN'. Preuve visuelle absente sur une US à critère visuel = écart. " +
-                "Sois exigeant : documenter un écart ne le résout pas.";
+                "Si aucun écart sur AUCUNE des US : '## ECARTS' suivi de 'AUCUN'. Preuve visuelle absente sur une US " +
+                "à critère visuel = écart. Sois exigeant : documenter un écart ne le résout pas.";
         }
 
         // Cadrage : la conclusion doit produire le bloc structuré des US à créer (SERZENIA-89).

@@ -36,6 +36,19 @@ public static class AnalysisSections
             : $"la section '## ANALYSE <KEY>' manque pour {missing.Count} US : {string.Join(", ", missing)}.";
     }
 
+    /// <summary>
+    /// Garde de couverture QA : le verdict doit MENTIONNER chaque US du sprint
+    /// (retour de Hajar : la QA ne verdictait qu'une US et laissait les backend
+    /// non testées). Retourne null si toutes citées, sinon la liste des oubliées.
+    /// </summary>
+    public static string? ValidateQaCoverage(string text, IReadOnlyList<string> keys)
+    {
+        var missing = keys.Where(k => !text.Contains(k, StringComparison.OrdinalIgnoreCase)).ToList();
+        return missing.Count == 0
+            ? null
+            : $"verdict QA manquant pour {missing.Count} US (non mentionnées) : {string.Join(", ", missing)}. Rends un verdict PAR US.";
+    }
+
     public static Dictionary<string, string> Split(string text, IReadOnlyList<string> keys)
     {
         var sections = new Dictionary<string, string>();
