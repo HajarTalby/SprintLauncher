@@ -540,7 +540,7 @@ foreach (var group in sessionMode.GetGroupOrder())
             Console.WriteLine($"\n{group.GetGroupLabel()}");
             EventEmitter.Emit("checkpoint", new { kind = "group", group = group.ToString(), next = "COMITÉ D'ARBITRAGE (litige détecté)" });
             Console.Write("  ⚠ Litige détecté en analyse. GO pour continuer avec l'arbitrage ? [Entrée=oui / n=non] > ");
-            var arbAnswer = Console.ReadLine()?.Trim().ToLowerInvariant();
+            var arbAnswer = CleanLine(Console.ReadLine())?.ToLowerInvariant();
             if (arbAnswer is "n" or "non" or "no")
             {
                 Console.WriteLine("  Arbitrage non convoqué — le pipeline continue.");
@@ -631,7 +631,12 @@ foreach (var group in sessionMode.GetGroupOrder())
     }
 
     // ── Mode interactif : checkpoint entre groupes ─────────────────────────────
-    if (interactive && !shutdownCts.IsCancellationRequested)
+    // Sur --resume, les groupes déjà validés au run initial sont sautés : on NE
+    // redemande PAS un « GO pour continuer » à chaque frontière (checkpoints
+    // fantômes qui donnaient l'impression que l'outil était bloqué). On enchaîne
+    // droit vers le vrai travail restant (remédiation). Le checkpoint de
+    // remédiation, lui, reste interactif.
+    if (interactive && !resume && !shutdownCts.IsCancellationRequested)
     {
         var nextGroup = sessionMode.GetGroupOrder()
             .SkipWhile(g => g != group)
@@ -646,7 +651,7 @@ foreach (var group in sessionMode.GetGroupOrder())
         {
             EventEmitter.Emit("checkpoint", new { kind = "group", group = group.ToString(), next = nextGroup.GetGroupLabel().Trim('─', ' ') });
             Console.Write($"  GO pour continuer avec {nextGroup.GetGroupLabel()} ? [Entrée=oui / n=arrêt / texte=directive pour la suite] > ");
-            var answer = Console.ReadLine()?.Trim();
+            var answer = CleanLine(Console.ReadLine());
             if (answer?.ToLowerInvariant() is "n" or "non" or "no")
             {
                 Console.WriteLine("  Arrêt demandé. Utilisez --resume pour reprendre depuis ce point.");
@@ -696,7 +701,7 @@ while (!shutdownCts.IsCancellationRequested)
     {
         EventEmitter.Emit("checkpoint", new { kind = "group", group = "Remediation", next = $"REMÉDIATION cycle {sprintState.RemediationCycles + 1} ({ecarts.Count} écarts)" });
         Console.Write("  GO pour traiter intégralement ces écarts ? [Entrée=oui / n=arrêt / texte=directive] > ");
-        var answer = Console.ReadLine()?.Trim();
+        var answer = CleanLine(Console.ReadLine());
         if (answer?.ToLowerInvariant() is "n" or "non" or "no") break;
         if (!string.IsNullOrEmpty(answer))
         {
@@ -992,6 +997,11 @@ static ActorPrompt WithDirective(ActorPrompt prompt, string? directive, string a
     string.IsNullOrWhiteSpace(directive)
         ? prompt
         : prompt with { UserPrompt = prompt.UserPrompt + $"\n\n## Directive de {approverName} — à respecter\n{directive}" };
+
+// Réponse d'un checkpoint lue sur stdin : on retire le BOM (U+FEFF) qu'un
+// producteur stdin pourrait préfixer — sinon un « GO » (ligne vide) deviendrait
+// « ﻿ », non vide, donc interprété comme une directive au lieu d'un GO.
+static string? CleanLine(string? s) => s?.Trim().Trim('﻿').Trim();
 
 // ─── Phase implémentation : tour de rôle per-US + relève sur quota (lot 5) ─────
 async Task RunImplementationPhaseAsync(
@@ -1370,7 +1380,7 @@ async Task<bool> RunCrossReviewAsync(
     {
         EventEmitter.Emit("checkpoint", new { kind = "review", group = $"RevueCroisee-{issue.Key}", round = 1 });
         Console.Write($"  Revue {issue.Key} reçue — [Entrée=appliquer les correctifs / texte=directive / n=passer] > ");
-        var answer = Console.ReadLine()?.Trim();
+        var answer = CleanLine(Console.ReadLine());
         if (answer?.ToLowerInvariant() is "n" or "non" or "no")
         {
             Console.WriteLine("  Correctifs sautés sur décision de Hajar — revue publiée telle quelle.");
@@ -1663,7 +1673,7 @@ async Task<DialogueIntervention> RequestInterventionAsync(ActorGroup group, int 
     Console.WriteLine($"  ▶ Round {round - 1} terminé — discussion {group.GetGroupLabel()}");
     EventEmitter.Emit("checkpoint", new { kind = "round", group = group.ToString(), round });
     Console.Write("  GO pour continuer la discussion ? [Entrée=oui / n=arrêt / fin=conclure / texte=intervention] > ");
-    var answer = Console.ReadLine()?.Trim();
+    var answer = CleanLine(Console.ReadLine());
 
     var intervention = answer?.ToLowerInvariant() switch
     {

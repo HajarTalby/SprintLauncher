@@ -274,9 +274,11 @@ public partial class MainWindow : Window
             CreateNoWindow = true,
             StandardOutputEncoding = System.Text.Encoding.UTF8,
             StandardErrorEncoding  = System.Text.Encoding.UTF8,
-            // Sans ceci, les accents des interventions de Hajar sont altérés
-            // (écrits en ANSI, lus en UTF-8 par le CLI).
-            StandardInputEncoding  = System.Text.Encoding.UTF8,
+            // UTF-8 SANS BOM : Encoding.UTF8 émettrait un BOM (﻿) en tête de la
+            // 1re écriture stdin — le CLI lirait alors la 1re réponse (« GO ») comme
+            // « ﻿ », donc comme une DIRECTIVE parasite, pas un GO. (Sans encodage
+            // UTF-8 du tout, les accents des interventions seraient altérés.)
+            StandardInputEncoding  = new System.Text.UTF8Encoding(false),
         };
 
         if (isRelease)
