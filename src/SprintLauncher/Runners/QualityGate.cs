@@ -115,6 +115,15 @@ public static class ReleaseSmoke
                     UseShellExecute = false, CreateNoWindow = true,
                     RedirectStandardError = true, RedirectStandardOutput = true,
                 });
+                // ffmpeg est TRÈS verbeux sur stderr : sans drainage, le tampon du
+                // pipe se remplit et ffmpeg SE BLOQUE en écriture (deadlock — constaté
+                // en réel : ffmpeg figé 60 min, tout le run bloqué). On draine les deux
+                // flux en tâche de fond (fire-and-forget) pour que le pipe ne sature jamais.
+                if (ffmpeg is not null)
+                {
+                    _ = ffmpeg.StandardError.ReadToEndAsync();
+                    _ = ffmpeg.StandardOutput.ReadToEndAsync();
+                }
                 sb.AppendLine("Enregistrement vidéo 20 s (ffmpeg gdigrab)…");
             }
             else sb.AppendLine("Vidéo : ffmpeg non configuré (variable FFMPEG) — captures uniquement.");
@@ -138,7 +147,13 @@ public static class ReleaseSmoke
                     Arguments = $"-NoProfile -Command \"{psScript.Replace("\"", "\\\"")}\"",
                     UseShellExecute = false, CreateNoWindow = true,
                 });
-                if (ps is not null) await ps.WaitForExitAsync(ct);
+                if (ps is not null)
+                {
+                    using var psCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    psCts.CancelAfter(TimeSpan.FromSeconds(20));
+                    try { await ps.WaitForExitAsync(psCts.Token); }
+                    catch (OperationCanceledException) { try { if (!ps.HasExited) ps.Kill(true); } catch (InvalidOperationException) { } }
+                }
                 sb.AppendLine(File.Exists(shot)
                     ? $"Capture au démarrage : {Path.GetFileName(shot)} ({new FileInfo(shot).Length / 1024} Ko)."
                     : "ÉCHEC capture d'écran.");
@@ -146,7 +161,16 @@ public static class ReleaseSmoke
 
             if (ffmpeg is not null)
             {
-                await ffmpeg.WaitForExitAsync(ct);
+                // Borne dure : vidéo de 20 s + marge. Même si ffmpeg se coince, on ne
+                // bloque JAMAIS le run — on le tue et on continue.
+                using var ffCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                ffCts.CancelAfter(TimeSpan.FromSeconds(45));
+                try { await ffmpeg.WaitForExitAsync(ffCts.Token); }
+                catch (OperationCanceledException)
+                {
+                    try { if (!ffmpeg.HasExited) ffmpeg.Kill(entireProcessTree: true); } catch (InvalidOperationException) { }
+                    sb.AppendLine("Vidéo : ffmpeg interrompu (dépassement 45 s) — capture partielle.");
+                }
                 sb.AppendLine(File.Exists(videoPath)
                     ? $"Vidéo : {Path.GetFileName(videoPath)} ({new FileInfo(videoPath).Length / 1024} Ko)."
                     : "ÉCHEC vidéo ffmpeg.");
