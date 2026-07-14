@@ -10,7 +10,7 @@ namespace SprintLauncher.Runners;
 /// comme dans VS Code), et le résultat final est extrait proprement.
 /// Tolérant : une ligne non-JSON est restituée telle quelle.
 /// </summary>
-public sealed class StreamJsonInterpreter
+public sealed class StreamJsonInterpreter : ILiveInterpreter
 {
     private readonly StringBuilder _accumulated = new();
 

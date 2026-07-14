@@ -97,6 +97,34 @@ public class EcartParserTests
     }
 }
 
+public class CodexJsonInterpreterTests
+{
+    // Schéma réel capturé de `codex exec --json` (codex-cli 0.142.5).
+    [Fact]
+    public void Streams_commands_live_and_extracts_final_message()
+    {
+        var it = new CodexJsonInterpreter();
+        it.Interpret("""{"type":"thread.started","thread_id":"abc"}""");
+        it.Interpret("""{"type":"turn.started"}""");
+        var cmd = it.Interpret("""{"type":"item.started","item":{"id":"i1","type":"command_execution","command":"ls -la","status":"in_progress"}}""");
+        it.Interpret("""{"type":"item.completed","item":{"id":"i1","type":"command_execution","command":"ls -la","aggregated_output":"...","exit_code":0,"status":"completed"}}""");
+        var msg = it.Interpret("""{"type":"item.completed","item":{"id":"i2","type":"agent_message","text":"Terminé : 3 fichiers modifiés."}}""");
+        it.Interpret("""{"type":"turn.completed","usage":{"input_tokens":10}}""");
+
+        Assert.Contains("ls -la", cmd);        // commande montrée au démarrage (temps réel)
+        Assert.Contains("🔧", cmd!);
+        Assert.Equal("Terminé : 3 fichiers modifiés.", msg);
+        Assert.Equal("Terminé : 3 fichiers modifiés.", it.Output); // livrable = dernier agent_message
+    }
+
+    [Fact]
+    public void Non_json_line_is_passthrough()
+    {
+        var it = new CodexJsonInterpreter();
+        Assert.Equal("texte brut", it.Interpret("texte brut"));
+    }
+}
+
 public class StreamJsonInterpreterTests
 {
     [Fact]

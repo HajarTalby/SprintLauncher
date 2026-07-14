@@ -127,7 +127,7 @@ public sealed class ActorRunner : IDisposable
         psi.EnvironmentVariables.Remove("CLAUDE_CODE_ENABLE_TASKS");
         psi.EnvironmentVariables.Remove("MCP_CONNECTION_NONBLOCKING");
 
-        return await RunProcessWithStdinAsync(prompt.Role, psi, fullPrompt, ct, streamJson: true);
+        return await RunProcessWithStdinAsync(prompt.Role, psi, fullPrompt, ct, interpreter: new StreamJsonInterpreter());
     }
 
     // GPT actors (Codex): codex exec (reads task from stdin) — subscription, no OPENAI_API_KEY
@@ -158,6 +158,13 @@ public sealed class ActorRunner : IDisposable
         // Sans ce flag, codex exec refuse de démarrer hors d'un dépôt git « trusted »
         // ("Not inside a trusted directory") — constaté en test isolé.
         psi.ArgumentList.Add("--skip-git-repo-check");
+        // --json : événements JSONL au fil de l'eau → sortie live (réflexion, commandes,
+        // fichiers) comme claude, sinon codex n'émet rien avant la fin (« 0 car. »).
+        psi.ArgumentList.Add("--json");
+        // Livrable final fiable écrit dans un fichier (le stdout est du JSONL).
+        var lastMsgFile = Path.Combine(Path.GetTempPath(), $"codex-last-{prompt.Role}-{Guid.NewGuid():N}.txt");
+        psi.ArgumentList.Add("--output-last-message");
+        psi.ArgumentList.Add(lastMsgFile);
         if (prompt.Role.NeedsReadOnlySandbox() || prompt.ForceReadOnly)
         {
             psi.ArgumentList.Add("--sandbox");
@@ -177,7 +184,9 @@ public sealed class ActorRunner : IDisposable
         psi.EnvironmentVariables.Remove("OPENAI_API_KEY");
         psi.EnvironmentVariables.Remove("ANTHROPIC_API_KEY");
 
-        return await RunProcessWithStdinAsync(prompt.Role, psi, fullPrompt, ct);
+        return await RunProcessWithStdinAsync(
+            prompt.Role, psi, fullPrompt, ct,
+            interpreter: new CodexJsonInterpreter(), finalOutputFile: lastMsgFile);
     }
 
     // Semi-manual: generates prompt, writes to file, returns immediately
@@ -211,12 +220,12 @@ public sealed class ActorRunner : IDisposable
     }
 
     private async Task<ActorRunResult> RunProcessWithStdinAsync(
-        ActorRole role, ProcessStartInfo psi, string stdinContent, CancellationToken ct, bool streamJson = false)
+        ActorRole role, ProcessStartInfo psi, string stdinContent, CancellationToken ct,
+        ILiveInterpreter? interpreter = null, string? finalOutputFile = null)
     {
         using var process = new Process { StartInfo = psi };
         var stdout = new StringBuilder();
         var stderr = new StringBuilder();
-        var interpreter = streamJson ? new StreamJsonInterpreter() : null;
 
         string? liveFile = null;
         StreamWriter? liveWriter = null;
@@ -225,7 +234,8 @@ public sealed class ActorRunner : IDisposable
             try
             {
                 liveFile = Path.Combine(LiveOutputDir, $"live-{role}.txt");
-                liveWriter = new StreamWriter(liveFile, append: false, Encoding.UTF8) { AutoFlush = true };
+                // UTF-8 SANS BOM : sinon le live-<role>.txt démarre par ﻿ (parasite à l'affichage).
+                liveWriter = new StreamWriter(liveFile, append: false, new UTF8Encoding(false)) { AutoFlush = true };
             }
             catch (IOException) { liveWriter = null; }
         }
@@ -296,8 +306,23 @@ public sealed class ActorRunner : IDisposable
         if (liveFile is not null)
             try { File.Delete(liveFile); } catch (IOException) { } // le fichier final output-<role>.txt prend le relais
 
-        // Flux événementiel : le livrable est le résultat extrait, pas le JSON brut
-        var outputText = interpreter is not null ? interpreter.Output : stdout.ToString();
+        // Livrable : priorité au fichier --output-last-message (codex --json), sinon
+        // le résultat extrait du flux, sinon le stdout brut.
+        string outputText;
+        if (finalOutputFile is not null && File.Exists(finalOutputFile))
+        {
+            try
+            {
+                var fromFile = (await File.ReadAllTextAsync(finalOutputFile, CancellationToken.None)).Trim();
+                outputText = fromFile.Length > 0 ? fromFile : (interpreter?.Output ?? stdout.ToString());
+            }
+            catch (IOException) { outputText = interpreter?.Output ?? stdout.ToString(); }
+            try { File.Delete(finalOutputFile); } catch (IOException) { }
+        }
+        else
+        {
+            outputText = interpreter is not null ? interpreter.Output : stdout.ToString();
+        }
         var errorText = stderr.ToString();
         bool success = process.ExitCode == 0;
 
