@@ -404,9 +404,12 @@ if (displayFiles.Count > 0)
     Console.WriteLine($"  Sorties du run précédent archivées ({displayFiles.Count} fichiers → archive/).");
 }
 
-// Pré-directives déposées AVANT le lancement (fichier au répertoire courant,
-// écrit par l'UI) : publiées immédiatement + injectées au registre de CE run.
+// Pré-directives déposées AVANT le lancement (fichier au répertoire courant, écrit
+// par l'UI) : STOCKÉES et injectées au registre — PAS publiées immédiatement sur Jira.
+// Elles partiront sur Jira portées par le commentaire de l'acteur qui traite le sujet
+// (seed dans sprintState.PendingDirectives une fois l'état initialisé).
 var preDirectiveFile = Path.Combine(Directory.GetCurrentDirectory(), "pending-directive.txt");
+(string Key, string Text)? preDirectivePending = null;
 if (File.Exists(preDirectiveFile))
 {
     var preText = (await File.ReadAllTextAsync(preDirectiveFile)).Trim();
@@ -414,11 +417,10 @@ if (File.Exists(preDirectiveFile))
     if (preText.Length > 0)
     {
         var refKey = issueKeys[0]; // US de pilotage du sprint
-        Console.WriteLine($"  ⚑ Pré-directive(s) de {config.ApproverName} détectée(s) — publication et injection immédiates.");
-        var prePub = await publisher.PublishDecisionAsync(refKey, config.ApproverName, preText, shutdownCts.Token);
-        Console.WriteLine($"  {(prePub.Status == PublishStatus.Posted ? "✓" : "~")} [{refKey}] décision {prePub.Status}");
+        Console.WriteLine($"  ⚑ Pré-directive(s) de {config.ApproverName} détectée(s) — stockée(s) et injectée(s) (publiée(s) quand un acteur commentera le sujet).");
         var preEntry = $"### [{refKey}] (pré-directive de ce run)\n{preText}";
         builder.DecisionsRegistry = builder.DecisionsRegistry is null ? preEntry : builder.DecisionsRegistry + "\n\n" + preEntry;
+        preDirectivePending = (refKey, preText);
         EventEmitter.Emit("turn", new { group = "PreRun", speaker = config.ApproverName, round = 0, isIntervention = true, content = preText });
     }
 }
@@ -483,6 +485,15 @@ else
         InterruptedRoles = []
     };
 }
+
+// Seed de la pré-directive dans le stock de directives en attente (publiée quand
+// un acteur commentera l'US de pilotage).
+if (preDirectivePending is { } preDir)
+    sprintState.PendingDirectives.Add(new PendingDirective
+    {
+        SubjectKey = preDir.Key, Text = preDir.Text,
+        CreatedAt = DateTimeOffset.UtcNow, Published = false
+    });
 
 // Step 3: Run actors group by group
 ActorGroup? lastGroupPrinted = null;
@@ -646,10 +657,8 @@ foreach (var group in sessionMode.GetGroupOrder())
                 pendingApproverDirective = answer;
                 Console.WriteLine($"  ⚑ Directive de {config.ApproverName} enregistrée — elle s'applique au groupe suivant.");
                 EventEmitter.Emit("turn", new { group = nextGroup.ToString(), speaker = config.ApproverName, round = 0, isIntervention = true, content = answer });
-                // La décision est tracée sur Jira PAR L'OUTIL (ticket pilotage)
-                var decisionPub = await publisher.PublishDecisionAsync(pilotageKey, config.ApproverName, answer, shutdownCts.Token);
-                Console.WriteLine($"  {(decisionPub.Status == PublishStatus.Posted ? "✓" : "~")} [{pilotageKey}] décision {decisionPub.Status}");
-                await RecordDecisionInRegistryAsync(pilotageKey, answer);
+                // Stockée seulement — Jira quand un acteur commentera le sujet (pilotage).
+                await AddDirectiveAsync(pilotageKey, answer);
             }
         }
     }
@@ -692,9 +701,7 @@ while (!shutdownCts.IsCancellationRequested)
         if (!string.IsNullOrEmpty(answer))
         {
             remediationDirective = answer;
-            var decPub = await publisher.PublishDecisionAsync(pilotageKey, config.ApproverName, answer, shutdownCts.Token);
-            Console.WriteLine($"  {(decPub.Status == PublishStatus.Posted ? "✓" : "~")} [{pilotageKey}] décision {decPub.Status}");
-            await RecordDecisionInRegistryAsync(pilotageKey, answer);
+            await AddDirectiveAsync(pilotageKey, answer);
         }
     }
 
@@ -732,6 +739,7 @@ while (!shutdownCts.IsCancellationRequested)
         {
             var remPub = await publisher.PublishAsync(issue.Key, remResult, shutdownCts.Token);
             PrintPublishResult(issue.Key, engine, remPub);
+            await FlushDirectivesForAsync(issue.Key, shutdownCts.Token);
             sprintState.LastImplementer = engineName;
             await SprintStateManager.SaveAsync(stateFile, sprintState);
         }
@@ -851,6 +859,7 @@ async Task RunSingleActorAsync(
         {
             var pub = await publisher.PublishAsync(key, runResult);
             PrintPublishResult(key, role, pub);
+            await FlushDirectivesForAsync(key, CancellationToken.None);
         }
         state.CompletedRoles.Add(role.ToString());
         state.InterruptedRoles.Remove(role.ToString());
@@ -921,9 +930,7 @@ async Task<string?> ConsumePendingDirectiveAsync(string artifactsDir, JiraCommen
 
         if (text.Length == 0) return null;
         Console.WriteLine($"  ⚑ Directive de {config.ApproverName} (déposée en cours de run) — appliquée à partir de la prochaine US.");
-        var pub = await publisher.PublishDecisionAsync(pilotageKey, config.ApproverName, text, ct);
-        Console.WriteLine($"  {(pub.Status == PublishStatus.Posted ? "✓" : "~")} [{pilotageKey}] décision {pub.Status}");
-        await RecordDecisionInRegistryAsync(pilotageKey, text);
+        await AddDirectiveAsync(pilotageKey, text);
         return text;
     }
     finally { pendingDirectiveLock.Release(); }
@@ -943,6 +950,42 @@ async Task RecordDecisionInRegistryAsync(string usKey, string text)
             $"# Décisions actées par {config.ApproverName} — sprint {sprintTag}\n\n{builder.DecisionsRegistry}\n");
     }
     catch (IOException) { } // fichier momentanément verrouillé — la mémoire reste à jour
+}
+
+// ─── Directives de Hajar : STOCKER puis PUBLIER quand l'acteur commente le sujet ──
+// Choix de Hajar (2026-07) : le champ d'intervention ne publie PAS directement sur
+// Jira. La directive est stockée (registre injecté aux acteurs + onglet DÉCISIONS) et
+// n'arrive sur Jira que portée par le commentaire de l'acteur qui traite l'US liée.
+async Task AddDirectiveAsync(string subjectKey, string text)
+{
+    var clean = text.Trim();
+    if (clean.Length == 0) return;
+    sprintState.PendingDirectives.Add(new PendingDirective
+    {
+        SubjectKey = subjectKey, Text = clean,
+        CreatedAt = DateTimeOffset.UtcNow, Published = false
+    });
+    await RecordDecisionInRegistryAsync(subjectKey, clean); // registre + fichier (tab + prompts)
+    try { await SprintStateManager.SaveAsync(stateFile, sprintState); } catch (IOException) { }
+    Console.WriteLine($"  ⚑ Directive de {config.ApproverName} stockée pour [{subjectKey}] — publiée dès qu'un acteur commentera ce sujet.");
+}
+
+// Publie sur Jira les directives en attente liées à un sujet, au moment où un acteur
+// vient d'y publier son commentaire. Marque Published uniquement si l'écriture a
+// abouti (Posted) ou est déjà présente (Skipped) ; laisse en attente en dry-run/échec.
+async Task FlushDirectivesForAsync(string subjectKey, CancellationToken ct)
+{
+    var due = sprintState.PendingDirectives.Where(d => !d.Published && d.SubjectKey == subjectKey).ToList();
+    if (due.Count == 0) return;
+    var changed = false;
+    foreach (var d in due)
+    {
+        var pub = await publisher.PublishDecisionAsync(subjectKey, config.ApproverName, d.Text, ct);
+        Console.WriteLine($"  {(pub.Status == PublishStatus.Posted ? "✓" : "~")} [{subjectKey}] directive de {config.ApproverName} publiée (portée par le commentaire acteur) — {pub.Status}");
+        EventEmitter.Emit("publish", new { key = subjectKey, actor = "DirectiveHajar", status = pub.Status.ToString() });
+        if (pub.Status is PublishStatus.Posted or PublishStatus.Skipped) { d.Published = true; changed = true; }
+    }
+    if (changed) { try { await SprintStateManager.SaveAsync(stateFile, sprintState); } catch (IOException) { } }
 }
 
 static ActorPrompt WithDirective(ActorPrompt prompt, string? directive, string approverName) =>
@@ -1061,6 +1104,7 @@ async Task RunImplementationPhaseAsync(
             await File.WriteAllTextAsync(Path.Combine(artifactsDir, $"output-{engine}-{issue.Key}.txt"), result.Output);
             var pub = await publisher.PublishAsync(issue.Key, result, ct);
             PrintPublishResult(issue.Key, engine, pub);
+            await FlushDirectivesForAsync(issue.Key, ct);
 
             // Revue croisée due — PERSISTÉE (survit aux interruptions), exécutée en fin de phase
             if (config.CrossReviewEnabled)
@@ -1211,6 +1255,7 @@ async Task RunImplementationParallelAsync(
             await File.WriteAllTextAsync(Path.Combine(artifactsDir, $"output-{engine}-{issue.Key}.txt"), result.Output);
             var pub = await publisher.PublishAsync(issue.Key, result, ct);
             PrintPublishResult(issue.Key, engine, pub);
+            await FlushDirectivesForAsync(issue.Key, ct);
 
             await stateLock.WaitAsync(CancellationToken.None);
             try
@@ -1257,6 +1302,7 @@ async Task RunImplementationParallelAsync(
             await File.WriteAllTextAsync(Path.Combine(artifactsDir, $"output-{relief}-{issue.Key}.txt"), result.Output);
             var pub = await publisher.PublishAsync(issue.Key, result, ct);
             PrintPublishResult(issue.Key, relief, pub);
+            await FlushDirectivesForAsync(issue.Key, ct);
             state.CompletedUsImplementations.Add(issue.Key);
             state.LastImplementer = relief.ToString();
             if (config.CrossReviewEnabled)
@@ -1331,16 +1377,15 @@ async Task<bool> RunCrossReviewAsync(
             var reviewOnly = $"## Revue croisée {issue.Key}\n\n### Observations ({reviewer})\n\n{review.Output.Trim()}\n\n_Correctifs non appliqués (décision de Hajar)._";
             var pubR = await publisher.PublishAsync(issue.Key, new ActorRunResult(implementer, true, reviewOnly, null, 0, false), ct);
             PrintPublishResult(issue.Key, implementer, pubR);
+            await FlushDirectivesForAsync(issue.Key, ct);
             return true;
         }
         if (!string.IsNullOrEmpty(answer))
         {
             directive = answer;
-            // Directive donnée au checkpoint de revue : tracée sur Jira PAR L'OUTIL
-            // et versée au registre comme toute décision donnée en cours de run.
-            var dirPub = await publisher.PublishDecisionAsync(issue.Key, config.ApproverName, answer, ct);
-            Console.WriteLine($"  {(dirPub.Status == PublishStatus.Posted ? "✓" : "~")} [{issue.Key}] décision {dirPub.Status}");
-            await RecordDecisionInRegistryAsync(issue.Key, answer);
+            // Stockée + injectée ; publiée sur Jira portée par le commentaire de
+            // correction de l'acteur sur cette US (FlushDirectivesForAsync).
+            await AddDirectiveAsync(issue.Key, answer);
         }
     }
 
@@ -1370,6 +1415,8 @@ async Task<bool> RunCrossReviewAsync(
 
     var pub = await publisher.PublishAsync(issue.Key, new ActorRunResult(implementer, true, body.ToString(), null, 0, false), ct);
     PrintPublishResult(issue.Key, implementer, pub);
+    // La directive donnée au checkpoint de revue part sur Jira portée par ce commentaire.
+    await FlushDirectivesForAsync(issue.Key, ct);
     return true;
 }
 
@@ -1498,6 +1545,7 @@ async Task RunDialogueGroupAsync(
             var perUsResult = await publisher.PublishCollectiveAsync(usKey, group, perUsBody);
             Console.WriteLine($"  {(perUsResult.Status == PublishStatus.Posted ? "✓" : "~")} [{usKey}] {perUsResult.Status} (analyse per-US)");
             EventEmitter.Emit("publish", new { key = usKey, actor = "Analysis", status = perUsResult.Status.ToString() });
+            await FlushDirectivesForAsync(usKey, ct);
         }
         if (issues.Count > 1 && sections.Count == 0)
             Console.WriteLine("  ! Synthèse d'analyse sans sections '## ANALYSE <KEY>' — publication sur le ticket pilotage uniquement.");
@@ -1517,6 +1565,10 @@ async Task RunDialogueGroupAsync(
         _                     => "?"
     };
     Console.WriteLine($"  {icon} [{publishKey}] {pubResult.Status} (commentaire collectif {group})");
+    // Directives en attente sur l'US de pilotage (interventions de discussion,
+    // checkpoints de groupe) : publiées ici, portées par le commentaire collectif.
+    if (pubResult.Status != PublishStatus.Failed)
+        await FlushDirectivesForAsync(publishKey, ct);
 
     if (pubResult.Status != PublishStatus.Failed)
     {
@@ -1625,11 +1677,9 @@ async Task<DialogueIntervention> RequestInterventionAsync(ActorGroup group, int 
     {
         Console.WriteLine($"  ⚑ Intervention de {config.ApproverName} injectée dans la discussion.");
         EventEmitter.Emit("turn", new { group = group.ToString(), speaker = config.ApproverName, round, isIntervention = true, content = intervention.Text });
-        // Une intervention a autorité : tracée sur Jira PAR L'OUTIL et versée au
-        // registre — les acteurs des groupes suivants (et des runs futurs) la voient.
-        var pub = await publisher.PublishDecisionAsync(pilotageKey, config.ApproverName, intervention.Text!, shutdownCts.Token);
-        Console.WriteLine($"  {(pub.Status == PublishStatus.Posted ? "✓" : "~")} [{pilotageKey}] décision {pub.Status}");
-        await RecordDecisionInRegistryAsync(pilotageKey, intervention.Text!);
+        // Stockée + injectée aux acteurs ; publiée sur Jira portée par le commentaire
+        // collectif du groupe sur l'US de pilotage (FlushDirectivesForAsync).
+        await AddDirectiveAsync(pilotageKey, intervention.Text!);
     }
     if (intervention.Kind == InterventionKind.Stop)
         Console.WriteLine("  Arrêt demandé. Utilisez --resume pour reprendre la discussion.");

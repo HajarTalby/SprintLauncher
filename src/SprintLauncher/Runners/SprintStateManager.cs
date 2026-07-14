@@ -28,11 +28,28 @@ public sealed class SprintState
     public List<PendingReview> PendingReviews { get; set; } = [];
     // Cycles de remédiation déjà joués (bornés par MAX_REMEDIATION_CYCLES).
     public int RemediationCycles { get; set; }
+    // Directives données par Hajar mais PAS encore publiées sur Jira : stockées
+    // (onglet DÉCISIONS + registre injecté aux acteurs) et publiées uniquement quand
+    // un acteur commente sur l'US liée au sujet (choix de Hajar, 2026-07). Persistées
+    // pour survivre aux interruptions/--resume.
+    public List<PendingDirective> PendingDirectives { get; set; } = [];
     public DateTimeOffset? LastCompletedAt { get; set; }
 }
 
 /// <summary>Revue croisée due sur une US implémentée (réviseur = l'autre moteur).</summary>
 public sealed record PendingReview(string Key, string Implementer, string? ReliefFrom);
+
+/// <summary>
+/// Directive de Hajar en attente : liée à un sujet (US), stockée sans écriture Jira ;
+/// publiée seulement quand un acteur commente ce sujet. Classe mutable (Published change).
+/// </summary>
+public sealed class PendingDirective
+{
+    public string SubjectKey { get; set; } = "";
+    public string Text { get; set; } = "";
+    public DateTimeOffset CreatedAt { get; set; }
+    public bool Published { get; set; }
+}
 
 public static class SprintStateManager
 {
