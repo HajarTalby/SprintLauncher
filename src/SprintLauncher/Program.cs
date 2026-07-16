@@ -495,6 +495,23 @@ if (preDirectivePending is { } preDir)
         CreatedAt = DateTimeOffset.UtcNow, Published = false
     });
 
+// ─── REDRESSEMENT (--resume d'un sprint déjà implémenté) : le PILOTAGE d'abord ──
+// Retour de Hajar : « c'est comme si la QA faisait le rôle du pilotage ». Sur une
+// reprise, ce n'est PAS la QA qui décide ce qui reste à traiter : le comité de
+// pilotage ré-évalue l'état réel (verdict QA précédent, décisions actées, inputs
+// désormais fournis — ex. DSN Sentry) dans une discussion NEUVE et DÉCIDE les
+// actions par US ('## ECARTS'). Ces actions partent immédiatement en
+// implémentation front/back EN PARALLÈLE, puis la QA re-vérifie l'ensemble.
+var redressement = resume && sprintState.CompletedUsImplementations.Count > 0;
+if (redressement)
+{
+    sprintState.CompletedGroups.Remove(ActorGroup.CommitteePilotage.ToString());
+    sprintState.CompletedGroups.Remove(ActorGroup.Qa.ToString());
+    foreach (var f in new[] { "dialogue-CommitteePilotage.json", "dialogue-CommitteePilotage.md", "dialogue-Qa.json", "dialogue-Qa.md" })
+        try { File.Delete(Path.Combine(artifactsDir, f)); } catch (IOException) { }
+    Console.WriteLine("  ↻ REDRESSEMENT : le comité de pilotage reprend la main (discussion neuve) — il décide ce qui reste à traiter AVANT la QA.");
+}
+
 // Step 3: Run actors group by group
 ActorGroup? lastGroupPrinted = null;
 bool implementationPhaseDone = false;
@@ -587,10 +604,84 @@ foreach (var group in sessionMode.GetGroupOrder())
             ? await BuildQaContextAsync(shutdownCts.Token)
             : null;
 
+        // Redressement : le comité reçoit sa mission (décider ce qui reste à traiter)
+        // avec le verdict QA précédent — les décisions de Hajar sont déjà au registre.
+        if (redressement && group == ActorGroup.CommitteePilotage)
+        {
+            var prevVerdictFile = Path.Combine(artifactsDir, "output-Qa-collective.txt");
+            var prevVerdict = File.Exists(prevVerdictFile) ? await File.ReadAllTextAsync(prevVerdictFile) : null;
+            var mission =
+                "MISSION DE REDRESSEMENT : ce sprint a déjà été implémenté — vous reprenez la main pour DÉCIDER " +
+                "ce qui reste à traiter (ce n'est pas le rôle de la QA). Appuyez-vous sur : le verdict QA précédent " +
+                "ci-dessous, les décisions déjà actées au registre, et les inputs désormais fournis — un input externe " +
+                "arrivé depuis (ex. DSN/secret dans l'environnement) LÈVE la stop-condition : la finalisation réelle et " +
+                "sa preuve deviennent DUES. Couvrez TOUTES les US du sprint, front ET backend. " +
+                "Votre synthèse DOIT contenir une section '## ECARTS' au format '- [CLE-US] action requise' " +
+                "(une ligne par action ; 'AUCUN' si rien) : ces actions partiront immédiatement en implémentation " +
+                "front/back en parallèle, la QA vérifiera ensuite." +
+                (prevVerdict is not null ? $"\n\n## Verdict QA précédent (avant remédiation)\n{prevVerdict}" : "");
+            groupDirective = groupDirective is null ? mission : $"{groupDirective}\n\n{mission}";
+        }
+
         await RunDialogueGroupAsync(
             group, rolesInGroup, issues, pilotageKey,
             sprintState, stateFile, artifactsDir,
             builder, runner, publisher, groupDirective, qaContext, shutdownCts.Token);
+
+        // Redressement : boucle DEV ↔ PILOTAGE. Les actions décidées par le comité
+        // partent en implémentation (front/back en parallèle) + revue croisée, puis
+        // le comité RÉ-ÉVALUE — autant d'allers-retours que nécessaire : c'est LUI
+        // qui décide du passage à la QA (## ECARTS vide), pas la QA (retour Hajar).
+        if (redressement && group == ActorGroup.CommitteePilotage && !shutdownCts.IsCancellationRequested)
+        {
+            var comFile = Path.Combine(artifactsDir, $"output-{ActorGroup.CommitteePilotage}-collective.txt");
+            var pilotageCycle = 0;
+            while (!shutdownCts.IsCancellationRequested)
+            {
+                var comEcarts = File.Exists(comFile)
+                    ? EcartParser.Parse(await File.ReadAllTextAsync(comFile))
+                    : new List<(string Key, string Description)>();
+
+                if (comEcarts.Count == 0)
+                {
+                    Console.WriteLine("  ✔ Pilotage : plus d'action restante — GO pour la QA.");
+                    break;
+                }
+                if (pilotageCycle >= config.MaxRemediationCycles)
+                {
+                    Console.WriteLine($"  ⚠ Plafond d'allers-retours dev↔pilotage atteint ({config.MaxRemediationCycles}) — actions restantes soumises à {config.ApproverName} ; la QA jugera l'état actuel.");
+                    break;
+                }
+
+                pilotageCycle++;
+                Console.WriteLine($"\n── REDRESSEMENT cycle {pilotageCycle} — {comEcarts.Count} action(s) décidée(s) par le pilotage → implémentation ──");
+                foreach (var (k, d) in comEcarts) Console.WriteLine($"  - [{k}] {d}");
+                EventEmitter.Emit("ecarts", new { count = comEcarts.Count, cycle = pilotageCycle, source = "pilotage" });
+
+                await RemediateEcartsAsync(comEcarts, null, shutdownCts.Token);
+                if (shutdownCts.IsCancellationRequested) break;
+
+                // Revue croisée des remédiations — prérequis DoD (retour Hajar).
+                await ProcessPendingReviewsAsync(issues, artifactsDir, sprintState, stateFile, builder, runner, publisher, shutdownCts.Token);
+
+                // Le comité ré-évalue l'état réel après ce lot de dev (discussion neuve).
+                sprintState.CompletedGroups.Remove(ActorGroup.CommitteePilotage.ToString());
+                foreach (var f in new[] { "dialogue-CommitteePilotage.json", "dialogue-CommitteePilotage.md" })
+                    try { File.Delete(Path.Combine(artifactsDir, f)); } catch (IOException) { }
+                await SprintStateManager.SaveAsync(stateFile, sprintState);
+
+                var reEval =
+                    $"RÉ-ÉVALUATION DE REDRESSEMENT (cycle {pilotageCycle}) : les actions du cycle précédent viennent " +
+                    "d'être implémentées et revues (voir commentaires Jira des US et l'état du dépôt — vérifie-les). " +
+                    "DÉCIDEZ : soit de nouvelles actions restent dues ('## ECARTS' au format '- [CLE-US] action requise'), " +
+                    "soit le sprint est prêt pour la QA ('## ECARTS' suivi de 'AUCUN'). C'est votre décision, pas celle de la QA.";
+                Console.WriteLine($"\n── PILOTAGE — ré-évaluation post-dev (cycle {pilotageCycle}) ──");
+                await RunDialogueGroupAsync(
+                    ActorGroup.CommitteePilotage, rolesInGroup, issues, pilotageKey,
+                    sprintState, stateFile, artifactsDir,
+                    builder, runner, publisher, reEval, null, shutdownCts.Token);
+            }
+        }
     }
     else
     {
@@ -710,45 +801,11 @@ while (!shutdownCts.IsCancellationRequested)
         }
     }
 
-    foreach (var byUs in ecarts.GroupBy(e => e.Key))
-    {
-        if (shutdownCts.IsCancellationRequested) break;
+    await RemediateEcartsAsync(ecarts, remediationDirective, shutdownCts.Token);
+    if (shutdownCts.IsCancellationRequested) break;
 
-        var targetKey = byUs.Key is "GLOBAL" or "TRANSVERSE" ? pilotageKey : byUs.Key;
-        var issue = issues.FirstOrDefault(i => i.Key == targetKey) ?? issues[0];
-        var usType = UsTypeClassifier.Classify(issue.Summary, issue.Description);
-        var engineName = ImplementationRotation.PickEngineForUs(
-            usType, sprintState.LastImplementer, sprintState.QuotaExhaustedEngines,
-            config.EngineFront, config.EngineBack);
-        if (engineName is null && await WaitForQuotaWindowAsync(sprintState, stateFile, shutdownCts.Token))
-            engineName = ImplementationRotation.PickEngineForUs(
-                usType, sprintState.LastImplementer, sprintState.QuotaExhaustedEngines,
-                config.EngineFront, config.EngineBack);
-        if (engineName is null) break;
-
-        var engine = Enum.Parse<ActorRole>(engineName);
-        Console.WriteLine($"  ▶ Remédiation {issue.Key} → {engine}");
-        EventEmitter.Emit("implementation-us", new { key = issue.Key, engine = engineName, relief = false, remediation = true });
-
-        var remPrompt = builder.BuildRemediation(engine, issue, byUs.Select(e => e.Description).ToList(), remediationDirective);
-        var remResult = await RunDialogueTurnAsync(engine, remPrompt, artifactsDir, runner, shutdownCts.Token);
-
-        if (remResult.IsQuotaExhausted)
-        {
-            sprintState.QuotaExhaustedEngines.Add(engineName);
-            await SprintStateManager.SaveAsync(stateFile, sprintState);
-            EventEmitter.Emit("quota", new { engine = engineName, key = issue.Key });
-            continue;
-        }
-        if (remResult.Success && !ImplementationOutputGuard.IsAwaitingGo(remResult.Output))
-        {
-            var remPub = await publisher.PublishAsync(issue.Key, remResult, shutdownCts.Token);
-            PrintPublishResult(issue.Key, engine, remPub);
-            await FlushDirectivesForAsync(issue.Key, shutdownCts.Token);
-            sprintState.LastImplementer = engineName;
-            await SprintStateManager.SaveAsync(stateFile, sprintState);
-        }
-    }
+    // Revue croisée des remédiations — prérequis DoD (retour Hajar).
+    await ProcessPendingReviewsAsync(issues, artifactsDir, sprintState, stateFile, builder, runner, publisher, shutdownCts.Token);
     if (shutdownCts.IsCancellationRequested) break;
 
     // Re-vérification : QA outillée rejouée sur l'état remédié
@@ -890,7 +947,16 @@ async Task<string> BuildQaContextAsync(CancellationToken ct)
     Console.WriteLine("  [QA outillée] smoke sur release réelle...");
     var smoke = await ReleaseSmoke.RunAsync(config.ReleaseCommand, config.AppExe, config.SerzeniaRepoRoot,
         sprintTag, config.FfmpegPath, TimeSpan.FromSeconds(config.ImplementationTimeoutSeconds), ct);
-    var context = log + "\n\n" + audit + "\n\n" + smoke;
+    // Éléments d'exécution fournis à la QA : elle déroule ELLE-MÊME les scénarios
+    // sur la release réelle (demande Hajar) — chemins et outils explicites.
+    var tools =
+        "## Éléments d'exécution QA (tu as les droits — déroule les scénarios toi-même)\n" +
+        $"- Dépôt applicatif : {config.SerzeniaRepoRoot}\n" +
+        $"- Release réelle (déjà générée par la commande ci-dessus) : exécutable {config.AppExe}\n" +
+        $"- Commande de release (pour régénérer si besoin) : {config.ReleaseCommand}\n" +
+        $"- ffmpeg (vidéos de scénarios, gdigrab) : {config.FfmpegPath ?? "non configuré"}\n" +
+        $"- Dépose tes preuves dans : artifacts/{sprintTag}/<US>/screenshots|videos|test-results/";
+    var context = log + "\n\n" + audit + "\n\n" + smoke + "\n\n" + tools;
     await File.WriteAllTextAsync(Path.Combine(artifactsDir, "qa-execution.log"), context, CancellationToken.None);
     Console.WriteLine("  [QA outillée] logs + audit preuves écrits (qa-execution.log)");
     return context;
@@ -973,6 +1039,97 @@ async Task AddDirectiveAsync(string subjectKey, string text)
     await RecordDecisionInRegistryAsync(subjectKey, clean); // registre + fichier (tab + prompts)
     try { await SprintStateManager.SaveAsync(stateFile, sprintState); } catch (IOException) { }
     Console.WriteLine($"  ⚑ Directive de {config.ApproverName} stockée pour [{subjectKey}] — publiée dès qu'un acteur commentera ce sujet.");
+}
+
+// ─── Dispatch de remédiation : traite une liste d'écarts/actions par US ─────────
+// Utilisé par le pilotage de redressement (actions décidées par le comité) ET par
+// la boucle QA (écarts du verdict). Répartition front→codex / back→ccode, puis les
+// DEUX moteurs travaillent EN PARALLÈLE, chacun séquentiel sur ses US (retour de
+// Hajar : ccode doit avancer sur le backend pendant que codex traite le front).
+async Task RemediateEcartsAsync(
+    IReadOnlyList<(string Key, string Description)> ecartList, string? directive, CancellationToken ct)
+{
+    var remLock = new SemaphoreSlim(1, 1);
+    var perEngine = new Dictionary<ActorRole, List<(SprintLauncher.Jira.JiraIssue Issue, List<string> Descs)>>();
+
+    foreach (var byUs in ecartList.GroupBy(e => e.Key))
+    {
+        var targetKey = byUs.Key is "GLOBAL" or "TRANSVERSE" ? pilotageKey : byUs.Key;
+        var issue = issues.FirstOrDefault(i => i.Key == targetKey) ?? issues[0];
+        var usType = UsTypeClassifier.Classify(issue.Summary, issue.Description);
+        var engineName = ImplementationRotation.PickEngineForUs(
+            usType, sprintState.LastImplementer, sprintState.QuotaExhaustedEngines,
+            config.EngineFront, config.EngineBack);
+        if (engineName is null && await WaitForQuotaWindowAsync(sprintState, stateFile, ct))
+            engineName = ImplementationRotation.PickEngineForUs(
+                usType, sprintState.LastImplementer, sprintState.QuotaExhaustedEngines,
+                config.EngineFront, config.EngineBack);
+        if (engineName is null)
+        {
+            Console.WriteLine($"  ⚠ [{issue.Key}] aucun moteur disponible (quota) — au prochain cycle.");
+            continue;
+        }
+        var engine = Enum.Parse<ActorRole>(engineName);
+        if (!perEngine.TryGetValue(engine, out var list)) perEngine[engine] = list = [];
+        list.Add((issue, byUs.Select(e => e.Description).ToList()));
+    }
+
+    if (perEngine.Count > 1)
+        Console.WriteLine($"  ⇉ Remédiation en parallèle : {string.Join(" + ", perEngine.Select(kv => $"{kv.Key} ({kv.Value.Count} US)"))}");
+
+    await Task.WhenAll(perEngine.Select(kv => Task.Run(async () =>
+    {
+        var (engine, workItems) = (kv.Key, kv.Value);
+        foreach (var (issue, descs) in workItems)
+        {
+            if (ct.IsCancellationRequested) break;
+            Console.WriteLine($"  ▶ Remédiation {issue.Key} → {engine}");
+            EventEmitter.Emit("implementation-us", new { key = issue.Key, engine = engine.ToString(), relief = false, remediation = true });
+
+            var remPrompt = builder.BuildRemediation(engine, issue, descs, directive);
+            var remResult = await RunDialogueTurnAsync(engine, remPrompt, artifactsDir, runner, ct);
+
+            if (remResult.IsQuotaExhausted)
+            {
+                await remLock.WaitAsync(CancellationToken.None);
+                try
+                {
+                    sprintState.QuotaExhaustedEngines.Add(engine.ToString());
+                    await SprintStateManager.SaveAsync(stateFile, sprintState);
+                }
+                finally { remLock.Release(); }
+                EventEmitter.Emit("quota", new { engine = engine.ToString(), key = issue.Key });
+                Console.WriteLine($"  ⚠ Quota {engine} épuisé — ses US restantes passeront au prochain cycle.");
+                break;
+            }
+            if (remResult.Success && !ImplementationOutputGuard.IsAwaitingGo(remResult.Output))
+            {
+                // Une sortie vide/vague n'est pas publiable — c'est un échec de l'US,
+                // pas une raison de tuer tout le run (constaté en test stub).
+                try
+                {
+                    var remPub = await publisher.PublishAsync(issue.Key, remResult, ct);
+                    PrintPublishResult(issue.Key, engine, remPub);
+                }
+                catch (VagueCommentException ex)
+                {
+                    Console.WriteLine($"  ✗ [{issue.Key}] {engine} : sortie vide/vague — non publiée ({ex.Message}). Au prochain cycle.");
+                    continue;
+                }
+                await remLock.WaitAsync(CancellationToken.None);
+                try
+                {
+                    await FlushDirectivesForAsync(issue.Key, ct);
+                    // Revue croisée due sur la remédiation — prérequis DoD (retour Hajar).
+                    if (config.CrossReviewEnabled && !sprintState.PendingReviews.Any(p => p.Key == issue.Key && p.Implementer == engine.ToString()))
+                        sprintState.PendingReviews.Add(new PendingReview(issue.Key, engine.ToString(), null));
+                    sprintState.LastImplementer = engine.ToString();
+                    await SprintStateManager.SaveAsync(stateFile, sprintState);
+                }
+                finally { remLock.Release(); }
+            }
+        }
+    })));
 }
 
 // Publie sur Jira les directives en attente liées à un sujet, au moment où un acteur

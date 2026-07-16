@@ -140,8 +140,18 @@ public static class ActorRoleExtensions
         ActorRole.AnalysisCodex or // l'analyse ne modifie rien
         ActorRole.CommitteePilotageGptChat or
         ActorRole.CommitteeGptChat or
-        ActorRole.CommitteeCodex or
-        ActorRole.GptQaVerdict;
+        ActorRole.CommitteeCodex;
+        // GptQaVerdict retiré : la QA EXÉCUTE elle-même les scénarios sur la release
+        // réelle (lancement app, captures, vidéos) — décision de Hajar (2026-07-14).
+
+    /// <summary>
+    /// Rôles qui exécutent réellement (code, commandes, app) : implémentation ET QA.
+    /// La QA ne se contente pas de lire des preuves — elle déroule les scénarios
+    /// elle-même sur la release réelle (demande de Hajar).
+    /// </summary>
+    public static bool IsExecutionRole(this ActorRole role) => role is
+        ActorRole.ClaudeImplementation or ActorRole.GptImplementation or
+        ActorRole.ClaudeQaVerdict or ActorRole.GptQaVerdict;
 
     public static string ToSignatureTag(this ActorRole role) => role switch
     {

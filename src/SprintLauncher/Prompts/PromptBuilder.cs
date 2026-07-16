@@ -267,6 +267,11 @@ public sealed class PromptBuilder
                 "s'il l'est, EXIGE la preuve réelle (intégration branchée + preuve d'exécution) — sinon c'est un " +
                 "écart '[CLE-US] preuve réelle à produire (input fourni)'. S'il manque encore, écart " +
                 "'[CLE-US] bloqué — <input> manquant'.\n" +
+                "EXÉCUTION RÉELLE PAR TOI-MÊME : tu as les droits d'exécution — ne te limite PAS aux logs fournis. " +
+                "La release réelle est générée (chemins, ffmpeg et commandes dans le contexte d'exécution QA fourni) : " +
+                "lance l'application toi-même, DÉROULE les scénarios E2E de chaque US sur cette release, et produis " +
+                "les preuves de ce que tu observes (captures, vidéos) dans artifacts/<sprint>/<US>/. Un scénario que tu " +
+                "n'as pas pu exécuter = écart, pas une hypothèse.\n" +
                 "Ta conclusion DOIT contenir une section '## ECARTS' listant chaque écart au format exact " +
                 "'- [CLE-US] description → action requise' (une ligne par écart ; '[GLOBAL]' pour un écart transverse). " +
                 "Si aucun écart sur AUCUNE des US : '## ECARTS' suivi de 'AUCUN'. Preuve visuelle absente sur une US " +

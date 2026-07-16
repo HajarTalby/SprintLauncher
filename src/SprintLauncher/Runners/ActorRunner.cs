@@ -97,10 +97,11 @@ public sealed class ActorRunner : IDisposable
         psi.ArgumentList.Add("--output-format");
         psi.ArgumentList.Add("stream-json");
         psi.ArgumentList.Add("--verbose");
-        // Implémentation : les outils (édition, bash, git) doivent s'exécuter sans
-        // approbation interactive — le GO est porté par le lancement du run (SERZENIA-70).
-        // Sans ce mode, claude -p refuse les outils et l'acteur "analyse" au lieu de coder.
-        if (IsImplementationRole(prompt.Role))
+        // Implémentation ET QA : les outils (édition, bash, git, lancement d'app)
+        // doivent s'exécuter sans approbation interactive — le GO est porté par le
+        // lancement du run (SERZENIA-70). La QA exécute elle-même les scénarios sur
+        // la release réelle (décision de Hajar, 2026-07-14).
+        if (prompt.Role.IsExecutionRole())
         {
             psi.ArgumentList.Add("--permission-mode");
             psi.ArgumentList.Add("bypassPermissions");
@@ -170,12 +171,12 @@ public sealed class ActorRunner : IDisposable
             psi.ArgumentList.Add("--sandbox");
             psi.ArgumentList.Add("read-only");
         }
-        else if (IsImplementationRole(prompt.Role))
+        else if (prompt.Role.IsExecutionRole())
         {
             // --full-auto laissait .git en lecture seule ("git add: Permission denied
             // sur .git/index.lock", constaté sur SERZENIA-98) : l'acteur codait sans
-            // pouvoir committer. L'implémentation exige les droits complets — le GO
-            // est porté par le lancement du run validé (SERZENIA-70).
+            // pouvoir committer. Implémentation ET QA (exécution réelle des scénarios)
+            // exigent les droits complets — le GO est porté par le run validé (SERZENIA-70).
             psi.ArgumentList.Add("--dangerously-bypass-approvals-and-sandbox");
         }
         // Prompt delivered via stdin, not as CLI arg — avoids Windows 32767-char limit
