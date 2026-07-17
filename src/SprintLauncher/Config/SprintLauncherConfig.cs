@@ -59,6 +59,22 @@ public sealed class SprintLauncherConfig
     // regardless of where the launcher is launched from.
     public string? SerzeniaRepoRoot { get; init; }
 
+    /// <summary>
+    /// Chargement léger pour les modes hors-Jira (--smoke-live) : modèles + repo,
+    /// sans exiger JIRA_BASE_URL/EMAIL/TOKEN. Lit le .env s'il existe.
+    /// </summary>
+    public static SprintLauncherConfig LoadModelsOnly(string? envFilePath = null)
+    {
+        EnvFileLoader.Load(envFilePath ?? FindEnvFile());
+        return new SprintLauncherConfig
+        {
+            JiraBaseUrl = "", JiraEmail = "", JiraApiToken = "",
+            ClaudeModel = Environment.GetEnvironmentVariable("CLAUDE_MODEL") ?? "claude-opus-4-8",
+            CodexModel = Environment.GetEnvironmentVariable("CODEX_MODEL") ?? "gpt-5.5",
+            SerzeniaRepoRoot = Environment.GetEnvironmentVariable("SERZENIA_REPO_ROOT"),
+        };
+    }
+
     public static SprintLauncherConfig Load(string? envFilePath = null)
     {
         EnvFileLoader.Load(envFilePath ?? FindEnvFile());

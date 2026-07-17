@@ -10,6 +10,9 @@ public interface ILiveInterpreter
     string? Interpret(string line);
     /// <summary>Sortie retenue comme livrable de l'acteur.</summary>
     string Output { get; }
+    /// <summary>Tours conclus vus dans le flux (événement result) — pilote la fermeture
+    /// du stdin en chat live : on ferme quand chaque message envoyé a eu sa réponse.</summary>
+    int TurnsCompleted => 0;
 }
 
 /// <summary>

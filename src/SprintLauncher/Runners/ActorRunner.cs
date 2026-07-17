@@ -95,7 +95,10 @@ public sealed class ActorRunner : IDisposable
             RedirectStandardError = true,
             CreateNoWindow = true,
             // Les prompts sont en français : UTF-8 explicite sur les trois flux.
-            StandardInputEncoding = Encoding.UTF8,
+            // stdin SANS BOM : Encoding.UTF8 émet U+FEFF à la 1re écriture sur un pipe,
+            // et le parseur stream-json de claude rejette la ligne (constaté au smoke
+            // live du 2026-07-16 : "JSON Parse error: Unrecognized token").
+            StandardInputEncoding = new UTF8Encoding(false),
             StandardOutputEncoding = Encoding.UTF8,
             StandardErrorEncoding = Encoding.UTF8,
         };
@@ -182,7 +185,10 @@ public sealed class ActorRunner : IDisposable
             RedirectStandardError = true,
             CreateNoWindow = true,
             WorkingDirectory = _repoRoot ?? Directory.GetCurrentDirectory(),
-            StandardInputEncoding = Encoding.UTF8,
+            // stdin SANS BOM : Encoding.UTF8 émet U+FEFF à la 1re écriture sur un pipe,
+            // et le parseur stream-json de claude rejette la ligne (constaté au smoke
+            // live du 2026-07-16 : "JSON Parse error: Unrecognized token").
+            StandardInputEncoding = new UTF8Encoding(false),
             StandardOutputEncoding = Encoding.UTF8,
             StandardErrorEncoding = Encoding.UTF8,
         };
@@ -247,7 +253,10 @@ public sealed class ActorRunner : IDisposable
             RedirectStandardError = true,
             CreateNoWindow = true,
             WorkingDirectory = _repoRoot ?? Directory.GetCurrentDirectory(),
-            StandardInputEncoding = Encoding.UTF8,
+            // stdin SANS BOM : Encoding.UTF8 émet U+FEFF à la 1re écriture sur un pipe,
+            // et le parseur stream-json de claude rejette la ligne (constaté au smoke
+            // live du 2026-07-16 : "JSON Parse error: Unrecognized token").
+            StandardInputEncoding = new UTF8Encoding(false),
             StandardOutputEncoding = Encoding.UTF8,
             StandardErrorEncoding = Encoding.UTF8,
         };
@@ -268,8 +277,15 @@ public sealed class ActorRunner : IDisposable
             try { liveWriter = new StreamWriter(Path.Combine(LiveOutputDir, $"live-{prompt.Role}.txt"), append: false, new UTF8Encoding(false)) { AutoFlush = true }; }
             catch (IOException) { }
 
+        // SL_LIVE_DEBUG=1 : trace JSONL brute du protocole (diagnostic app-server).
+        StreamWriter? rawLog = null;
+        if (Environment.GetEnvironmentVariable("SL_LIVE_DEBUG") == "1" && LiveOutputDir is not null)
+            try { rawLog = new StreamWriter(Path.Combine(LiveOutputDir, $"raw-{prompt.Role}.jsonl"), append: false, new UTF8Encoding(false)) { AutoFlush = true }; }
+            catch (IOException) { }
+
         void Send(string json)
         {
+            try { rawLog?.WriteLine($">> {json}"); } catch (ObjectDisposedException) { }
             try { process.StandardInput.WriteLine(json); process.StandardInput.Flush(); }
             catch (IOException) { } catch (ObjectDisposedException) { }
         }
@@ -277,8 +293,13 @@ public sealed class ActorRunner : IDisposable
         process.OutputDataReceived += (_, e) =>
         {
             if (e.Data is null) return;
+            try { rawLog?.WriteLine($"<< {e.Data}"); } catch (ObjectDisposedException) { }
             var msg = CodexAppServerProtocol.Parse(e.Data);
             if (msg is null) return;
+
+            // Réponse d'erreur JSON-RPC : visible dans stderr du résultat (diagnostic).
+            if (msg.Root.TryGetProperty("error", out var errEl))
+                stderr.AppendLine($"[app-server error] {e.Data}");
 
             // Réponses aux requêtes : capture des ids thread/turn.
             if (msg.Id is not null && msg.Method is null)
@@ -351,9 +372,11 @@ public sealed class ActorRunner : IDisposable
             Send(CodexAppServerProtocol.TurnInterrupt(nextId++, threadId, turnId));
         try { process.StandardInput.Close(); } catch (IOException) { } catch (ObjectDisposedException) { }
         await steerTask;
+        SalvageLeftoverInterventions(inbox, prompt.Role); // arrivées après la fin du tour → directives
         if (!HasExitedSafe(process))
             try { process.Kill(entireProcessTree: true); } catch (InvalidOperationException) { }
         liveWriter?.Dispose();
+        rawLog?.Dispose();
 
         var output = accumulated.ToString().Trim();
         var errorText = stderr.ToString();
@@ -451,7 +474,8 @@ public sealed class ActorRunner : IDisposable
         // interventions déposées dans l'inbox jusqu'à la fin du tour (process sorti,
         // timeout, ou annulation). Sinon (one-shot) : prompt puis fermeture immédiate.
         var stdinTask = liveInput is not null
-            ? Task.Run(() => PumpLiveStdin(process, stdinContent, role, liveInput, timeoutCts.Token))
+            ? Task.Run(() => PumpLiveStdin(process, stdinContent, role, liveInput,
+                () => interpreter?.TurnsCompleted ?? 0, timeoutCts.Token))
             : Task.Run(() =>
             {
                 try
@@ -540,17 +564,18 @@ public sealed class ActorRunner : IDisposable
     // par défaut tant que LiveInputDir n'est pas positionné.
     private void PumpLiveStdin(
         Process process, string initialMessage, ActorRole role,
-        Func<string, string> frame, CancellationToken ct)
+        Func<string, string> frame, Func<int> turnsCompleted, CancellationToken ct)
     {
         var stdin = process.StandardInput;
+        LiveInputInbox? inbox = LiveInputDir is not null
+            ? new LiveInputInbox(LiveInputInbox.PathFor(LiveInputDir, role))
+            : null;
+        int sent = 0;
         try
         {
             stdin.WriteLine(initialMessage);
             stdin.Flush();
-
-            LiveInputInbox? inbox = LiveInputDir is not null
-                ? new LiveInputInbox(LiveInputInbox.PathFor(LiveInputDir, role))
-                : null;
+            sent = 1;
 
             while (!ct.IsCancellationRequested && !HasExitedSafe(process))
             {
@@ -561,10 +586,18 @@ public sealed class ActorRunner : IDisposable
                         if (!LiveChatProtocol.IsSendable(line)) continue;
                         stdin.WriteLine(frame(line));
                         stdin.Flush();
+                        sent++;
                         // Trace dans la sortie live pour que l'UI confirme la remise.
                         AppendLiveNote(role, $"⚑ intervention transmise à {role} : {Truncate(line, 80)}");
                     }
                 }
+
+                // ANTI-DEADLOCK : en session stream-json, claude attend indéfiniment du
+                // stdin après son tour — et nous attendrions sa sortie. Dès que chaque
+                // message envoyé a eu sa réponse (événement result) et que l'inbox est
+                // vide, on ferme stdin : c'est le signal de fin de session.
+                if (turnsCompleted() >= sent) break;
+
                 Thread.Sleep(LivePollInterval);
             }
         }
@@ -573,7 +606,25 @@ public sealed class ActorRunner : IDisposable
         finally
         {
             try { stdin.Close(); } catch (IOException) { } catch (ObjectDisposedException) { }
+            SalvageLeftoverInterventions(inbox, role);
         }
+    }
+
+    // Interventions arrivées trop tard pour ce tour : reversées dans pending-directive.txt
+    // (même dossier), où le flux de directives adressées du CLI les ramasse — jamais perdues.
+    private void SalvageLeftoverInterventions(LiveInputInbox? inbox, ActorRole role)
+    {
+        if (inbox is null || LiveInputDir is null) return;
+        var leftovers = inbox.DrainNewLines().Where(LiveChatProtocol.IsSendable).ToList();
+        if (leftovers.Count == 0) return;
+        try
+        {
+            File.AppendAllLines(
+                System.IO.Path.Combine(LiveInputDir, "pending-directive.txt"),
+                leftovers.Select(l => $"@{role} {l}"), new UTF8Encoding(false));
+            AppendLiveNote(role, $"⚑ {leftovers.Count} intervention(s) arrivée(s) après la fin du tour — reversée(s) en directive pour {role}.");
+        }
+        catch (IOException) { }
     }
 
     private static bool HasExitedSafe(Process p)

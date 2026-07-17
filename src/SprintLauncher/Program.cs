@@ -106,6 +106,20 @@ if (listRoles)
     return 0;
 }
 
+// ─── --smoke-live : valide le chat live contre les vrais binaires ─────────────
+// Consomme un peu de quota. OBLIGATOIRE (vert) avant d'activer LIVE_CHAT en run réel.
+if (args.Contains("--smoke-live"))
+{
+    var engineArg = args.SkipWhile(a => a != "--smoke-live").Skip(1).FirstOrDefault(a => !a.StartsWith("--")) ?? "all";
+    var smokeModels = SprintLauncherConfig.LoadModelsOnly(); // .env optionnel : modèles + repo
+    using var smokeRunner = new ActorRunner(
+        claudeModel: smokeModels.ClaudeModel,
+        codexModel: smokeModels.CodexModel,
+        actorTimeout: TimeSpan.FromMinutes(5),
+        repoRoot: smokeModels.SerzeniaRepoRoot);
+    return await LiveChatSmoke.RunAsync(engineArg, smokeRunner, shutdownCts.Token);
+}
+
 // ─── Usage guard — before config load so no .env required just to show help ───
 if (issueKeys.Length == 0 && sprintArg is null && publishManualRole is null && createUsFile is null)
 {
