@@ -111,6 +111,57 @@ public class LiveChatTests : IDisposable
         Assert.Contains("GptImplementation", p1);
     }
 
+    // ── Adressage multiple (retour Hajar 2026-07-17) ──────────────────────────────
+
+    [Fact]
+    public void Multi_targets_with_et_connector_are_all_parsed()
+    {
+        // Le cas réel de Hajar : « @ccode et @codex à la fin des revues pouvez-vous… »
+        var addresses = SprintLauncher.Dialogue.DirectiveAddressing.ParseMulti(
+            "@ccode et @codex à la fin des revues pouvez-vous revoir l'état du repo");
+
+        Assert.Equal(2, addresses.Count);
+        Assert.Contains(addresses, a => a.Actor == ActorRole.ClaudeImplementation);
+        Assert.Contains(addresses, a => a.Actor == ActorRole.GptImplementation);
+        Assert.All(addresses, a => Assert.StartsWith("à la fin des revues", a.Text));
+    }
+
+    [Fact]
+    public void Multi_targets_comma_and_space_separated()
+    {
+        var a1 = SprintLauncher.Dialogue.DirectiveAddressing.ParseMulti("@ccode, @codex corrigez");
+        var a2 = SprintLauncher.Dialogue.DirectiveAddressing.ParseMulti("@ccode @codex corrigez");
+        Assert.Equal(2, a1.Count);
+        Assert.Equal(2, a2.Count);
+        Assert.All(a1.Concat(a2), a => Assert.Equal("corrigez", a.Text));
+    }
+
+    [Fact]
+    public void Single_target_still_works()
+    {
+        var addresses = SprintLauncher.Dialogue.DirectiveAddressing.ParseMulti("@qa vérifie la 114");
+        var a = Assert.Single(addresses);
+        Assert.Equal(ActorGroup.Qa, a.Group);
+        Assert.Equal("vérifie la 114", a.Text);
+    }
+
+    [Fact]
+    public void No_target_returns_single_untargeted()
+    {
+        var addresses = SprintLauncher.Dialogue.DirectiveAddressing.ParseMulti("continuez sans attendre");
+        var a = Assert.Single(addresses);
+        Assert.False(a.IsTargeted);
+        Assert.Equal("continuez sans attendre", a.Text);
+    }
+
+    [Fact]
+    public void Duplicate_target_is_deduplicated()
+    {
+        var addresses = SprintLauncher.Dialogue.DirectiveAddressing.ParseMulti("@codex @gpt corrige");
+        var a = Assert.Single(addresses); // codex et gpt = même rôle
+        Assert.Equal(ActorRole.GptImplementation, a.Actor);
+    }
+
     // ── CodexAppServerProtocol : JSON-RPC ────────────────────────────────────────
 
     [Fact]

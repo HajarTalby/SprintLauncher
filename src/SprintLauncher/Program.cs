@@ -1077,9 +1077,48 @@ async Task IngestPendingDirectivesAsync(string artifactsDir, CancellationToken c
         catch (IOException) { return; } // en cours d'écriture par l'UI — prochain passage
 
         foreach (var line in raw.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            // « !cancel <ligne d'origine> » : correction d'un envoi (retour Hajar,
+            // 2026-07-17) — retire la directive correspondante si elle n'a pas encore
+            // été remise. Une directive déjà remise ne se rappelle pas : la version
+            // corrigée qui suit la remplace par autorité de la consigne la plus récente.
+            if (line.StartsWith("!cancel ", StringComparison.OrdinalIgnoreCase))
+            {
+                CancelPendingDirective(line["!cancel ".Length..].Trim());
+                continue;
+            }
             await AddDirectiveAsync(pilotageKey, line);
+        }
     }
     finally { pendingDirectiveLock.Release(); }
+}
+
+// Annule la dernière directive non remise correspondant à la ligne d'origine
+// (même cible, même texte). Sans correspondance : rien à faire, on le signale.
+void CancelPendingDirective(string originalLine)
+{
+    var addresses = DirectiveAddressing.ParseMulti(originalLine);
+    var text = addresses[0].Text.Trim();
+    var removed = 0;
+    foreach (var address in addresses)
+    {
+        var match = sprintState.PendingDirectives.LastOrDefault(d =>
+            !d.Delivered && !d.Published &&
+            d.Text == text &&
+            d.TargetActor == address.Actor?.ToString() &&
+            d.TargetGroup == address.Group?.ToString());
+        if (match is not null && sprintState.PendingDirectives.Remove(match)) removed++;
+    }
+    if (removed > 0)
+    {
+        Console.WriteLine($"  ⚑ {removed} directive(s) annulée(s) par {config.ApproverName} (correction d'envoi) : {Truncate(text, 80)}");
+        EventEmitter.Emit("directive-cancelled", new { text, count = removed });
+        try { SprintStateManager.SaveAsync(stateFile, sprintState).GetAwaiter().GetResult(); } catch (IOException) { }
+    }
+    else
+    {
+        Console.WriteLine($"  ⚑ Correction reçue mais la directive d'origine était déjà remise — la version corrigée fera autorité.");
+    }
 }
 
 // Directives dues à CET acteur : adressées à lui (@ActorRole), à son groupe
@@ -1145,28 +1184,47 @@ async Task RecordDecisionInRegistryAsync(string usKey, string text)
 // n'arrive sur Jira que portée par le commentaire de l'acteur qui traite l'US liée.
 async Task AddDirectiveAsync(string subjectKey, string text)
 {
-    // « @GptImplementation tu as indiqué … pourquoi ? » → cible + texte utile.
-    var address = DirectiveAddressing.Parse(text);
-    var clean = address.Text.Trim();
+    // « @ccode et @codex revoyez X » → UNE directive PAR destinataire, même texte
+    // (retour de Hajar, 2026-07-17 : seul le premier @ était pris en compte).
+    var addresses = DirectiveAddressing.ParseMulti(text);
+    var clean = addresses[0].Text.Trim();
     if (clean.Length == 0) return;
 
-    sprintState.PendingDirectives.Add(new PendingDirective
+    foreach (var address in addresses)
     {
-        SubjectKey = subjectKey, Text = clean,
-        CreatedAt = DateTimeOffset.UtcNow, Published = false,
-        TargetActor = address.Actor?.ToString(),
-        TargetGroup = address.Group?.ToString(),
-        Delivered = false,
-    });
+        sprintState.PendingDirectives.Add(new PendingDirective
+        {
+            SubjectKey = subjectKey, Text = clean,
+            CreatedAt = DateTimeOffset.UtcNow, Published = false,
+            TargetActor = address.Actor?.ToString(),
+            TargetGroup = address.Group?.ToString(),
+            Delivered = false,
+        });
+    }
 
-    var registryEntry = address.IsTargeted ? $"→ {address.TargetLabel} : {clean}" : clean;
+    // RÉACTIVATION QUOTA PAR INTERVENTION (retour de Hajar, 2026-07-17 : « pas la
+    // peine de redémarrer l'exécution pour seulement ça ») : adresser une directive
+    // à un moteur arrêté pour quota vaut signal que les crédits sont revenus — le
+    // flag est levé et le moteur reprend au prochain tour, sans relance du run.
+    foreach (var address in addresses)
+    {
+        if (address.Actor is { } engine && sprintState.QuotaExhaustedEngines.Remove(engine.ToString()))
+        {
+            Console.WriteLine($"  ⚡ {engine} réactivé sur intervention de {config.ApproverName} (quota signalé disponible) — il reprend au prochain tour.");
+            EventEmitter.Emit("engine-reactivated", new { engine = engine.ToString() });
+        }
+    }
+
+    var targets = string.Join(", ", addresses.Select(a => a.TargetLabel).Distinct());
+    var anyTargeted = addresses.Any(a => a.IsTargeted);
+    var registryEntry = anyTargeted ? $"→ {targets} : {clean}" : clean;
     await RecordDecisionInRegistryAsync(subjectKey, registryEntry); // registre + fichier (tab + prompts)
     try { await SprintStateManager.SaveAsync(stateFile, sprintState); } catch (IOException) { }
 
-    Console.WriteLine(address.IsTargeted
-        ? $"  ⚑ Directive de {config.ApproverName} stockée pour [{subjectKey}] → destinataire : {address.TargetLabel} (appliquée dès qu'il prend la parole)."
+    Console.WriteLine(anyTargeted
+        ? $"  ⚑ Directive de {config.ApproverName} stockée pour [{subjectKey}] → destinataire(s) : {targets} (appliquée dès que chacun prend la parole)."
         : $"  ⚑ Directive de {config.ApproverName} stockée pour [{subjectKey}] — appliquée au prochain acteur, publiée dès qu'un acteur commentera ce sujet.");
-    EventEmitter.Emit("directive-stored", new { subject = subjectKey, target = address.TargetLabel, text = clean });
+    EventEmitter.Emit("directive-stored", new { subject = subjectKey, target = targets, text = clean });
 }
 
 // ─── Dispatch de remédiation : traite une liste d'écarts/actions par US ─────────

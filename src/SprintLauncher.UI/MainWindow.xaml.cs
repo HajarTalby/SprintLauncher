@@ -29,6 +29,11 @@ public partial class MainWindow : Window
     private string _lastRunKeys = "";
     // Acteur en train de travailler : cible d'une intervention live (chat live).
     private string? _activeActor;
+    // Correction d'un envoi (retour Hajar 2026-07-17) : dernier texte envoyé + lignes
+    // mises en file qu'une version corrigée doit annuler (« !cancel » côté CLI).
+    private string? _lastSentRaw;
+    private List<string> _lastQueuedLines = [];
+    private List<string> _cancelOnNextSend = [];
     private bool _lastRunWasDryRun = true;
     private bool _publishMode; // run courant = --publish-from-artifacts / --create-us (pas de pipeline acteurs)
     private string? _usProposalsRefKey;
@@ -467,6 +472,25 @@ public partial class MainWindow : Window
                     _artifactsDir = data.GetProperty("artifactsDir").GetString();
                     if (data.TryGetProperty("publishable", out var p) && p.GetBoolean())
                         EnablePublishSelection();
+                    break;
+                }
+
+                case "live-delivered":
+                {
+                    // Confirmation de remise d'une intervention live : visible dans le
+                    // fil DISCUSSION et le journal, pas seulement dans la sortie acteur.
+                    var target = data.GetProperty("target").GetString() ?? "";
+                    var txt = data.GetProperty("text").GetString() ?? "";
+                    AppendChatTurn("Sprint Launcher", $"⚑ Intervention transmise à **{target}** en cours de tour — il doit en accuser réception dans sa sortie.", isIntervention: true, round: 0, isFinal: false);
+                    AppendLog($"⚑ live → {target} : {txt}");
+                    break;
+                }
+
+                case "engine-reactivated":
+                {
+                    var engine = data.GetProperty("engine").GetString() ?? "";
+                    AppendChatTurn("Sprint Launcher", $"⚡ **{engine}** réactivé sur intervention de Hajar (quota signalé disponible) — il reprend au prochain tour.", isIntervention: true, round: 0, isFinal: false);
+                    AppendLog($"⚡ {engine} réactivé (quota)");
                     break;
                 }
 
@@ -1172,47 +1196,77 @@ public partial class MainWindow : Window
             : AppContext.BaseDirectory; // pré-directive : ramassée au démarrage du prochain run
         try
         {
-            var (target, body) = SplitDirectiveTarget(text);
-
-            // Chat live : si un acteur travaille ET que le message le vise (ou n'est pas
-            // adressé ailleurs), on le pousse dans SON inbox pour lecture EN COURS DE TOUR
-            // (live-input-<role>.txt). Sinon, file de directives classique (remise à la
-            // prochaine prise de parole du destinataire, persistée et adressable).
-            // Les alias (@ccode, @codex…) sont résolus AVANT comparaison — sans ça,
-            // « @ccode » ≠ « ClaudeImplementation » et l'intervention partait en file
-            // au lieu du live (retour de Hajar, 2026-07-17 : interventions ignorées).
-            var resolvedTarget = ResolveActorAlias(target);
-            var liveTarget = _process is { HasExited: false } && _activeActor is not null
-                             && (resolvedTarget is null || string.Equals(resolvedTarget, _activeActor, StringComparison.OrdinalIgnoreCase))
-                ? _activeActor : null;
-
-            if (liveTarget is not null && _artifactsDir is not null)
+            // Version corrigée d'un envoi : annuler d'abord les directives en file de
+            // la version précédente (les lignes déjà lues en live ne se rappellent pas —
+            // la correction les remplace par autorité de la consigne la plus récente).
+            if (_cancelOnNextSend.Count > 0)
             {
-                File.AppendAllText(Path.Combine(_artifactsDir, $"live-input-{liveTarget}.txt"), body + Environment.NewLine);
-                AppendChatTurn($"Hajar → {liveTarget} (live)", body, isIntervention: true, round: 0, isFinal: false);
-                AppendLog($">>> Intervention live → {liveTarget} : {body}");
-                TxtStatus.Text = $"Intervention live envoyée à {liveTarget} — lue en cours de tour (si LIVE_CHAT actif).";
-                return;
+                foreach (var line in _cancelOnNextSend)
+                    File.AppendAllText(Path.Combine(targetDir, "pending-directive.txt"), "!cancel " + line + Environment.NewLine);
+                AppendLog($">>> {_cancelOnNextSend.Count} directive(s) de l'envoi précédent annulée(s) — remplacée(s) par la version corrigée.");
+                _cancelOnNextSend = [];
+            }
+            _lastQueuedLines = [];
+
+            // ADRESSAGE MULTIPLE (« @ccode et @codex … ») : chaque destinataire reçoit
+            // le message — l'acteur ACTIF en live (inbox lue en cours de tour), les
+            // autres en directive (remise à leur prochaine prise de parole). Les alias
+            // (@ccode, @codex…) sont résolus AVANT comparaison — sans ça, « @ccode » ≠
+            // « ClaudeImplementation » et tout partait en file (retours 2026-07-17).
+            var (targets, multiBody) = SplitDirectiveTargets(text);
+            var running = _process is { HasExited: false };
+            var liveSent = new List<string>();
+            var queued = new List<string>();
+
+            if (targets.Count == 0)
+            {
+                // Non adressé : live vers l'acteur actif si possible, sinon file.
+                if (running && _activeActor is not null && _artifactsDir is not null)
+                {
+                    File.AppendAllText(Path.Combine(_artifactsDir, $"live-input-{_activeActor}.txt"), multiBody + Environment.NewLine);
+                    liveSent.Add(_activeActor);
+                }
+                else
+                {
+                    File.AppendAllText(Path.Combine(targetDir, "pending-directive.txt"), multiBody + Environment.NewLine);
+                    _lastQueuedLines.Add(multiBody);
+                    queued.Add("prochain acteur");
+                }
+            }
+            else
+            {
+                foreach (var t in targets)
+                {
+                    var resolved = ResolveActorAlias(t) ?? t;
+                    if (running && _artifactsDir is not null && string.Equals(resolved, _activeActor, StringComparison.OrdinalIgnoreCase))
+                    {
+                        File.AppendAllText(Path.Combine(_artifactsDir, $"live-input-{_activeActor}.txt"), multiBody + Environment.NewLine);
+                        liveSent.Add(_activeActor!);
+                    }
+                    else
+                    {
+                        File.AppendAllText(Path.Combine(targetDir, "pending-directive.txt"), $"@{resolved} {multiBody}" + Environment.NewLine);
+                        _lastQueuedLines.Add($"@{resolved} {multiBody}");
+                        queued.Add(resolved);
+                    }
+                }
             }
 
-            File.AppendAllText(Path.Combine(targetDir, "pending-directive.txt"), text + Environment.NewLine);
-
-            // Écho immédiat dans le fil DISCUSSION : une directive déposée doit être
-            // VISIBLE tout de suite, pas seulement une ligne de journal qu'on perd si
-            // le run meurt avant de l'avoir lue (incident 2026-07-16).
-            var speaker = target is null ? "Hajar — directive déposée" : $"Hajar → {target}";
-            AppendChatTurn(speaker, body, isIntervention: true, round: 0, isFinal: false);
-
-            AppendLog($">>> Directive déposée{(target is null ? "" : $" → {target}")} : {body}");
-            TxtStatus.Text = _process is { HasExited: false }
-                ? target is null
-                    ? "Directive déposée — remise au prochain acteur qui prend la parole."
-                    : $"Directive déposée → {target} — remise dès que cet acteur prend la parole."
-                : "Directive pré-déposée — elle sera remise dès le lancement du prochain run.";
+            var destLabel = string.Join(", ", liveSent.Select(a => $"{a} (live)").Concat(queued));
+            AppendChatTurn($"Hajar → {destLabel}", multiBody, isIntervention: true, round: 0, isFinal: false);
+            AppendLog($">>> Intervention → {destLabel} : {multiBody}");
+            _lastSentRaw = text;
+            BtnEditLast.IsEnabled = true;
+            TxtStatus.Text = liveSent.Count > 0
+                ? $"Intervention envoyée — {string.Join(", ", liveSent)} la lira en cours de tour" +
+                  (queued.Count > 0 ? $" ; {string.Join(", ", queued)} à sa prochaine prise de parole." : ".")
+                : running
+                    ? $"Directive déposée → {string.Join(", ", queued)} — remise à la prochaine prise de parole."
+                    : "Directive pré-déposée — remise dès le lancement du prochain run.";
         }
         catch (IOException ex)
         {
-            AppendLog($"(directive non déposée : {ex.Message})");
+            AppendLog($"(intervention non déposée : {ex.Message})");
         }
     }
 
@@ -1227,14 +1281,38 @@ public partial class MainWindow : Window
         var t => t, // rôle exact ou groupe : comparé tel quel
     };
 
-    // Miroir UI de DirectiveAddressing.Parse (CLI) : sert uniquement à l'affichage
-    // immédiat. Le CLI reste seul juge du routage réel.
-    private static (string? Target, string Body) SplitDirectiveTarget(string text)
+    // Miroir UI de DirectiveAddressing.ParseMulti (CLI) : « @ccode et @codex fais X »
+    // → cibles [ccode, codex] + corps « fais X ». Les connecteurs entre cibles
+    // (et, virgule, +, &) sont absorbés. Le CLI reste seul juge du routage réel.
+    private static (List<string> Targets, string Body) SplitDirectiveTargets(string text)
     {
-        if (!text.StartsWith('@')) return (null, text);
-        var sep = text.IndexOfAny([' ', ':', ',', '\t']);
-        if (sep <= 1) return (null, text);
-        return (text[1..sep].Trim(), text[(sep + 1)..].TrimStart(' ', ':', ',').Trim());
+        var targets = new List<string>();
+        var rest = text.Trim();
+        while (rest.StartsWith('@'))
+        {
+            var sep = rest.IndexOfAny([' ', ':', ',', '\t', '\n']);
+            if (sep <= 1) break;
+            targets.Add(rest[1..sep].Trim());
+            rest = rest[(sep + 1)..].TrimStart(' ', ':', ',', '+', '&');
+            // « et @codex … » : absorber le connecteur si une cible suit.
+            if (rest.StartsWith("et ", StringComparison.OrdinalIgnoreCase) && rest[3..].TrimStart().StartsWith('@'))
+                rest = rest[3..].TrimStart();
+        }
+        return (targets, rest.Trim());
+    }
+
+    // ✎ Corriger : recharge le dernier envoi ; l'envoi suivant annule les directives
+    // en file de la version précédente (« !cancel » côté CLI) et les remplace.
+    private void BtnEditLast_Click(object sender, RoutedEventArgs e)
+    {
+        if (_lastSentRaw is null) return;
+        TxtIntervention.Text = _lastSentRaw;
+        TxtIntervention.Focus();
+        TxtIntervention.CaretIndex = TxtIntervention.Text.Length;
+        _cancelOnNextSend = [.. _lastQueuedLines];
+        TxtStatus.Text = _cancelOnNextSend.Count > 0
+            ? "Corrige puis renvoie — les directives non remises de l'envoi précédent seront annulées et remplacées."
+            : "Corrige puis renvoie — le message précédent a déjà été lu en live : ta correction le remplacera par autorité.";
     }
 
     private void BtnConclude_Click(object sender, RoutedEventArgs e)

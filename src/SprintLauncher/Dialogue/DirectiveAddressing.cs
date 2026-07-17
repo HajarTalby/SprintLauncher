@@ -48,6 +48,54 @@ public static class DirectiveAddressing
     };
 
     /// <summary>
+    /// Adressage MULTIPLE (retour de Hajar, 2026-07-17 : « quand je dirige mon
+    /// intervention à plusieurs acteurs, il n'y a que le premier qui est pris en
+    /// compte ») : « @ccode et @codex fais X » → une directive pour CHAQUE cible,
+    /// même texte. Les connecteurs entre cibles (et, +, virgule, &) sont absorbés.
+    /// Sans aucun @ en tête : une seule adresse non ciblée (comportement historique).
+    /// </summary>
+    public static IReadOnlyList<DirectiveAddress> ParseMulti(string raw)
+    {
+        var remaining = (raw ?? "").Trim();
+        var actors = new List<ActorRole>();
+        var groups = new List<ActorGroup>();
+
+        while (remaining.StartsWith('@'))
+        {
+            var probe = Parse(remaining);
+            if (!probe.IsTargeted) break; // @inconnu : tout reste du texte libre
+            if (probe.Actor is { } a && !actors.Contains(a)) actors.Add(a);
+            if (probe.Group is { } g && !groups.Contains(g)) groups.Add(g);
+            remaining = probe.Text;
+
+            // Connecteurs entre deux cibles : « et », « + », « & », virgule.
+            var before = remaining;
+            while (true)
+            {
+                var trimmed = remaining.TrimStart(' ', ',', '+', '&');
+                if (trimmed.StartsWith("et ", StringComparison.OrdinalIgnoreCase) &&
+                    trimmed.Length > 3 && trimmed.TrimStart()[..1] == "e")
+                {
+                    var afterEt = trimmed[3..].TrimStart();
+                    if (afterEt.StartsWith('@')) { remaining = afterEt; continue; }
+                }
+                remaining = trimmed;
+                break;
+            }
+            if (remaining == before && !remaining.StartsWith('@')) break;
+        }
+
+        if (actors.Count == 0 && groups.Count == 0)
+            return [new DirectiveAddress(null, null, (raw ?? "").Trim())];
+
+        var text = remaining.Trim();
+        var result = new List<DirectiveAddress>();
+        result.AddRange(actors.Select(a => new DirectiveAddress(a, null, text)));
+        result.AddRange(groups.Select(g => new DirectiveAddress(null, g, text)));
+        return result;
+    }
+
+    /// <summary>
     /// Extrait un éventuel préfixe « @cible » du texte de la directive.
     /// Le @ doit ouvrir le texte : un @ au milieu d'une phrase reste du texte libre.
     /// </summary>

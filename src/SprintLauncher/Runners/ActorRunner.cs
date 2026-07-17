@@ -360,8 +360,8 @@ public sealed class ActorRunner : IDisposable
                     foreach (var line in inbox.DrainNewLines())
                         if (LiveChatProtocol.IsSendable(line))
                         {
-                            Send(CodexAppServerProtocol.TurnSteer(nextId++, threadId, turnId, line));
-                            AppendLiveNote(prompt.Role, $"⚑ intervention transmise à {prompt.Role} : {Truncate(line, 80)}");
+                            Send(CodexAppServerProtocol.TurnSteer(nextId++, threadId, turnId, WrapLiveIntervention(line)));
+                            NotifyLiveDelivery(prompt.Role, line);
                         }
                 try { await Task.Delay(LivePollInterval, timeoutCts.Token); } catch (OperationCanceledException) { break; }
             }
@@ -594,11 +594,10 @@ public sealed class ActorRunner : IDisposable
                     foreach (var line in inbox.DrainNewLines())
                     {
                         if (!LiveChatProtocol.IsSendable(line)) continue;
-                        stdin.WriteLine(frame(line));
+                        stdin.WriteLine(frame(WrapLiveIntervention(line)));
                         stdin.Flush();
                         sent++;
-                        // Trace dans la sortie live pour que l'UI confirme la remise.
-                        AppendLiveNote(role, $"⚑ intervention transmise à {role} : {Truncate(line, 80)}");
+                        NotifyLiveDelivery(role, line);
                     }
                 }
 
@@ -658,6 +657,22 @@ public sealed class ActorRunner : IDisposable
     }
 
     private static string Truncate(string s, int max) => s.Length <= max ? s : s[..max] + "…";
+
+    // Habillage d'une intervention live : l'acteur doit ACCUSER RÉCEPTION dans sa
+    // sortie — sans ça, impossible de savoir si le message a été pris en compte
+    // (retour de Hajar, 2026-07-17 : « je ne vois pas s'il a pris en compte ou pas »).
+    private static string WrapLiveIntervention(string text) =>
+        "[INTERVENTION DE HAJAR — reçue en cours de tour, autorité immédiate]\n" + text +
+        "\n(Confirme la prise en compte dans ta sortie par une ligne commençant par " +
+        "« ⚑ Intervention de Hajar prise en compte : » suivie de ce que tu en fais, puis applique-la.)";
+
+    // Remise visible partout : sortie live de l'acteur (SORTIE ACTEUR) + événement
+    // pour le fil DISCUSSION et le journal de l'UI.
+    private void NotifyLiveDelivery(ActorRole role, string line)
+    {
+        AppendLiveNote(role, $"⚑ intervention transmise à {role} : {Truncate(line, 80)}");
+        Events.EventEmitter.Emit("live-delivered", new { target = role.ToString(), text = line });
+    }
 
     private static ActorRunResult Fail(ActorRole role, string message) =>
         new(role, false, string.Empty, message, -1, false);
