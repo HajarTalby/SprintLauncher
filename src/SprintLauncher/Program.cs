@@ -70,7 +70,7 @@ var sessionMode = modeArg?.ToLowerInvariant() switch
 };
 
 var optionValues = new HashSet<int>();
-foreach (var flag in new[] { "--publish-manual", "--from-file", "--mode", "--sprint", "--roles", "--create-us" })
+foreach (var flag in new[] { "--publish-manual", "--from-file", "--mode", "--sprint", "--roles", "--create-us", "--pilotage-us" })
 {
     var index = Array.IndexOf(args, flag);
     if (index >= 0 && index + 1 < args.Length)
@@ -85,6 +85,8 @@ var issueKeys = args
 
 // Sprint tickets are resolved from Jira after config load (see below, after JiraClient creation)
 var sprintArg = GetArg(args, "--sprint");
+// US portant la synthèse sprint-level (comité de pilotage, verdict QA) — déclarée, pas devinée.
+var pilotageUsArg = GetArg(args, "--pilotage-us");
 
 // ─── --list-roles ──────────────────────────────────────────────────────────────
 if (listRoles)
@@ -108,7 +110,7 @@ if (listRoles)
 if (issueKeys.Length == 0 && sprintArg is null && publishManualRole is null && createUsFile is null)
 {
     Console.Error.WriteLine("Usage: sprint-launcher <ISSUE-KEY> [<ISSUE-KEY> ...] [--write] [--no-cache] [--resume] [--interactive]");
-    Console.Error.WriteLine("       sprint-launcher --sprint <id> [options]");
+    Console.Error.WriteLine("       sprint-launcher --sprint <id> [--pilotage-us <CLE>] [options]");
     Console.Error.WriteLine("       sprint-launcher <ISSUE-KEY> --publish-from-artifacts [--roles <csv>] [--write]");
     Console.Error.WriteLine("       sprint-launcher <REF-KEY> --create-us <fichier.json> [--write]");
     Console.Error.WriteLine("       sprint-launcher --publish-manual <ROLE> --from-file <path> <ISSUE-KEY> [--write]");
@@ -404,6 +406,28 @@ if (displayFiles.Count > 0)
     Console.WriteLine($"  Sorties du run précédent archivées ({displayFiles.Count} fichiers → archive/).");
 }
 
+// ─── US de pilotage : LUE DANS JIRA, pas devinée ─────────────────────────────
+// La synthèse sprint-level (comité de pilotage, verdict QA) est publiée ICI et nulle
+// part ailleurs. L'info est dans le titre du ticket (« Pilotage Sprint 6 ») — l'outil
+// la lit au lieu de supposer que c'est le premier ticket de la liste.
+var pilotageResolution = PilotageUsResolver.Resolve(issues, issueKeys, sprintArg, pilotageUsArg
+    ?? Environment.GetEnvironmentVariable("PILOTAGE_US"));
+var pilotageKey = pilotageResolution.Key;
+
+if (pilotageResolution.IsFallback)
+{
+    Console.WriteLine($"⚠ US de pilotage NON identifiée — {pilotageResolution.Reason}.");
+    Console.WriteLine($"  Repli sur le premier ticket du sprint : {pilotageKey}. Si ce n'est pas la bonne, la synthèse");
+    Console.WriteLine($"  sprint-level partira au mauvais endroit (incident sprint 6 : délibération sur SERZENIA-98");
+    Console.WriteLine($"  au lieu de SERZENIA-111). Nomme l'US « Pilotage Sprint <N> » ou passe --pilotage-us <CLE>.");
+    EventEmitter.Emit("pilotage-us-fallback", new { key = pilotageKey, reason = pilotageResolution.Reason });
+}
+else
+{
+    Console.WriteLine($"  US de pilotage : {pilotageKey} — {pilotageResolution.Reason}. La synthèse sprint-level y sera publiée.");
+    EventEmitter.Emit("pilotage-us", new { key = pilotageKey, reason = pilotageResolution.Reason });
+}
+
 // Pré-directives déposées AVANT le lancement (fichier au répertoire courant, écrit
 // par l'UI) : STOCKÉES et injectées au registre — PAS publiées immédiatement sur Jira.
 // Elles partiront sur Jira portées par le commentaire de l'acteur qui traite le sujet
@@ -416,7 +440,7 @@ if (File.Exists(preDirectiveFile))
     try { File.Delete(preDirectiveFile); } catch (IOException) { }
     if (preText.Length > 0)
     {
-        var refKey = issueKeys[0]; // US de pilotage du sprint
+        var refKey = pilotageKey; // US de pilotage réelle (titre Jira), pas le 1er ticket de la liste
         Console.WriteLine($"  ⚑ Pré-directive(s) de {config.ApproverName} détectée(s) — stockée(s) et injectée(s) (publiée(s) quand un acteur commentera le sujet).");
         var preEntry = $"### [{refKey}] (pré-directive de ce run)\n{preText}";
         builder.DecisionsRegistry = builder.DecisionsRegistry is null ? preEntry : builder.DecisionsRegistry + "\n\n" + preEntry;
@@ -451,8 +475,7 @@ EventEmitter.Emit("manifest", new
 var stateFile  = Path.Combine(artifactsDir, "state.json");
 var handoffFile = Path.Combine(artifactsDir, "session-handoff.md");
 
-// The pilotage ticket: first key (sprint-level synthesis goes here, not duplicated on all scope tickets)
-var pilotageKey = issueKeys[0];
+// (US de pilotage : détectée plus haut, cf. PilotageUsResolver)
 
 SprintState sprintState;
 if (resume)
@@ -824,6 +847,25 @@ while (!shutdownCts.IsCancellationRequested)
         builder, runner, publisher, null, freshQaContext, shutdownCts.Token);
 }
 
+// ─── Directives jamais remises : une directive adressée à un acteur qui n'a plus
+// pris la parole ne doit PAS disparaître en silence (incident 2026-07-16). Elle
+// reste dans l'état persisté — le prochain run la livrera — et Hajar est prévenue ici.
+await IngestPendingDirectivesAsync(artifactsDir, shutdownCts.Token);
+var undelivered = sprintState.PendingDirectives.Where(d => !d.Delivered).ToList();
+if (undelivered.Count > 0)
+{
+    Console.WriteLine($"\n⚑ {undelivered.Count} directive(s) de {config.ApproverName} NON REMISE(S) — destinataire jamais reparu dans ce run :");
+    foreach (var d in undelivered)
+        Console.WriteLine($"  - → {d.TargetActor ?? d.TargetGroup ?? "tous"} : {Truncate(d.Text, 100)}");
+    Console.WriteLine("  Elles restent en attente et seront livrées au prochain run (état persisté).");
+    EventEmitter.Emit("directives-undelivered", new
+    {
+        count = undelivered.Count,
+        items = undelivered.Select(d => new { target = d.TargetActor ?? d.TargetGroup ?? "tous", text = d.Text }),
+    });
+}
+await SprintStateManager.SaveAsync(stateFile, sprintState);
+
 await SprintStateManager.WriteHandoffAsync(handoffFile, sprintState);
 
 // ─── Point F: generate HTML report ───────────────────────────────────────────
@@ -868,8 +910,12 @@ async Task RunSingleActorAsync(
     CancellationToken ct)
 {
     var prompt = builder.Build(role, issues, primaryKey, mode: sessionMode, frameworks: frameworks, memory: agentMemory);
-    if (!string.IsNullOrWhiteSpace(approverDirective))
-        prompt = prompt with { UserPrompt = prompt.UserPrompt + $"\n\n## Directive de {config.ApproverName} — à respecter\n{approverDirective}" };
+
+    // Directives déposées à tout moment + celles adressées nommément à CE rôle.
+    await IngestPendingDirectivesAsync(artifactsDir, ct);
+    var directives = Join(approverDirective, DirectivesForActor(role));
+    if (!string.IsNullOrWhiteSpace(directives))
+        prompt = prompt with { UserPrompt = prompt.UserPrompt + $"\n\n## Directive de {config.ApproverName} — à respecter\n{directives}" };
 
     var promptFile = Path.Combine(artifactsDir, $"prompt-{role}.txt");
     await File.WriteAllTextAsync(promptFile, $"=== SYSTEM ===\n{prompt.SystemPrompt}\n\n=== USER ===\n{prompt.UserPrompt}");
@@ -981,30 +1027,71 @@ async Task<bool> WaitForQuotaWindowAsync(SprintState state, string stateFile, Ca
     return true;
 }
 
-// ─── Directive déposée par Hajar EN COURS DE RUN (fichier pending-directive.txt
-// écrit par l'UI à tout moment) : consommée avant chaque US, injectée dans le
-// prompt et publiée sur Jira par l'outil.
-async Task<string?> ConsumePendingDirectiveAsync(string artifactsDir, JiraCommentPublisher publisher, CancellationToken ct)
+// ─── Directives déposées par Hajar EN COURS DE RUN (fichier pending-directive.txt
+// écrit par l'UI à tout moment) : versées au stock dès qu'on les voit. Le fichier est
+// un SAS, pas un stockage : il est vidé ici et son contenu part dans l'état persisté
+// (incident 2026-07-16 : run mort avant le point de lecture → directive jamais lue).
+// Une ligne = une directive (l'UI en ajoute une par intervention).
+async Task IngestPendingDirectivesAsync(string artifactsDir, CancellationToken ct)
 {
     var file = Path.Combine(artifactsDir, "pending-directive.txt");
     await pendingDirectiveLock.WaitAsync(CancellationToken.None);
     try
     {
-        if (!File.Exists(file)) return null;
-        string text;
+        if (!File.Exists(file)) return;
+        string raw;
         try
         {
-            text = (await File.ReadAllTextAsync(file, ct)).Trim();
+            raw = await File.ReadAllTextAsync(file, ct);
             File.Delete(file);
         }
-        catch (IOException) { return null; } // en cours d'écriture par l'UI — prochain passage
+        catch (IOException) { return; } // en cours d'écriture par l'UI — prochain passage
 
-        if (text.Length == 0) return null;
-        Console.WriteLine($"  ⚑ Directive de {config.ApproverName} (déposée en cours de run) — appliquée à partir de la prochaine US.");
-        await AddDirectiveAsync(pilotageKey, text);
-        return text;
+        foreach (var line in raw.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            await AddDirectiveAsync(pilotageKey, line);
     }
     finally { pendingDirectiveLock.Release(); }
+}
+
+// Directives dues à CET acteur : adressées à lui (@ActorRole), à son groupe
+// (@qa, @pilotage…), ou non adressées (= tout le monde). Livrées une fois, puis
+// marquées — le stock survit à un crash tant qu'elles n'ont pas trouvé leur cible.
+string? DirectivesForActor(ActorRole role)
+{
+    var due = sprintState.PendingDirectives.Where(d => !d.Delivered && DirectiveTargets(d, role)).ToList();
+    if (due.Count == 0) return null;
+
+    foreach (var d in due)
+    {
+        d.Delivered = true;
+        Console.WriteLine($"  ⚑ Directive de {config.ApproverName} → {role} : {Truncate(d.Text, 80)}");
+        EventEmitter.Emit("directive-delivered", new { target = role.ToString(), text = d.Text });
+    }
+    try { SprintStateManager.SaveAsync(stateFile, sprintState).GetAwaiter().GetResult(); } catch (IOException) { }
+
+    return string.Join("\n\n", due.Select(d =>
+        d.TargetActor is not null || d.TargetGroup is not null
+            ? $"(adressée à {d.TargetActor ?? d.TargetGroup} — c'est toi) {d.Text}"
+            : d.Text));
+}
+
+static bool DirectiveTargets(PendingDirective d, ActorRole role)
+{
+    if (d.TargetActor is { Length: > 0 } a)
+        return Enum.TryParse<ActorRole>(a, ignoreCase: true, out var r) && r == role;
+    if (d.TargetGroup is { Length: > 0 } g)
+        return Enum.TryParse<ActorGroup>(g, ignoreCase: true, out var gr) && role.GetGroup() == gr;
+    return true; // non adressée : pour le prochain acteur qui parle
+}
+
+static string Truncate(string s, int max) =>
+    s.Length <= max ? s : s[..max] + "…";
+
+// Concatène des blocs de directives non vides (directive de groupe + directives adressées).
+static string? Join(params string?[] parts)
+{
+    var kept = parts.Where(p => !string.IsNullOrWhiteSpace(p)).ToArray();
+    return kept.Length == 0 ? null : string.Join("\n\n", kept);
 }
 
 // ─── Registre des décisions : toute décision donnée EN COURS DE RUN y entre ────
@@ -1029,16 +1116,28 @@ async Task RecordDecisionInRegistryAsync(string usKey, string text)
 // n'arrive sur Jira que portée par le commentaire de l'acteur qui traite l'US liée.
 async Task AddDirectiveAsync(string subjectKey, string text)
 {
-    var clean = text.Trim();
+    // « @GptImplementation tu as indiqué … pourquoi ? » → cible + texte utile.
+    var address = DirectiveAddressing.Parse(text);
+    var clean = address.Text.Trim();
     if (clean.Length == 0) return;
+
     sprintState.PendingDirectives.Add(new PendingDirective
     {
         SubjectKey = subjectKey, Text = clean,
-        CreatedAt = DateTimeOffset.UtcNow, Published = false
+        CreatedAt = DateTimeOffset.UtcNow, Published = false,
+        TargetActor = address.Actor?.ToString(),
+        TargetGroup = address.Group?.ToString(),
+        Delivered = false,
     });
-    await RecordDecisionInRegistryAsync(subjectKey, clean); // registre + fichier (tab + prompts)
+
+    var registryEntry = address.IsTargeted ? $"→ {address.TargetLabel} : {clean}" : clean;
+    await RecordDecisionInRegistryAsync(subjectKey, registryEntry); // registre + fichier (tab + prompts)
     try { await SprintStateManager.SaveAsync(stateFile, sprintState); } catch (IOException) { }
-    Console.WriteLine($"  ⚑ Directive de {config.ApproverName} stockée pour [{subjectKey}] — publiée dès qu'un acteur commentera ce sujet.");
+
+    Console.WriteLine(address.IsTargeted
+        ? $"  ⚑ Directive de {config.ApproverName} stockée pour [{subjectKey}] → destinataire : {address.TargetLabel} (appliquée dès qu'il prend la parole)."
+        : $"  ⚑ Directive de {config.ApproverName} stockée pour [{subjectKey}] — appliquée au prochain acteur, publiée dès qu'un acteur commentera ce sujet.");
+    EventEmitter.Emit("directive-stored", new { subject = subjectKey, target = address.TargetLabel, text = clean });
 }
 
 // ─── Dispatch de remédiation : traite une liste d'écarts/actions par US ─────────
@@ -1218,7 +1317,8 @@ async Task RunImplementationPhaseAsync(
         EventEmitter.Emit("implementation-us", new { key = issue.Key, engine = engine.ToString(), relief = false, usType = usType.ToString() });
 
         var prompt = builder.Build(engine, [issue], issue.Key, mode: sessionMode, frameworks: frameworks, memory: agentMemory);
-        prompt = WithDirective(prompt, await ConsumePendingDirectiveAsync(artifactsDir, publisher, ct), config.ApproverName);
+        await IngestPendingDirectivesAsync(artifactsDir, ct);
+        prompt = WithDirective(prompt, DirectivesForActor(engine), config.ApproverName);
         var result = await RunDialogueTurnAsync(engine, prompt, artifactsDir, runner, ct);
 
         // ── Relève : quota épuisé → l'autre moteur reprend avec le handoff ────
@@ -1392,7 +1492,8 @@ async Task RunImplementationParallelAsync(
             EventEmitter.Emit("implementation-us", new { key = issue.Key, engine = engine.ToString(), relief = false, parallel = true });
 
             var prompt = builder.Build(engine, [issue], issue.Key, mode: sessionMode, frameworks: frameworks, memory: agentMemory);
-            prompt = WithDirective(prompt, await ConsumePendingDirectiveAsync(artifactsDir, publisher, ct), config.ApproverName);
+            await IngestPendingDirectivesAsync(artifactsDir, ct);
+            prompt = WithDirective(prompt, DirectivesForActor(engine), config.ApproverName);
             var result = await RunDialogueTurnAsync(engine, prompt, artifactsDir, runner, ct);
 
             if (result.IsQuotaExhausted)
@@ -1624,9 +1725,10 @@ async Task RunDialogueGroupAsync(
 {
     var transcriptBase = Path.Combine(artifactsDir, $"dialogue-{group}");
 
-    // Directive déposée à tout moment : consommée aussi à l'entrée d'une discussion
-    // (pas seulement avant les US d'implémentation).
-    approverDirective ??= await ConsumePendingDirectiveAsync(artifactsDir, publisher, ct);
+    // Directives déposées à tout moment : versées au stock à l'entrée du groupe, puis
+    // relues et livrées AU TOUR DE CHAQUE ACTEUR (cf. buildPrompt) — une directive
+    // adressée à un acteur précis doit atteindre CET acteur, pas le premier venu.
+    await IngestPendingDirectivesAsync(artifactsDir, ct);
 
     // Reprise : le transcript persisté est rechargé, la discussion continue au tour suivant.
     var resumedTurns = resume ? await DialogueEngine.TryLoadTranscriptAsync(transcriptBase, ct) : null;
@@ -1644,7 +1746,10 @@ async Task RunDialogueGroupAsync(
         resumedTurns = (resumedTurns ?? []).Append(directiveTurn).ToList();
     }
 
-    var engine = new DialogueEngine(config.MaxDialogueRounds, config.ApproverName, config.InterventionEveryTurn);
+    var engine = new DialogueEngine(config.MaxDialogueRounds, config.ApproverName, config.InterventionEveryTurn,
+        blindFirstRound: config.BlindFirstRound);
+    if (config.BlindFirstRound)
+        Console.WriteLine("  (round 1 à l'aveugle : chaque membre produit son analyse propre avant de lire les autres)");
 
     // Le round/synthèse du tour courant est capturé par buildPrompt pour l'événement "turn"
     // (runTurn ne connaît pas le round ; les deux delegates sont appelés séquentiellement).
@@ -1657,10 +1762,22 @@ async Task RunDialogueGroupAsync(
         {
             currentRound = round;
             currentIsFinal = isFinal;
+            // Round 1 en mode aveugle : le moteur a déjà masqué les pairs du transcript —
+            // le prompt doit le dire à l'acteur, sinon il croit ouvrir la discussion.
+            var isBlind = config.BlindFirstRound && round == 1 && !isFinal && roles.Length > 1;
             var p = builder.BuildDialogueTurn(role, issues, publishKey, transcript, round,
-                config.MaxDialogueRounds, isFinal, sessionMode, frameworks, agentMemory);
+                config.MaxDialogueRounds, isFinal, sessionMode, frameworks, agentMemory, blindRound: isBlind);
             if (qaContext is not null)
                 p = p with { UserPrompt = p.UserPrompt + "\n\n---\n\n## LOGS D'EXÉCUTION RÉELS (QA_COMMAND) + AUDIT DES PREUVES\n" + qaContext };
+
+            // Directives déposées pendant que le groupe parlait : relues à chaque tour et
+            // livrées à leur destinataire. Pas de contexte de synchro en console → pas de
+            // deadlock sur ce GetResult ; l'IO est locale et brève.
+            // (La directive de groupe, elle, est déjà entrée dans le transcript ci-dessus.)
+            IngestPendingDirectivesAsync(artifactsDir, ct).GetAwaiter().GetResult();
+            var turnDirectives = DirectivesForActor(role);
+            if (!string.IsNullOrWhiteSpace(turnDirectives))
+                p = p with { UserPrompt = p.UserPrompt + $"\n\n---\n\n## Directive de {config.ApproverName} — autorité, à respecter\n{turnDirectives}" };
             return p;
         },
         runTurn: async (role, prompt, token) =>

@@ -49,6 +49,17 @@ public sealed class PendingDirective
     public string Text { get; set; } = "";
     public DateTimeOffset CreatedAt { get; set; }
     public bool Published { get; set; }
+
+    // Adressage (2026-07-16) : nom d'ActorRole ou d'ActorGroup ; null = tous les acteurs.
+    // Une directive adressée attend SON destinataire au lieu d'être appliquée au
+    // premier acteur venu.
+    public string? TargetActor { get; set; }
+    public string? TargetGroup { get; set; }
+
+    // Injectée au moins une fois dans le prompt de sa cible. Distinct de Published,
+    // qui concerne l'écriture Jira : une directive peut être appliquée sans être
+    // encore publiée, et le run peut mourir entre les deux.
+    public bool Delivered { get; set; }
 }
 
 public static class SprintStateManager

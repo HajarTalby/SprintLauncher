@@ -122,9 +122,12 @@ public sealed class PromptBuilder
 
         ActorRole.AnalysisCodex =>
             $"Tu es le second membre de la session d'analyse {_project} (perspective Codex). " +
-            "Tu reçois l'analyse du premier membre (claude-code) et tu la challenges : " +
-            "valide ou conteste les choix techniques, complète les manques, identifie les risques omis. " +
-            "Tu n'implémentes RIEN — tu analyses. Ne répète pas ce qui est déjà dit. " +
+            "Tu es un analyste À PART ENTIÈRE, pas un relecteur : tu produis TA propre analyse " +
+            "(actions techniques, fichiers impactés, dépendances, permissions nécessaires, réutilisation, " +
+            "points flous), puis tu la CROISES avec celle de l'autre membre quand elle t'est présentée — " +
+            "accords, désaccords argumentés, et différentiel dans les deux sens. " +
+            "Valider en bloc l'analyse de l'autre sans apport propre n'est PAS une contribution. " +
+            "Tu n'implémentes RIEN — tu analyses. " +
             "Si un désaccord de fond persiste, signale-le explicitement par un marqueur [LITIGE: <sujet>]. " +
             $"Tu te signes [agent: codex | role: analyse | us: {issueKey}].",
 
@@ -193,8 +196,11 @@ public sealed class PromptBuilder
 
         ActorRole.GptQaVerdict =>
             $"Tu es le second membre du comité de verdict QA {_project} (perspective gpt-chat). " +
-            "Tu reçois les logs de tests, la DoD, et la contribution du premier membre (claude-chat). " +
-            "Construis dessus pour produire le verdict collectif final : PASS / PASS-avec-réserves / FAIL. " +
+            "Tu formes TON PROPRE verdict à partir des logs de tests, de la DoD et des preuves réelles — " +
+            "jamais en te reposant sur le verdict de l'autre membre. Quand sa contribution t'est présentée, " +
+            "tu la croises avec la tienne : accords, désaccords argumentés, différentiel (ce qu'il a manqué, " +
+            "ce que tu avais manqué). Un écart vu par un seul des deux membres reste un écart. " +
+            "Tu portes ensuite le verdict collectif final : PASS / PASS-avec-réserves / FAIL. " +
             "C'est le seul verdict QA du sprint — sois exhaustif et conclusif. " +
             $"Tu te signes [agent: gpt-chat | role: qa-verdict | us: {issueKey}].",
 
@@ -216,7 +222,8 @@ public sealed class PromptBuilder
         bool isFinalSynthesis,
         SessionMode mode = SessionMode.Execution,
         FrameworkContext? frameworks = null,
-        AgentMemoryContext? memory = null)
+        AgentMemoryContext? memory = null,
+        bool blindRound = false)
     {
         var dialogueDirective =
             $"\n\nDISCUSSION MULTI-TOURS : tu participes à une vraie discussion avec les autres membres " +
@@ -301,17 +308,55 @@ public sealed class PromptBuilder
         string instruction;
         if (isFinalSynthesis)
         {
+            // Ce tour est le SEUL livrable visible : c'est lui qui s'affiche dans le Sprint
+            // Launcher et part sur Jira en un commentaire unique (exigence de Hajar).
             instruction =
-                $"La discussion doit se conclure maintenant (plafond de {maxRounds} tours atteint ou clôture demandée par {_approver}). " +
-                "Produis la SYNTHÈSE FINALE de la délibération : décision commune, points d'accord, désaccords résiduels " +
-                $"explicitement listés s'il en reste, et prochaine étape concrète pour {_approver}. " +
+                $"SYNTHÈSE FINALE — la discussion se conclut maintenant (plafond de {maxRounds} tours atteint " +
+                $"ou clôture demandée par {_approver}). Tu portes la synthèse de TOUTE la délibération. " +
+                "C'est la SEULE sortie qui sera affichée et publiée sur Jira : elle doit se suffire à elle-même, " +
+                "sans que personne ait besoin de relire le transcript. " +
+                "Elle DOIT contenir : la décision commune ; les points d'accord ; les désaccords résiduels " +
+                "explicitement listés s'il en reste (ne les gomme pas pour faire propre) ; ce que chaque membre " +
+                "a apporté en propre (le différentiel des analyses indépendantes) ; " +
+                $"et la prochaine étape concrète pour {_approver}. " +
                 $"Termine impérativement par le marqueur {DialogueEngine.FinalDecisionMarker}.";
+        }
+        else if (blindRound)
+        {
+            // Tour à l'aveugle (retour de Hajar, 2026-07-16) : chaque membre produit SA
+            // propre analyse sans voir celle des autres. Sans ça, le second membre se
+            // contentait de valider la lecture du premier au lieu d'analyser.
+            instruction =
+                $"ANALYSE PROPRE — round 1/{maxRounds}, À L'AVEUGLE. Tu ne vois PAS la contribution des autres " +
+                "membres : c'est volontaire. Produis TA propre analyse, complète et autonome, à partir du " +
+                "contexte fourni uniquement (US, commentaires Jira, frameworks, décisions actées). " +
+                "Ne dis jamais « je rejoins l'analyse précédente » ni « rien à ajouter » : il n'y a rien à rejoindre à ce stade. " +
+                "Va au bout de ton raisonnement — analyse, points à trancher, risques, recommandation structurée. " +
+                "Au tour suivant tu découvriras l'analyse des autres membres et vous les croiserez. " +
+                $"N'émets AUCUN marqueur de convergence ({DialogueEngine.ConsensusMarker} / {DialogueEngine.FinalDecisionMarker}) " +
+                "à ce tour : on ne converge pas avant de s'être lus.";
         }
         else if (transcript.Count == 0)
         {
             instruction =
                 $"Ouvre la discussion (round 1/{maxRounds}). Pose ta position initiale : analyse, points à trancher, " +
                 "recommandation structurée. Les autres membres vont répondre et construire dessus.";
+        }
+        else if (round == 2)
+        {
+            // Premier tour où les analyses à l'aveugle se rencontrent : le croisement est
+            // le livrable, pas une politesse. Le différentiel est ce que Hajar veut voir.
+            instruction =
+                $"CROISEMENT — round {round}/{maxRounds}. Tu découvres maintenant l'analyse des autres membres, " +
+                "produite indépendamment de la tienne. Croise-la avec la tienne et structure ta réponse ainsi :\n" +
+                "1. '## ACCORDS' — les points où vos analyses convergent (cite-les, ne les réécris pas).\n" +
+                "2. '## DÉSACCORDS' — les points où vous divergez : dis lequel tu tiens, et POURQUOI (argument, pas autorité). " +
+                $"Si un désaccord de fond ne peut pas être résolu entre vous, marque-le [LITIGE: <sujet>].\n" +
+                "3. '## DIFFÉRENTIEL' — ce que TON analyse apporte et qui est ABSENT de la leur, et inversement " +
+                "ce qu'ils ont vu que tu avais manqué (reconnais-le explicitement).\n" +
+                $"Les interventions de {_approver} ont autorité et tranchent. " +
+                "Interdit : valider en bloc l'analyse de l'autre sans différentiel — s'il n'y a réellement aucun " +
+                "écart, dis-le et prouve-le en citant les points couverts de part et d'autre.";
         }
         else
         {

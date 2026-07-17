@@ -30,6 +30,13 @@ public class DialogueEngineTests : IDisposable
     private static ActorRunResult Ok(ActorRole role, string output) =>
         new(role, Success: true, Output: output, ErrorOutput: null, ExitCode: 0, IsSemiManual: false);
 
+    private static ActorRunResult QuotaOut(ActorRole role) =>
+        new(role, Success: false, Output: "", ErrorOutput: "quota", ExitCode: 1,
+            IsSemiManual: false, IsQuotaExhausted: true);
+
+    private static ActorRunResult HardFail(ActorRole role) =>
+        new(role, Success: false, Output: "", ErrorOutput: "boom", ExitCode: 1, IsSemiManual: false);
+
     // ── Convergence ────────────────────────────────────────────────────────────
 
     [Fact]
@@ -75,6 +82,70 @@ public class DialogueEngineTests : IDisposable
         Assert.Equal(5, outcome.Turns.Count);
         // La synthèse est assumée par le dernier participant
         Assert.Equal(TwoParticipants[^1].ToString(), outcome.Turns[^1].Speaker);
+    }
+
+    // ── Relève sur quota (retour Hajar 2026-07-16) ─────────────────────────────
+
+    // Le membre Claude du comité meurt de quota au 1er tour → le membre GPT prend la
+    // relève et porte la synthèse. Sans ça, la discussion mourait (constat de Hajar).
+    [Fact]
+    public async Task Quota_exhausted_first_member_relieved_by_second()
+    {
+        var engine = new DialogueEngine(maxRounds: 3, approverName: "Hajar");
+        var seen = new List<ActorRole>();
+
+        var outcome = await engine.RunAsync(
+            TwoParticipants,
+            FakePrompt,
+            (role, _, _) =>
+            {
+                seen.Add(role);
+                // Claude (1er membre) est à court de quota ; GPT répond normalement.
+                return Task.FromResult(role == ActorRole.CommitteePilotageClaudeChat
+                    ? QuotaOut(role)
+                    : Ok(role, "Analyse GPT complète. [DECISION FINALE]"));
+            },
+            requestIntervention: null,
+            TranscriptBase);
+
+        Assert.NotEqual(DialogueEndReason.ActorFailed, outcome.EndReason);
+        Assert.True(outcome.Success);
+        // La synthèse finale est bien portée par GPT, le survivant.
+        Assert.Equal(ActorRole.CommitteePilotageGptChat.ToString(), outcome.Turns[^1].Speaker);
+        Assert.Contains(seen, r => r == ActorRole.CommitteePilotageGptChat);
+    }
+
+    // Les deux membres épuisés → échec réel (pas de faux succès).
+    [Fact]
+    public async Task All_members_quota_exhausted_fails()
+    {
+        var engine = new DialogueEngine(maxRounds: 3, approverName: "Hajar");
+
+        var outcome = await engine.RunAsync(
+            TwoParticipants,
+            FakePrompt,
+            (role, _, _) => Task.FromResult(QuotaOut(role)),
+            requestIntervention: null,
+            TranscriptBase);
+
+        Assert.Equal(DialogueEndReason.ActorFailed, outcome.EndReason);
+    }
+
+    // Un échec DUR (pas un quota) ne déclenche pas la relève : c'est un vrai problème.
+    [Fact]
+    public async Task Hard_failure_does_not_trigger_relief()
+    {
+        var engine = new DialogueEngine(maxRounds: 3, approverName: "Hajar");
+
+        var outcome = await engine.RunAsync(
+            TwoParticipants,
+            FakePrompt,
+            (role, _, _) => Task.FromResult(HardFail(role)),
+            requestIntervention: null,
+            TranscriptBase);
+
+        Assert.Equal(DialogueEndReason.ActorFailed, outcome.EndReason);
+        Assert.Equal(ActorRole.CommitteePilotageClaudeChat, outcome.FailedRole);
     }
 
     // ── Interventions de l'approbatrice ───────────────────────────────────────

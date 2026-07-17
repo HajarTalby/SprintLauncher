@@ -22,6 +22,11 @@ public sealed class SprintLauncherConfig
     // true : checkpoint d'intervention après chaque prise de parole (INTERVENTION_MODE=turn) ;
     // false (défaut) : entre les rounds seulement.
     public bool InterventionEveryTurn { get; init; }
+    // Round 1 « à l'aveugle » : chaque membre d'une discussion produit SON analyse sans
+    // voir celle des autres, puis les tours suivants croisent (accords/désaccords/
+    // différentiel). Sans ça, le second membre se contente de valider le premier
+    // (retour de Hajar, 2026-07-16). BLIND_FIRST_ROUND=false pour couper.
+    public bool BlindFirstRound { get; init; } = true;
     // Implémentation parallèle : les deux moteurs avancent EN MÊME TEMPS, chacun sur
     // sa file (front/back) — possible car les périmètres de code sont disjoints.
     // Les revues croisées sont faites en fin de phase (le réviseur est occupé pendant).
@@ -71,6 +76,7 @@ public sealed class SprintLauncherConfig
             EngineBack = Environment.GetEnvironmentVariable("ENGINE_BACK") ?? "ClaudeImplementation",
             CrossReviewEnabled = !string.Equals(Environment.GetEnvironmentVariable("CROSS_REVIEW"), "false", StringComparison.OrdinalIgnoreCase),
             InterventionEveryTurn = string.Equals(Environment.GetEnvironmentVariable("INTERVENTION_MODE"), "turn", StringComparison.OrdinalIgnoreCase),
+            BlindFirstRound = !string.Equals(Environment.GetEnvironmentVariable("BLIND_FIRST_ROUND"), "false", StringComparison.OrdinalIgnoreCase),
             ParallelImplementation = string.Equals(Environment.GetEnvironmentVariable("PARALLEL_IMPLEMENTATION"), "true", StringComparison.OrdinalIgnoreCase),
             GptPilotageAuto = !(Environment.GetEnvironmentVariable("GPT_PILOTAGE") ?? "auto").StartsWith("semi", StringComparison.OrdinalIgnoreCase),
             QuotaWaitEnabled = !string.Equals(Environment.GetEnvironmentVariable("QUOTA_WAIT"), "false", StringComparison.OrdinalIgnoreCase),

@@ -1158,8 +1158,8 @@ public partial class MainWindow : Window
             return;
         }
 
-        // Hors checkpoint : directive déposée (elles s'ACCUMULENT), consommée par le
-        // run en cours à la prochaine US/discussion — ou par le prochain run si aucun
+        // Hors checkpoint : directive déposée (elles s'ACCUMULENT), remise à son
+        // destinataire dès qu'il prend la parole — ou par le prochain run si aucun
         // run n'est actif (dépôt AVANT lancement).
         if (string.IsNullOrEmpty(text)) return;
         var targetDir = _process is { HasExited: false } && _artifactsDir is not null
@@ -1168,15 +1168,35 @@ public partial class MainWindow : Window
         try
         {
             File.AppendAllText(Path.Combine(targetDir, "pending-directive.txt"), text + Environment.NewLine);
-            AppendLog($">>> Directive déposée : {text}");
+
+            // Écho immédiat dans le fil DISCUSSION : une directive déposée doit être
+            // VISIBLE tout de suite, pas seulement une ligne de journal qu'on perd si
+            // le run meurt avant de l'avoir lue (incident 2026-07-16).
+            var (target, body) = SplitDirectiveTarget(text);
+            var speaker = target is null ? "Hajar — directive déposée" : $"Hajar → {target}";
+            AppendChatTurn(speaker, body, isIntervention: true, round: 0, isFinal: false);
+
+            AppendLog($">>> Directive déposée{(target is null ? "" : $" → {target}")} : {body}");
             TxtStatus.Text = _process is { HasExited: false }
-                ? "Directive déposée — publiée et appliquée à partir de la prochaine étape."
-                : "Directive pré-déposée — elle sera publiée et appliquée dès le lancement du prochain run.";
+                ? target is null
+                    ? "Directive déposée — remise au prochain acteur qui prend la parole."
+                    : $"Directive déposée → {target} — remise dès que cet acteur prend la parole."
+                : "Directive pré-déposée — elle sera remise dès le lancement du prochain run.";
         }
         catch (IOException ex)
         {
             AppendLog($"(directive non déposée : {ex.Message})");
         }
+    }
+
+    // Miroir UI de DirectiveAddressing.Parse (CLI) : sert uniquement à l'affichage
+    // immédiat. Le CLI reste seul juge du routage réel.
+    private static (string? Target, string Body) SplitDirectiveTarget(string text)
+    {
+        if (!text.StartsWith('@')) return (null, text);
+        var sep = text.IndexOfAny([' ', ':', ',', '\t']);
+        if (sep <= 1) return (null, text);
+        return (text[1..sep].Trim(), text[(sep + 1)..].TrimStart(' ', ':', ',').Trim());
     }
 
     private void BtnConclude_Click(object sender, RoutedEventArgs e)
