@@ -20,6 +20,24 @@ public sealed class JiraCommentPublisher
     private readonly AuthenticationHeaderValue _auth;
     private readonly bool _dryRun;
 
+    /// <summary>
+    /// Garde-fou de périmètre (retour de Hajar, 2026-07-16 : délibération du comité
+    /// publiée sur SERZENIA-98 au lieu de l'US de pilotage SERZENIA-111) : quand il est
+    /// renseigné, TOUTE écriture vers un ticket hors de cette liste est refusée —
+    /// aucun chemin de publication ne peut sortir du périmètre du sprint.
+    /// </summary>
+    public IReadOnlyCollection<string>? AllowedKeys { get; set; }
+
+    private PublishResult? GuardScope(string issueKey)
+    {
+        if (AllowedKeys is not { Count: > 0 }) return null;
+        if (AllowedKeys.Contains(issueKey, StringComparer.OrdinalIgnoreCase)) return null;
+        var msg = $"Garde périmètre Jira : écriture vers {issueKey} REFUSÉE — hors périmètre du sprint ({string.Join(", ", AllowedKeys)}).";
+        Console.WriteLine($"  ✗ {msg}");
+        Events.EventEmitter.Emit("publish-scope-refused", new { key = issueKey, scope = AllowedKeys });
+        return PublishResult.Skipped(msg);
+    }
+
     public JiraCommentPublisher(HttpClient http, string baseUrl, string email, string apiToken, bool dryRun = true)
     {
         _http = http;
@@ -37,6 +55,7 @@ public sealed class JiraCommentPublisher
         ActorRunResult runResult,
         CancellationToken ct = default)
     {
+        if (GuardScope(issueKey) is { } refusedScope) return refusedScope;
         if (!runResult.Success)
             return PublishResult.Skipped($"Actor {runResult.Role} failed (exit {runResult.ExitCode}). Not publishing.");
 
@@ -75,6 +94,7 @@ public sealed class JiraCommentPublisher
         string responseText,
         CancellationToken ct = default)
     {
+        if (GuardScope(issueKey) is { } refusedScope) return refusedScope;
         var body = responseText.Trim();
         GuardAgainstVagueComment(role, body);
         var signed = AppendSignature(body, role, issueKey);
@@ -137,6 +157,7 @@ public sealed class JiraCommentPublisher
         string combinedBody,
         CancellationToken ct = default)
     {
+        if (GuardScope(issueKey) is { } refusedScope) return refusedScope;
         if (string.IsNullOrWhiteSpace(combinedBody) || combinedBody.Trim().Length < 20)
             throw new InvalidOperationException(
                 $"Garde commentaire vague [collectif {group}]: corps vide ou trop court. Refus d'écrire.");
@@ -166,6 +187,7 @@ public sealed class JiraCommentPublisher
     public async Task<PublishResult> PublishDecisionAsync(
         string issueKey, string approverName, string decisionText, CancellationToken ct = default)
     {
+        if (GuardScope(issueKey) is { } refusedScope) return refusedScope;
         var body = decisionText.Trim();
         if (body.Length < 10)
             return PublishResult.Skipped("Décision trop courte pour être publiée.");

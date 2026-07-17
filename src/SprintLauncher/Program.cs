@@ -162,7 +162,8 @@ if (publishManualRole is not null)
 
     var responseText = await File.ReadAllTextAsync(publishManualFile);
     using var http = new HttpClient();
-    var manualPublisher = new JiraCommentPublisher(http, config.JiraBaseUrl, config.JiraEmail, config.JiraApiToken, dryRun);
+    var manualPublisher = new JiraCommentPublisher(http, config.JiraBaseUrl, config.JiraEmail, config.JiraApiToken, dryRun)
+    { AllowedKeys = issueKeys };
     foreach (var key in issueKeys)
     {
         var result = await manualPublisher.PublishManualAsync(key, manualRole, responseText);
@@ -259,7 +260,8 @@ if (publishFromArtifacts)
         .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
         .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-    var artifactPublisher = new JiraCommentPublisher(httpClient, config.JiraBaseUrl, config.JiraEmail, config.JiraApiToken, dryRun);
+    var artifactPublisher = new JiraCommentPublisher(httpClient, config.JiraBaseUrl, config.JiraEmail, config.JiraApiToken, dryRun)
+    { AllowedKeys = issueKeys };
     var refKey = issueKeys[0];
     Console.WriteLine($"[{mode}] Publication depuis artefacts : {Path.GetFullPath(publishDir)}");
 
@@ -384,7 +386,10 @@ using var runner = new ActorRunner(
     repoRoot: config.SerzeniaRepoRoot,
     implementationTimeout: TimeSpan.FromSeconds(config.ImplementationTimeoutSeconds),
     gptPilotageAuto: config.GptPilotageAuto);
-var publisher = new JiraCommentPublisher(httpClient, config.JiraBaseUrl, config.JiraEmail, config.JiraApiToken, dryRun);
+// Garde-fou de périmètre : toute écriture Jira hors des tickets du sprint est refusée
+// (incident sprint 6 : délibération publiée sur SERZENIA-98 au lieu de SERZENIA-111).
+var publisher = new JiraCommentPublisher(httpClient, config.JiraBaseUrl, config.JiraEmail, config.JiraApiToken, dryRun)
+{ AllowedKeys = issueKeys };
 
 // Collect entries for the HTML report
 var reportEntries = new List<ActorReportEntry>();
@@ -656,8 +661,11 @@ foreach (var group in sessionMode.GetGroupOrder())
             var prevVerdict = File.Exists(prevVerdictFile) ? await File.ReadAllTextAsync(prevVerdictFile) : null;
             var mission =
                 "MISSION DE REDRESSEMENT : ce sprint a déjà été implémenté — vous reprenez la main pour DÉCIDER " +
-                "ce qui reste à traiter (ce n'est pas le rôle de la QA). Appuyez-vous sur : le verdict QA précédent " +
-                "ci-dessous, les décisions déjà actées au registre, et les inputs désormais fournis — un input externe " +
+                "ce qui reste à traiter (ce n'est pas le rôle de la QA). Votre audit ne se limite PAS au verdict QA " +
+                "ci-dessous : croisez-le avec les COMMENTAIRES JIRA de chaque US (restitutions et réserves des acteurs " +
+                "de dev), l'ÉCART entre le livré et la DESCRIPTION de chaque US, l'ÉCART avec l'US DE PILOTAGE " +
+                "(décisions actées, critères de sortie) et la CONFORMITÉ aux frameworks d'exécution et de validation. " +
+                "Tenez compte des décisions déjà actées au registre et des inputs désormais fournis — un input externe " +
                 "arrivé depuis (ex. DSN/secret dans l'environnement) LÈVE la stop-condition : la finalisation réelle et " +
                 "sa preuve deviennent DUES. Couvrez TOUTES les US du sprint, front ET backend. " +
                 "Votre synthèse DOIT contenir une section '## ECARTS' au format '- [CLE-US] action requise' " +

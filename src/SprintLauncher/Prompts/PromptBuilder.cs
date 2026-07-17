@@ -62,6 +62,19 @@ public sealed class PromptBuilder
         return string.Join("\n---\n", parts);
     }
 
+    // Mandat d'audit du comité de pilotage (retour de Hajar, 2026-07-16) : le pilotage
+    // ne se contente JAMAIS de relire le verdict QA — il audite le sprint sur toutes
+    // ses sources. Injecté dans les prompts système des deux membres du comité.
+    private const string PilotageAuditMandate =
+        "TON AUDIT COUVRE OBLIGATOIREMENT, pour CHAQUE US du sprint : " +
+        "(1) le verdict et les sorties QA ; " +
+        "(2) les COMMENTAIRES JIRA de l'US — restitutions, décisions, blocages, réserves ; " +
+        "(3) les RETOURS DES ACTEURS DE DEV — ce qu'ils déclarent livré, leurs réserves, leurs écarts assumés ; " +
+        "(4) l'ÉCART entre le livré et la DESCRIPTION Jira de l'US — chaque critère d'acceptation, chaque section du périmètre ; " +
+        "(5) l'ÉCART avec l'US DE PILOTAGE du sprint — décisions actées, ordre d'exécution, critères de sortie, principes (providers réels, règle coût/qualité) ; " +
+        "(6) la CONFORMITÉ aux frameworks d'exécution et de validation fournis en référence — y compris les règles de restitution et d'écriture Jira (bon ticket, bon format, artefacts exigés). " +
+        "Un point non vérifiable faute d'information est un CONSTAT à lister, pas un point à passer sous silence. ";
+
     private const string FormatDirective =
         "\n\nFORMAT DE RÉPONSE OBLIGATOIRE : " +
         "Sois concis et structuré. " +
@@ -149,15 +162,18 @@ public sealed class PromptBuilder
 
         ActorRole.CommitteePilotageClaudeChat =>
             $"Tu es le premier membre du comité de pilotage {_project} (perspective Claude). " +
-            "Le comité reçoit un contexte sprint et produit une délibération collective séquentielle. " +
-            "Tu fournis la première contribution : analyse, position et recommandation structurée. " +
-            "Le membre suivant lira ta contribution et construira dessus. 1 seul commentaire Jira en sortie finale. " +
+            "Le comité PILOTE le sprint — son audit est BEAUCOUP plus large que la validation QA " +
+            "(retour de Hajar, 2026-07-16 : le pilotage se limitait aux sorties QA). " +
+            PilotageAuditMandate +
+            "Tu fournis la première contribution : audit complet, position et recommandation structurée. " +
             $"Tu te signes [agent: claude-chat | role: comite-pilotage | us: {issueKey}].",
 
         ActorRole.CommitteePilotageGptChat =>
             $"Tu es le second membre du comité de pilotage {_project} (perspective GPT). " +
-            "Tu reçois la contribution du premier membre (claude-chat) et tu construis dessus. " +
-            "Complète, nuance ou confirme — ne répète pas ce qui a déjà été dit. " +
+            "Tu es un auditeur À PART ENTIÈRE : tu produis TON propre audit (même périmètre que " +
+            "le premier membre), puis tu croises avec sa contribution — accords, désaccords " +
+            "argumentés, différentiel. Valider sa lecture sans audit propre n'est PAS une contribution. " +
+            PilotageAuditMandate +
             "Ta contribution clôt la délibération du comité de pilotage. " +
             $"Tu te signes [agent: gpt-chat | role: comite-pilotage | us: {issueKey}].",
 
@@ -494,7 +510,12 @@ public sealed class PromptBuilder
                 "(PowerShell System.Drawing CopyFromScreen), résultats de tests dans test-results/, logs dans logs/. " +
                 "VIDÉO : si la variable d'environnement FFMPEG est définie, enregistre le scénario en vidéo " +
                 "(`& $env:FFMPEG -f gdigrab -framerate 10 -t <durée> -i desktop videos/<scenario>.mp4`) pendant que tu le joues. " +
-                "Une US sans preuves n'est PAS terminée.",
+                "Une US sans preuves n'est PAS terminée. " +
+                "DÉCLARATION D'INSTALLATIONS (traçabilité, sans blocage — le GO du run les autorise) : toute " +
+                "installation ou modification d'environnement (winget, npm/dotnet tool install, paquet, pilote, " +
+                "service, variable machine) doit apparaître dans ta restitution sous une section '## INSTALLATIONS' " +
+                "listant quoi, pourquoi, et comment le désinstaller. Aucune installation ? Ne mets pas la section. " +
+                "Une installation non déclarée est un écart de process.",
 
             ActorRole.AnalysisCcode =>
                 "Voici les US du sprint à analyser avant implémentation. " +

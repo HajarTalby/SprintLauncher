@@ -57,4 +57,59 @@ public class PublisherGuardTests
         Assert.Equal(PublishStatus.DryRun, result.Status);
         Assert.Contains("[collectif: qa-verdict | us: SERZ-1]", result.Message);
     }
+
+    // ── Garde périmètre (incident sprint 6 : délibération sur SERZENIA-98 au lieu
+    // de l'US de pilotage SERZENIA-111) : hors périmètre = REFUS, sur tous les chemins.
+
+    [Fact]
+    public async Task Out_of_scope_collective_publish_is_refused()
+    {
+        var publisher = DryRunPublisher();
+        publisher.AllowedKeys = ["SERZ-111", "SERZ-112"];
+
+        var result = await publisher.PublishCollectiveAsync(
+            "SERZ-98", ActorGroup.CommitteePilotage,
+            "## Délibération collective — contenu suffisamment long pour passer la garde vague.");
+
+        Assert.Equal(PublishStatus.Skipped, result.Status);
+        Assert.Contains("Garde périmètre", result.Message);
+    }
+
+    [Fact]
+    public async Task Out_of_scope_manual_publish_is_refused()
+    {
+        var publisher = DryRunPublisher();
+        publisher.AllowedKeys = ["SERZ-111"];
+
+        var result = await publisher.PublishManualAsync(
+            "AUTRE-1", ActorRole.GptPilotage,
+            "Contenu valide et suffisamment long pour passer la garde de commentaire vague.");
+
+        Assert.Equal(PublishStatus.Skipped, result.Status);
+        Assert.Contains("Garde périmètre", result.Message);
+    }
+
+    [Fact]
+    public async Task In_scope_publish_passes_scope_guard()
+    {
+        var publisher = DryRunPublisher();
+        publisher.AllowedKeys = ["SERZ-111"];
+
+        var result = await publisher.PublishCollectiveAsync(
+            "serz-111", ActorGroup.Qa, // insensible à la casse
+            "## Verdict QA\n\nPASS : critères DoD vérifiés un à un sur les preuves.");
+
+        Assert.Equal(PublishStatus.DryRun, result.Status);
+    }
+
+    [Fact]
+    public async Task No_scope_configured_means_no_restriction()
+    {
+        var publisher = DryRunPublisher(); // AllowedKeys null : comportement historique
+        var result = await publisher.PublishCollectiveAsync(
+            "NIMPORTE-1", ActorGroup.Qa,
+            "## Verdict QA\n\nPASS : comportement rétrocompatible sans périmètre déclaré.");
+
+        Assert.Equal(PublishStatus.DryRun, result.Status);
+    }
 }
