@@ -380,6 +380,13 @@ var artifactsDir = Path.Combine("artifacts", sprintTag, string.Join("-", issueKe
 Directory.CreateDirectory(artifactsDir);
 Console.WriteLine($"Artefacts dans : {Path.GetFullPath(artifactsDir)}");
 runner.LiveOutputDir = Path.GetFullPath(artifactsDir); // sorties acteurs visibles au fil de l'eau dans l'UI
+// Chat live : n'active l'injection en cours de tour que si LIVE_CHAT=true (protocole
+// streaming/app-server à valider). Sinon, mode one-shot inchangé (release stable).
+if (config.LiveChatEnabled)
+{
+    runner.LiveInputDir = Path.GetFullPath(artifactsDir);
+    Console.WriteLine("  ⚡ Chat live ACTIVÉ (LIVE_CHAT=true) — interventions injectées pendant le tour. Protocole expérimental : surveiller la 1re exécution.");
+}
 
 // Sorties périmées : les live-* d'un run précédent ne doivent jamais passer
 // pour l'activité du run courant (constat Hajar : anciennes sorties affichées).

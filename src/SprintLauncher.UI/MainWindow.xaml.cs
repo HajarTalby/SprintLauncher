@@ -27,6 +27,8 @@ public partial class MainWindow : Window
     private FlowDocument _chatDoc = new();
     private bool _chatHasTurns;
     private string _lastRunKeys = "";
+    // Acteur en train de travailler : cible d'une intervention live (chat live).
+    private string? _activeActor;
     private bool _lastRunWasDryRun = true;
     private bool _publishMode; // run courant = --publish-from-artifacts / --create-us (pas de pipeline acteurs)
     private string? _usProposalsRefKey;
@@ -378,6 +380,7 @@ public partial class MainWindow : Window
                 case "actor-start":
                 {
                     var role = data.GetProperty("role").GetString() ?? "";
+                    _activeActor = role; // cible d'une intervention live
                     SetStatus(role, "running");
                     TxtStatus.Text = $"En cours : {role}";
                     break;
@@ -386,6 +389,7 @@ public partial class MainWindow : Window
                 case "actor-done":
                 {
                     var role = data.GetProperty("role").GetString() ?? "";
+                    if (_activeActor == role) _activeActor = null;
                     var success = data.GetProperty("success").GetBoolean();
                     var semi = data.GetProperty("semiManual").GetBoolean();
                     var secs = data.GetProperty("seconds").GetInt32();
@@ -471,6 +475,7 @@ public partial class MainWindow : Window
                     var key = data.GetProperty("key").GetString();
                     var engine = data.GetProperty("engine").GetString();
                     var relief = data.TryGetProperty("relief", out var rl) && rl.GetBoolean();
+                    _activeActor = engine; // moteur d'implémentation = cible d'une intervention live
                     TxtStatus.Text = $"Implémentation {key} → {engine}{(relief ? " (relève)" : "")}";
                     AppendLog(relief ? $"US {key} -> RELEVE par {engine}" : $"US {key} -> {engine}");
                     break;
@@ -1167,12 +1172,30 @@ public partial class MainWindow : Window
             : AppContext.BaseDirectory; // pré-directive : ramassée au démarrage du prochain run
         try
         {
+            var (target, body) = SplitDirectiveTarget(text);
+
+            // Chat live : si un acteur travaille ET que le message le vise (ou n'est pas
+            // adressé ailleurs), on le pousse dans SON inbox pour lecture EN COURS DE TOUR
+            // (live-input-<role>.txt). Sinon, file de directives classique (remise à la
+            // prochaine prise de parole du destinataire, persistée et adressable).
+            var liveTarget = _process is { HasExited: false } && _activeActor is not null
+                             && (target is null || string.Equals(target, _activeActor, StringComparison.OrdinalIgnoreCase))
+                ? _activeActor : null;
+
+            if (liveTarget is not null && _artifactsDir is not null)
+            {
+                File.AppendAllText(Path.Combine(_artifactsDir, $"live-input-{liveTarget}.txt"), body + Environment.NewLine);
+                AppendChatTurn($"Hajar → {liveTarget} (live)", body, isIntervention: true, round: 0, isFinal: false);
+                AppendLog($">>> Intervention live → {liveTarget} : {body}");
+                TxtStatus.Text = $"Intervention live envoyée à {liveTarget} — lue en cours de tour (si LIVE_CHAT actif).";
+                return;
+            }
+
             File.AppendAllText(Path.Combine(targetDir, "pending-directive.txt"), text + Environment.NewLine);
 
             // Écho immédiat dans le fil DISCUSSION : une directive déposée doit être
             // VISIBLE tout de suite, pas seulement une ligne de journal qu'on perd si
             // le run meurt avant de l'avoir lue (incident 2026-07-16).
-            var (target, body) = SplitDirectiveTarget(text);
             var speaker = target is null ? "Hajar — directive déposée" : $"Hajar → {target}";
             AppendChatTurn(speaker, body, isIntervention: true, round: 0, isFinal: false);
 

@@ -27,6 +27,11 @@ public sealed class SprintLauncherConfig
     // différentiel). Sans ça, le second membre se contente de valider le premier
     // (retour de Hajar, 2026-07-16). BLIND_FIRST_ROUND=false pour couper.
     public bool BlindFirstRound { get; init; } = true;
+    // Chat live (SL 2026-07-16) : injection d'interventions PENDANT le tour d'un acteur
+    // (claude --input-format stream-json / codex app-server turn/steer). DÉSACTIVÉ par
+    // défaut — protocole non encore validé contre les binaires (quota épuisé à
+    // l'écriture). LIVE_CHAT=true pour l'activer une fois le smoke live vert.
+    public bool LiveChatEnabled { get; init; }
     // Implémentation parallèle : les deux moteurs avancent EN MÊME TEMPS, chacun sur
     // sa file (front/back) — possible car les périmètres de code sont disjoints.
     // Les revues croisées sont faites en fin de phase (le réviseur est occupé pendant).
@@ -77,6 +82,7 @@ public sealed class SprintLauncherConfig
             CrossReviewEnabled = !string.Equals(Environment.GetEnvironmentVariable("CROSS_REVIEW"), "false", StringComparison.OrdinalIgnoreCase),
             InterventionEveryTurn = string.Equals(Environment.GetEnvironmentVariable("INTERVENTION_MODE"), "turn", StringComparison.OrdinalIgnoreCase),
             BlindFirstRound = !string.Equals(Environment.GetEnvironmentVariable("BLIND_FIRST_ROUND"), "false", StringComparison.OrdinalIgnoreCase),
+            LiveChatEnabled = string.Equals(Environment.GetEnvironmentVariable("LIVE_CHAT"), "true", StringComparison.OrdinalIgnoreCase),
             ParallelImplementation = string.Equals(Environment.GetEnvironmentVariable("PARALLEL_IMPLEMENTATION"), "true", StringComparison.OrdinalIgnoreCase),
             GptPilotageAuto = !(Environment.GetEnvironmentVariable("GPT_PILOTAGE") ?? "auto").StartsWith("semi", StringComparison.OrdinalIgnoreCase),
             QuotaWaitEnabled = !string.Equals(Environment.GetEnvironmentVariable("QUOTA_WAIT"), "false", StringComparison.OrdinalIgnoreCase),
