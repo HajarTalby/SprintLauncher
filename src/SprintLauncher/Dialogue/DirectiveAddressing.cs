@@ -123,9 +123,76 @@ public static class DirectiveAddressing
         if (_groupAliases.TryGetValue(token, out var aliasGroup))
             return new DirectiveAddress(null, aliasGroup, rest);
 
+        // Tolérance aux fautes de frappe (retour de Hajar, 2026-07-17 :
+        // « @commiteepilotagegpt » — un 't' manquant — traité comme non adressé) :
+        // rapprochement par distance d'édition sur les noms normalisés.
+        if (FuzzyMatchActor(token) is { } fuzzyRole)
+            return new DirectiveAddress(fuzzyRole, null, rest);
+        if (FuzzyMatchGroup(token) is { } fuzzyGroup)
+            return new DirectiveAddress(null, fuzzyGroup, rest);
+
         // Cible inconnue : la directive reste valable pour tous plutôt que d'être
         // silencieusement perdue (une faute de frappe ne doit jamais coûter un retour).
         return new DirectiveAddress(null, null, text);
+    }
+
+    // ── Rapprochement flou : normalisation (minuscules, lettres seules) puis
+    // distance de Levenshtein bornée — 2 fautes tolérées, 3 sur les noms longs.
+    private static string Normalize(string s) =>
+        new([.. s.ToLowerInvariant().Where(char.IsLetter)]);
+
+    private static bool CloseEnough(string a, string b)
+    {
+        var maxDist = Math.Max(a.Length, b.Length) >= 12 ? 3 : 2;
+        if (Math.Abs(a.Length - b.Length) > maxDist) return false;
+        return Levenshtein(a, b) <= maxDist;
+    }
+
+    // Le nom complet OU son préfixe de même longueur : « commiteepilotagegpt » doit
+    // trouver « CommitteePilotageGptChat » malgré le suffixe Chat et la faute.
+    private static bool MatchesFuzzy(string token, string candidate)
+    {
+        if (CloseEnough(token, candidate)) return true;
+        if (candidate.Length > token.Length + 2)
+            return CloseEnough(token, candidate[..Math.Min(candidate.Length, token.Length + 1)]);
+        return false;
+    }
+
+    private static ActorRole? FuzzyMatchActor(string token)
+    {
+        var t = Normalize(token);
+        if (t.Length < 4) return null; // trop court pour un rapprochement fiable
+        var candidates = Enum.GetValues<ActorRole>()
+            .Where(r => MatchesFuzzy(t, Normalize(r.ToString())))
+            .ToList();
+        // Alias connus aussi (ex. « claudecode » mal tapé)
+        if (candidates.Count == 0)
+            candidates = _actorAliases
+                .Where(kv => MatchesFuzzy(t, Normalize(kv.Key)))
+                .Select(kv => kv.Value).Distinct().ToList();
+        return candidates.Count == 1 ? candidates[0] : null; // ambigu = pas de pari
+    }
+
+    private static ActorGroup? FuzzyMatchGroup(string token)
+    {
+        var t = Normalize(token);
+        if (t.Length < 4) return null;
+        var candidates = Enum.GetValues<ActorGroup>()
+            .Where(g => MatchesFuzzy(t, Normalize(g.ToString())))
+            .ToList();
+        return candidates.Count == 1 ? candidates[0] : null;
+    }
+
+    private static int Levenshtein(string a, string b)
+    {
+        var d = new int[a.Length + 1, b.Length + 1];
+        for (var i = 0; i <= a.Length; i++) d[i, 0] = i;
+        for (var j = 0; j <= b.Length; j++) d[0, j] = j;
+        for (var i = 1; i <= a.Length; i++)
+            for (var j = 1; j <= b.Length; j++)
+                d[i, j] = Math.Min(Math.Min(d[i - 1, j] + 1, d[i, j - 1] + 1),
+                    d[i - 1, j - 1] + (a[i - 1] == b[j - 1] ? 0 : 1));
+        return d[a.Length, b.Length];
     }
 
     /// <summary>Liste des cibles adressables, pour l'aide et l'autocomplétion UI.</summary>

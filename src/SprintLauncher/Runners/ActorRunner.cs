@@ -8,8 +8,13 @@ public sealed class ActorRunner : IDisposable
 {
     private readonly string? _claudeBin;
     private readonly string? _codexBin;
-    private readonly string _claudeModel;
-    private readonly string _codexModel;
+    // Mutables : commutables EN COURS DE RUN via la commande « !model » de Hajar
+    // (2026-07-17 : changer de modèle sur quota sans redémarrer le run).
+    private string _claudeModel;
+    private string _codexModel;
+
+    public string ClaudeModel { get => _claudeModel; set => _claudeModel = value; }
+    public string CodexModel { get => _codexModel; set => _codexModel = value; }
     private readonly TimeSpan _actorTimeout;
     private readonly TimeSpan _implementationTimeout;
     private readonly string? _repoRoot;

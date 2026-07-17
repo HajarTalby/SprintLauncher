@@ -29,6 +29,11 @@ public partial class MainWindow : Window
     private string _lastRunKeys = "";
     // Acteur en train de travailler : cible d'une intervention live (chat live).
     private string? _activeActor;
+    // TOUS les acteurs en cours (pipeline parallèle : deux moteurs peuvent tourner
+    // en même temps). Le live ne route QUE vers un acteur réellement en cours —
+    // sinon le message pourrit dans une inbox que personne ne lit (constat
+    // 2026-07-17 : intervention routée vers un moteur mort au quota).
+    private readonly HashSet<string> _runningActors = new(StringComparer.OrdinalIgnoreCase);
     // Correction d'un envoi (retour Hajar 2026-07-17) : dernier texte envoyé + lignes
     // mises en file qu'une version corrigée doit annuler (« !cancel » côté CLI).
     private string? _lastSentRaw;
@@ -385,7 +390,8 @@ public partial class MainWindow : Window
                 case "actor-start":
                 {
                     var role = data.GetProperty("role").GetString() ?? "";
-                    _activeActor = role; // cible d'une intervention live
+                    _activeActor = role; // cible d'une intervention live non adressée
+                    _runningActors.Add(role);
                     SetStatus(role, "running");
                     TxtStatus.Text = $"En cours : {role}";
                     break;
@@ -394,7 +400,8 @@ public partial class MainWindow : Window
                 case "actor-done":
                 {
                     var role = data.GetProperty("role").GetString() ?? "";
-                    if (_activeActor == role) _activeActor = null;
+                    _runningActors.Remove(role);
+                    if (_activeActor == role) _activeActor = _runningActors.FirstOrDefault();
                     var success = data.GetProperty("success").GetBoolean();
                     var semi = data.GetProperty("semiManual").GetBoolean();
                     var secs = data.GetProperty("seconds").GetInt32();
@@ -841,6 +848,7 @@ public partial class MainWindow : Window
     private static readonly Brush ColorBullet   = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#6c7086")!);
     private static readonly Brush ColorBold     = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#ffffff")!);
     private static readonly Brush ColorApprover = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#f9e2af")!);
+    private static readonly Brush ColorMuted    = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#6c7086")!);
     private static readonly FontFamily SansFont = new("Segoe UI, Arial");
 
     // ─── Fil de discussion (onglet DISCUSSION) ─────────────────────────────────
@@ -871,6 +879,12 @@ public partial class MainWindow : Window
             FontWeight = FontWeights.Bold,
             FontSize = 13.5,
             Foreground = isIntervention ? ColorApprover : ColorH2,
+        });
+        // Date + heure sur CHAQUE message, y compris ceux de Hajar (demande 2026-07-17).
+        header.Inlines.Add(new Run($"   {DateTime.Now:dd/MM HH:mm:ss}")
+        {
+            FontSize = 11,
+            Foreground = ColorMuted,
         });
         _chatDoc.Blocks.Add(header);
 
@@ -1046,7 +1060,10 @@ public partial class MainWindow : Window
 
     private void AppendLog(string line)
     {
-        TxtLog.AppendText(line + "\n");
+        // Horodatage systématique (demande de Hajar, 2026-07-17) — les lignes déjà
+        // horodatées par le CLI ne sont pas doublées.
+        var stamped = line.StartsWith('[') ? line : $"[{DateTime.Now:dd/MM HH:mm:ss}] {line}";
+        TxtLog.AppendText(stamped + "\n");
         LogScroll.ScrollToEnd();
     }
 
@@ -1220,8 +1237,8 @@ public partial class MainWindow : Window
 
             if (targets.Count == 0)
             {
-                // Non adressé : live vers l'acteur actif si possible, sinon file.
-                if (running && _activeActor is not null && _artifactsDir is not null)
+                // Non adressé : live vers l'acteur actif s'il TOURNE réellement, sinon file.
+                if (running && _activeActor is not null && _runningActors.Contains(_activeActor) && _artifactsDir is not null)
                 {
                     File.AppendAllText(Path.Combine(_artifactsDir, $"live-input-{_activeActor}.txt"), multiBody + Environment.NewLine);
                     liveSent.Add(_activeActor);
@@ -1238,10 +1255,12 @@ public partial class MainWindow : Window
                 foreach (var t in targets)
                 {
                     var resolved = ResolveActorAlias(t) ?? t;
-                    if (running && _artifactsDir is not null && string.Equals(resolved, _activeActor, StringComparison.OrdinalIgnoreCase))
+                    // Live vers N'IMPORTE QUEL acteur en cours (pipeline parallèle :
+                    // deux moteurs peuvent tourner), jamais vers un acteur à l'arrêt.
+                    if (running && _artifactsDir is not null && _runningActors.Contains(resolved))
                     {
-                        File.AppendAllText(Path.Combine(_artifactsDir, $"live-input-{_activeActor}.txt"), multiBody + Environment.NewLine);
-                        liveSent.Add(_activeActor!);
+                        File.AppendAllText(Path.Combine(_artifactsDir, $"live-input-{resolved}.txt"), multiBody + Environment.NewLine);
+                        liveSent.Add(resolved);
                     }
                     else
                     {

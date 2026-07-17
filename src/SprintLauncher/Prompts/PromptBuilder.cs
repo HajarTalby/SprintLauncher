@@ -461,6 +461,40 @@ public sealed class PromptBuilder
         return new ActorPrompt(engine, systemPrompt, sb.ToString());
     }
 
+    /// <summary>
+    /// Tour de travail déclenché par une directive de Hajar adressée à un moteur
+    /// SANS revue à conduire (retour 2026-07-17 : « il devrait avancer sur le travail
+    /// interrompu sans attendre »). Mission = la directive, rien d'autre — surtout pas
+    /// le prompt d'implémentation complet, qui referait le sprint.
+    /// </summary>
+    public ActorPrompt BuildDirectiveTurn(ActorRole engine, IReadOnlyList<JiraIssue> issues, string directive)
+    {
+        var systemPrompt = GetSystemPrompt(engine, issues.Count > 0 ? issues[0].Key : "sprint");
+
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine($"DIRECTIVE DE {_approver.ToUpperInvariant()} — À EXÉCUTER MAINTENANT. " +
+            "Tu es sollicité en parallèle de la phase de revues croisées : exécute cette directive, rien d'autre. " +
+            "AVANT d'agir : vérifie l'état réel du dépôt (git status, git log -10) — ne réimplémente RIEN qui existe, " +
+            "ne touche pas aux US en cours de revue par l'autre moteur au-delà de ce que la directive demande. " +
+            "Si la directive vise une étape ultérieure (ex. « à la fin des revues »), prépare ce qui peut l'être " +
+            "et dis-le explicitement — n'exécute pas prématurément. " +
+            "Commence ta sortie par « ⚑ Intervention de Hajar prise en compte : » suivi de ce que tu fais. " +
+            "Commit préfixé de la clé US concernée si tu modifies du code.");
+        sb.AppendLine();
+        sb.AppendLine($"## Directive de {_approver}");
+        sb.AppendLine(directive);
+        sb.AppendLine();
+        sb.AppendLine("## Périmètre du sprint (référence)");
+        foreach (var i in issues) sb.AppendLine($"- [{i.Key}] {i.Summary}");
+        if (!string.IsNullOrWhiteSpace(DecisionsRegistry))
+        {
+            sb.AppendLine();
+            sb.AppendLine($"## DÉCISIONS DÉJÀ ACTÉES PAR {_approver.ToUpperInvariant()}");
+            sb.AppendLine(DecisionsRegistry);
+        }
+        return new ActorPrompt(engine, systemPrompt, sb.ToString());
+    }
+
     /// <summary>Retour de la revue croisée vers l'implémenteur : il applique ou écarte, en justifiant.</summary>
     public ActorPrompt BuildReviewCorrections(
         ActorRole implementer, JiraIssue issue, string reviewObservations, string? approverDirective)

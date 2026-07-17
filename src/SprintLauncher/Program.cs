@@ -571,6 +571,24 @@ string? pendingApproverDirective = null;
 // en cours de run) — deux workers parallèles peuvent le lire en concurrence.
 var pendingDirectiveLock = new SemaphoreSlim(1, 1);
 
+// ─── Ticker d'ingestion : QUASI TEMPS RÉEL pour les dépôts de Hajar ────────────
+// (retour 2026-07-17 : « mes interventions ne sont pas prises en compte de manière
+// systématique en temps réel »). Le fichier pending-directive.txt est relevé toutes
+// les 15 s quel que soit l'endroit du pipeline : les effets d'ÉTAT (réactivation
+// quota, !model, !cancel, stockage/registre) sont immédiats ; la remise dans un
+// prompt reste au prochain tour du destinataire — un processus acteur déjà lancé
+// reçoit les messages via son inbox live, pas via ce ticker.
+_ = Task.Run(async () =>
+{
+    while (!shutdownCts.IsCancellationRequested)
+    {
+        try { await Task.Delay(TimeSpan.FromSeconds(15), shutdownCts.Token); }
+        catch (OperationCanceledException) { break; }
+        try { await IngestPendingDirectivesAsync(artifactsDir, shutdownCts.Token); }
+        catch (IOException) { } catch (OperationCanceledException) { break; }
+    }
+});
+
 foreach (var group in sessionMode.GetGroupOrder())
 {
     if (shutdownCts.IsCancellationRequested) break;
@@ -1087,6 +1105,36 @@ async Task IngestPendingDirectivesAsync(string artifactsDir, CancellationToken c
                 CancelPendingDirective(line["!cancel ".Length..].Trim());
                 continue;
             }
+            // « !model claude <id> » / « !model codex <id> » : changement de modèle EN
+            // COURS DE RUN (retour Hajar, 2026-07-17 : « changer le modèle et continuer »
+            // — l'acteur ne peut pas le faire lui-même, son modèle est fixé au lancement
+            // de son processus ; le prochain tour du moteur utilise le nouveau modèle).
+            if (line.StartsWith("!model ", StringComparison.OrdinalIgnoreCase))
+            {
+                var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                if (parts.Length >= 3)
+                {
+                    var engineToken = parts[1].ToLowerInvariant();
+                    var model = string.Join(' ', parts[2..]);
+                    if (engineToken is "claude" or "ccode" or "claudeimplementation")
+                    {
+                        runner.ClaudeModel = model;
+                        Console.WriteLine($"  ⚡ Modèle claude changé → {model} (effectif dès le prochain tour d'un acteur Claude).");
+                        EventEmitter.Emit("model-changed", new { engine = "claude", model });
+                    }
+                    else if (engineToken is "codex" or "gpt" or "gptimplementation")
+                    {
+                        runner.CodexModel = model;
+                        Console.WriteLine($"  ⚡ Modèle codex changé → {model} (effectif dès le prochain tour d'un acteur codex).");
+                        EventEmitter.Emit("model-changed", new { engine = "codex", model });
+                    }
+                    else
+                        Console.WriteLine($"  ⚠ !model : moteur inconnu « {parts[1]} » (attendu : claude|codex).");
+                }
+                else
+                    Console.WriteLine("  ⚠ !model : syntaxe attendue « !model claude|codex <identifiant-du-modèle> ».");
+                continue;
+            }
             await AddDirectiveAsync(pilotageKey, line);
         }
     }
@@ -1272,7 +1320,12 @@ async Task RemediateEcartsAsync(
             Console.WriteLine($"  ▶ Remédiation {issue.Key} → {engine}");
             EventEmitter.Emit("implementation-us", new { key = issue.Key, engine = engine.ToString(), relief = false, remediation = true });
 
-            var remPrompt = builder.BuildRemediation(engine, issue, descs, directive);
+            // Directives de Hajar : ingérées et livrées AUSSI en remédiation — c'était
+            // le seul chemin sans ingestion, donc ses dépôts restaient lettre morte
+            // pendant toute la boucle (retour du 2026-07-17 : « pas systématique »).
+            await IngestPendingDirectivesAsync(artifactsDir, ct);
+            var remDirective = Join(directive, DirectivesForActor(engine));
+            var remPrompt = builder.BuildRemediation(engine, issue, descs, remDirective);
             var remResult = await RunDialogueTurnAsync(engine, remPrompt, artifactsDir, runner, ct);
 
             if (remResult.IsQuotaExhausted)
@@ -1504,6 +1557,20 @@ async Task ProcessPendingReviewsAsync(
     // persistant relève du comité de pilotage/arbitrage, pas d'une mise en attente.
     Console.WriteLine($"  [revues croisées : {state.PendingReviews.Count} en attente — pipeline parallèle revue/correctifs]");
 
+    // Visibilité (retour de Hajar, 2026-07-17 : « codex n'a pas repris ») : quand
+    // toutes les US en attente ont le MÊME implémenteur, l'autre moteur porte toutes
+    // les revues et l'implémenteur attend la première livraison — c'est structurel
+    // (on ne se relit pas soi-même), pas une panne. Le dire évite de le chercher.
+    var byImplementer = state.PendingReviews.GroupBy(p => p.Implementer).ToList();
+    if (byImplementer.Count == 1)
+    {
+        var impl = byImplementer[0].Key;
+        var rev = ImplementationRotation.PickRelief(impl, state.QuotaExhaustedEngines) ?? "(aucun)";
+        Console.WriteLine($"  · Toutes les US en attente sont de {impl} → {rev} porte TOUTES les revues.");
+        Console.WriteLine($"  · {impl} est en attente de la 1re revue livrée (on ne se relit pas soi-même) — il enchaînera les correctifs pendant que {rev} passera à la revue suivante.");
+        EventEmitter.Emit("review-pipeline", new { reviewer = rev, implementer = impl, count = state.PendingReviews.Count });
+    }
+
     var reviewStateLock = new SemaphoreSlim(1, 1);
     var engineLocks = new Dictionary<ActorRole, SemaphoreSlim>
     {
@@ -1623,7 +1690,56 @@ async Task ProcessPendingReviewsAsync(
         }
     }
 
+    // ── Moteur SANS revue à conduire : il ne reste pas les bras croisés ────────
+    // (retour de Hajar, 2026-07-17 : « il devrait avancer sur le travail interrompu
+    // sans attendre »). Toute directive qui lui est adressée déclenche un TOUR DE
+    // TRAVAIL immédiat, en parallèle des revues de l'autre moteur — le verrou par
+    // moteur garantit qu'il ne télescope jamais ses propres correctifs.
+    var reviewerEngines = state.PendingReviews
+        .Select(p => ImplementationRotation.PickRelief(p.Implementer, state.QuotaExhaustedEngines))
+        .Where(r => r is not null)
+        .Select(r => Enum.Parse<ActorRole>(r!))
+        .ToHashSet();
+    using var pipelineDone = new CancellationTokenSource();
+    using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, pipelineDone.Token);
+
+    async Task IdleDirectiveWorkerAsync(ActorRole engine)
+    {
+        try
+        {
+            while (!linked.Token.IsCancellationRequested)
+            {
+                await IngestPendingDirectivesAsync(artifactsDir, linked.Token);
+                var directive = DirectivesForActor(engine);
+                if (directive is null)
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(5), linked.Token);
+                    continue;
+                }
+
+                await engineLocks[engine].WaitAsync(linked.Token);
+                try
+                {
+                    Console.WriteLine($"  ▶ {engine} — tour de travail immédiat sur directive de {config.ApproverName} (en parallèle des revues)");
+                    var prompt = builder.BuildDirectiveTurn(engine, issues, directive);
+                    var result = await RunDialogueTurnAsync(engine, prompt, artifactsDir, runner, ct);
+                    if (result.IsQuotaExhausted) { await MarkQuotaAsync(engine); return; }
+                }
+                finally { engineLocks[engine].Release(); }
+            }
+        }
+        catch (OperationCanceledException) { } // fin de la phase de revues — fin du worker
+    }
+
+    var idleWorkers = Enum.GetValues<ActorRole>()
+        .Where(r => r is ActorRole.ClaudeImplementation or ActorRole.GptImplementation)
+        .Where(r => !reviewerEngines.Contains(r) && !state.QuotaExhaustedEngines.Contains(r.ToString()))
+        .Select(IdleDirectiveWorkerAsync)
+        .ToList();
+
     await Task.WhenAll(state.PendingReviews.ToList().Select(FlowAsync));
+    pipelineDone.Cancel();
+    await Task.WhenAll(idleWorkers);
 }
 
 // ─── Implémentation PARALLÈLE : moteur front et moteur back en même temps ──────
