@@ -1178,8 +1178,12 @@ public partial class MainWindow : Window
             // adressé ailleurs), on le pousse dans SON inbox pour lecture EN COURS DE TOUR
             // (live-input-<role>.txt). Sinon, file de directives classique (remise à la
             // prochaine prise de parole du destinataire, persistée et adressable).
+            // Les alias (@ccode, @codex…) sont résolus AVANT comparaison — sans ça,
+            // « @ccode » ≠ « ClaudeImplementation » et l'intervention partait en file
+            // au lieu du live (retour de Hajar, 2026-07-17 : interventions ignorées).
+            var resolvedTarget = ResolveActorAlias(target);
             var liveTarget = _process is { HasExited: false } && _activeActor is not null
-                             && (target is null || string.Equals(target, _activeActor, StringComparison.OrdinalIgnoreCase))
+                             && (resolvedTarget is null || string.Equals(resolvedTarget, _activeActor, StringComparison.OrdinalIgnoreCase))
                 ? _activeActor : null;
 
             if (liveTarget is not null && _artifactsDir is not null)
@@ -1211,6 +1215,17 @@ public partial class MainWindow : Window
             AppendLog($"(directive non déposée : {ex.Message})");
         }
     }
+
+    // Miroir UI des alias de DirectiveAddressing (CLI) : @ccode/@codex/@gpt… → nom de
+    // rôle exact, pour que le routage live reconnaisse l'acteur actif. Null = pas de
+    // cible (message pour l'acteur en cours).
+    private static string? ResolveActorAlias(string? target) => target?.ToLowerInvariant() switch
+    {
+        null => null,
+        "ccode" or "claude-code" or "claudecode" or "claudeimpl" => "ClaudeImplementation",
+        "codex" or "gpt" or "gptimpl" => "GptImplementation",
+        var t => t, // rôle exact ou groupe : comparé tel quel
+    };
 
     // Miroir UI de DirectiveAddressing.Parse (CLI) : sert uniquement à l'affichage
     // immédiat. Le CLI reste seul juge du routage réel.

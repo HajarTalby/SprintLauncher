@@ -267,7 +267,7 @@ public sealed class ActorRunner : IDisposable
         using var process = new Process { StartInfo = psi };
         var accumulated = new StringBuilder();
         var stderr = new StringBuilder();
-        string? threadId = null, turnId = null;
+        string? threadId = null, turnId = null, lastItemId = null;
         var turnDone = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         int nextId = 1;
         var cwd = _repoRoot ?? Directory.GetCurrentDirectory();
@@ -316,6 +316,16 @@ public sealed class ActorRunner : IDisposable
             var delta = CodexAppServerProtocol.AgentDelta(msg.Method, msg.Root);
             if (delta is not null)
             {
+                // Chaque item = un paragraphe : sans séparateur, les messages successifs
+                // de l'agent se collent en un bloc illisible (retour Hajar, 2026-07-17).
+                var itemId = CodexAppServerProtocol.ItemId(msg.Root);
+                if (itemId is not null && lastItemId is not null && itemId != lastItemId && accumulated.Length > 0)
+                {
+                    accumulated.AppendLine().AppendLine();
+                    try { liveWriter?.WriteLine(); liveWriter?.WriteLine(); } catch (ObjectDisposedException) { }
+                }
+                if (itemId is not null) lastItemId = itemId;
+
                 accumulated.Append(delta);
                 try { liveWriter?.Write(delta); } catch (ObjectDisposedException) { }
             }

@@ -100,5 +100,14 @@ public static class CodexAppServerProtocol
             ? d.GetString() : null;
     }
 
+    /// <summary>
+    /// itemId porté par une notification (delta, item/started…). Sert à insérer un
+    /// séparateur de paragraphe entre deux items : sans lui, les messages successifs
+    /// de l'agent se collent en un seul bloc illisible (retour de Hajar, 2026-07-17).
+    /// </summary>
+    public static string? ItemId(JsonElement root) =>
+        root.TryGetProperty("params", out var p) && p.TryGetProperty("itemId", out var id)
+            ? id.GetString() : null;
+
     public static bool IsTurnCompleted(string? method) => method == "turn/completed";
 }

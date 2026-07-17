@@ -1436,33 +1436,136 @@ async Task ProcessPendingReviewsAsync(
     CancellationToken ct)
 {
     if (state.PendingReviews.Count == 0) return;
-    Console.WriteLine($"  [revues croisées : {state.PendingReviews.Count} en attente]");
 
-    foreach (var pending in state.PendingReviews.ToList())
+    // PIPELINE PARALLÈLE (principe de Hajar, 2026-07-17 : tout ce qui peut avancer en
+    // parallèle avance sans attendre). Chaque US suit son flux revue → correctifs →
+    // publication ; un verrou PAR MOTEUR sérialise les tours d'un même moteur, mais
+    // les deux moteurs travaillent en même temps : pendant que l'implémenteur corrige
+    // l'US n, le réviseur enchaîne sur la revue de l'US n+1. AUCUN checkpoint bloquant :
+    // Hajar oriente par intervention live/directive à tout moment ; un désaccord
+    // persistant relève du comité de pilotage/arbitrage, pas d'une mise en attente.
+    Console.WriteLine($"  [revues croisées : {state.PendingReviews.Count} en attente — pipeline parallèle revue/correctifs]");
+
+    var reviewStateLock = new SemaphoreSlim(1, 1);
+    var engineLocks = new Dictionary<ActorRole, SemaphoreSlim>
     {
-        if (ct.IsCancellationRequested) break;
+        [ActorRole.ClaudeImplementation] = new(1, 1),
+        [ActorRole.GptImplementation] = new(1, 1),
+    };
 
-        var issue = issues.FirstOrDefault(i => i.Key == pending.Key);
-        if (issue is null)
+    async Task RemovePendingAsync(PendingReview p)
+    {
+        await reviewStateLock.WaitAsync(CancellationToken.None);
+        try { state.PendingReviews.Remove(p); await SprintStateManager.SaveAsync(stateFile, state); }
+        finally { reviewStateLock.Release(); }
+    }
+
+    async Task MarkQuotaAsync(ActorRole engine)
+    {
+        await reviewStateLock.WaitAsync(CancellationToken.None);
+        try { state.QuotaExhaustedEngines.Add(engine.ToString()); await SprintStateManager.SaveAsync(stateFile, state); }
+        finally { reviewStateLock.Release(); }
+    }
+
+    async Task FlowAsync(PendingReview pending)
+    {
+        try
         {
-            state.PendingReviews.Remove(pending);
-            continue;
+            var issue = issues.FirstOrDefault(i => i.Key == pending.Key);
+            if (issue is null) { await RemovePendingAsync(pending); return; }
+
+            var implementer = Enum.Parse<ActorRole>(pending.Implementer);
+            ActorRole? reliefFrom = pending.ReliefFrom is null ? null : Enum.Parse<ActorRole>(pending.ReliefFrom);
+
+            var reviewerName = ImplementationRotation.PickRelief(pending.Implementer, state.QuotaExhaustedEngines);
+            if (reviewerName is null)
+            {
+                Console.WriteLine($"  ○ {pending.Key} — revue croisée reportée (réviseur à quota épuisé) — reste en attente.");
+                return;
+            }
+            var reviewer = Enum.Parse<ActorRole>(reviewerName);
+
+            var outputFile = Path.Combine(artifactsDir, $"output-{pending.Implementer}-{pending.Key}.txt");
+            var implOutput = File.Exists(outputFile)
+                ? await File.ReadAllTextAsync(outputFile, ct)
+                : "(sortie d'implémentation indisponible — revue basée sur l'état réel du dépôt : git log/diff)";
+
+            // ── Revue (sérialisée par moteur réviseur, en parallèle de l'autre moteur) ──
+            ActorRunResult review;
+            await engineLocks[reviewer].WaitAsync(ct);
+            try
+            {
+                if (ct.IsCancellationRequested) return;
+                Console.WriteLine($"  ⟲ {pending.Key} — revue croisée : {reviewer} relit {implementer}");
+                var reviewPrompt = builder.BuildCrossReview(reviewer, issue, implementer, implOutput, reliefFrom);
+                // Directives de Hajar (y compris @adressées au réviseur) : livrées AUSSI
+                // pendant la phase de revue (retour 2026-07-17 : interventions ignorées).
+                await IngestPendingDirectivesAsync(artifactsDir, ct);
+                reviewPrompt = WithDirective(reviewPrompt, DirectivesForActor(reviewer), config.ApproverName);
+                review = await RunDialogueTurnAsync(reviewer, reviewPrompt, artifactsDir, runner, ct);
+            }
+            finally { engineLocks[reviewer].Release(); }
+
+            if (!review.Success)
+            {
+                if (review.IsQuotaExhausted) await MarkQuotaAsync(reviewer);
+                Console.WriteLine($"  ○ {pending.Key} — revue croisée reportée (échec {reviewer}) — reste en attente pour --resume.");
+                return;
+            }
+
+            await File.WriteAllTextAsync(Path.Combine(artifactsDir, $"output-Review-{pending.Key}.txt"), review.Output);
+            EventEmitter.Emit("turn", new { group = $"RevueCroisee-{pending.Key}", speaker = reviewer.ToString(), round = 1, isIntervention = false, content = review.Output.Trim() });
+
+            // ── Correctifs (sérialisés par moteur implémenteur) — SANS attente ──
+            ActorRunResult corrections;
+            await engineLocks[implementer].WaitAsync(ct);
+            try
+            {
+                if (ct.IsCancellationRequested) return;
+                Console.WriteLine($"  ↺ {pending.Key} — correctifs : {implementer} applique la revue de {reviewer}");
+                await IngestPendingDirectivesAsync(artifactsDir, ct);
+                var corrPrompt = builder.BuildReviewCorrections(implementer, issue, review.Output, DirectivesForActor(implementer));
+                corrections = await RunDialogueTurnAsync(implementer, corrPrompt, artifactsDir, runner, ct);
+            }
+            finally { engineLocks[implementer].Release(); }
+
+            if (!corrections.Success)
+            {
+                if (corrections.IsQuotaExhausted) await MarkQuotaAsync(implementer);
+                // On ne publie PAS une revue sans ses correctifs : l'US reste en attente
+                // et --resume rejouera le flux complet (l'ancien code publiait puis
+                // retirait l'US de la file — le « à rejouer » était donc impossible).
+                Console.WriteLine($"  ○ {pending.Key} — correctifs non appliqués (échec {implementer}) — flux conservé pour --resume.");
+                return;
+            }
+
+            await File.WriteAllTextAsync(Path.Combine(artifactsDir, $"output-{implementer}-{pending.Key}-corrections.txt"), corrections.Output);
+            EventEmitter.Emit("turn", new { group = $"RevueCroisee-{pending.Key}", speaker = implementer.ToString(), round = 2, isIntervention = false, content = corrections.Output.Trim() });
+
+            var body = new StringBuilder();
+            body.AppendLine($"## Revue croisée {pending.Key}");
+            body.AppendLine();
+            body.AppendLine($"### Observations ({reviewer})");
+            body.AppendLine();
+            body.AppendLine(review.Output.Trim());
+            body.AppendLine();
+            body.AppendLine($"### Correctifs ({implementer})");
+            body.AppendLine();
+            body.AppendLine(corrections.Output.Trim());
+
+            var pub = await publisher.PublishAsync(pending.Key, new ActorRunResult(implementer, true, body.ToString(), null, 0, false), ct);
+            PrintPublishResult(pending.Key, implementer, pub);
+            await FlushDirectivesForAsync(pending.Key, ct);
+
+            await RemovePendingAsync(pending);
         }
-
-        var implementer = Enum.Parse<ActorRole>(pending.Implementer);
-        var outputFile = Path.Combine(artifactsDir, $"output-{pending.Implementer}-{pending.Key}.txt");
-        var implOutput = File.Exists(outputFile)
-            ? await File.ReadAllTextAsync(outputFile, ct)
-            : "(sortie d'implémentation indisponible — revue basée sur l'état réel du dépôt : git log/diff)";
-        ActorRole? reliefFrom = pending.ReliefFrom is null ? null : Enum.Parse<ActorRole>(pending.ReliefFrom);
-
-        var done = await RunCrossReviewAsync(issue, implementer, implOutput, artifactsDir, state, stateFile, builder, runner, publisher, ct, reliefFrom);
-        if (done && !ct.IsCancellationRequested)
+        catch (OperationCanceledException)
         {
-            state.PendingReviews.Remove(pending);
-            await SprintStateManager.SaveAsync(stateFile, state);
+            // Arrêt demandé : le flux reste en PendingReviews — --resume le rejouera.
         }
     }
+
+    await Task.WhenAll(state.PendingReviews.ToList().Select(FlowAsync));
 }
 
 // ─── Implémentation PARALLÈLE : moteur front et moteur back en même temps ──────
@@ -1616,105 +1719,6 @@ async Task RunImplementationParallelAsync(
     // ── Phase revues croisées (les deux moteurs sont libres) — persistées ──────
     if (config.CrossReviewEnabled)
         await ProcessPendingReviewsAsync(issues, artifactsDir, state, stateFile, builder, runner, publisher, ct);
-}
-
-// ─── Revue croisée post-dev (lot 7) : observations par l'autre moteur, ─────────
-// correctifs chez l'implémenteur, intervention de Hajar possible entre les deux.
-// Retourne false si la revue n'a pas pu être faite (réviseur indisponible/échec) —
-// elle reste alors en attente persistée pour un prochain passage.
-async Task<bool> RunCrossReviewAsync(
-    SprintLauncher.Jira.JiraIssue issue,
-    ActorRole implementer,
-    string implementationOutput,
-    string artifactsDir,
-    SprintState state,
-    string stateFile,
-    PromptBuilder builder,
-    ActorRunner runner,
-    JiraCommentPublisher publisher,
-    CancellationToken ct,
-    ActorRole? reliefFrom = null)
-{
-    var reviewerName = ImplementationRotation.PickRelief(implementer.ToString(), state.QuotaExhaustedEngines);
-    if (reviewerName is null)
-    {
-        Console.WriteLine($"  ○ {issue.Key} — revue croisée reportée (réviseur à quota épuisé) — reste en attente.");
-        return false;
-    }
-
-    var reviewer = Enum.Parse<ActorRole>(reviewerName);
-    Console.WriteLine($"  ⟲ {issue.Key} — revue croisée : {reviewer} relit {implementer}");
-
-    var reviewPrompt = builder.BuildCrossReview(reviewer, issue, implementer, implementationOutput, reliefFrom);
-    var review = await RunDialogueTurnAsync(reviewer, reviewPrompt, artifactsDir, runner, ct);
-    if (!review.Success)
-    {
-        if (review.IsQuotaExhausted)
-        {
-            state.QuotaExhaustedEngines.Add(reviewer.ToString());
-            await SprintStateManager.SaveAsync(stateFile, state);
-        }
-        Console.WriteLine($"  ○ {issue.Key} — revue croisée reportée (échec {reviewer}), l'implémentation reste valide.");
-        return false;
-    }
-
-    await File.WriteAllTextAsync(Path.Combine(artifactsDir, $"output-Review-{issue.Key}.txt"), review.Output);
-    EventEmitter.Emit("turn", new { group = $"RevueCroisee-{issue.Key}", speaker = reviewer.ToString(), round = 1, isIntervention = false, content = review.Output.Trim() });
-
-    // Checkpoint : Hajar peut orienter les correctifs (ou les sauter)
-    string? directive = null;
-    if (interactive)
-    {
-        EventEmitter.Emit("checkpoint", new { kind = "review", group = $"RevueCroisee-{issue.Key}", round = 1 });
-        Console.Write($"  Revue {issue.Key} reçue — [Entrée=appliquer les correctifs / texte=directive / n=passer] > ");
-        var answer = CleanLine(Console.ReadLine());
-        if (answer?.ToLowerInvariant() is "n" or "non" or "no")
-        {
-            Console.WriteLine("  Correctifs sautés sur décision de Hajar — revue publiée telle quelle.");
-            var reviewOnly = $"## Revue croisée {issue.Key}\n\n### Observations ({reviewer})\n\n{review.Output.Trim()}\n\n_Correctifs non appliqués (décision de Hajar)._";
-            var pubR = await publisher.PublishAsync(issue.Key, new ActorRunResult(implementer, true, reviewOnly, null, 0, false), ct);
-            PrintPublishResult(issue.Key, implementer, pubR);
-            await FlushDirectivesForAsync(issue.Key, ct);
-            return true;
-        }
-        if (!string.IsNullOrEmpty(answer))
-        {
-            directive = answer;
-            // Stockée + injectée ; publiée sur Jira portée par le commentaire de
-            // correction de l'acteur sur cette US (FlushDirectivesForAsync).
-            await AddDirectiveAsync(issue.Key, answer);
-        }
-    }
-
-    var corrPrompt = builder.BuildReviewCorrections(implementer, issue, review.Output, directive);
-    var corrections = await RunDialogueTurnAsync(implementer, corrPrompt, artifactsDir, runner, ct);
-
-    var body = new StringBuilder();
-    body.AppendLine($"## Revue croisée {issue.Key}");
-    body.AppendLine();
-    body.AppendLine($"### Observations ({reviewer})");
-    body.AppendLine();
-    body.AppendLine(review.Output.Trim());
-    if (corrections.Success)
-    {
-        await File.WriteAllTextAsync(Path.Combine(artifactsDir, $"output-{implementer}-{issue.Key}-corrections.txt"), corrections.Output);
-        EventEmitter.Emit("turn", new { group = $"RevueCroisee-{issue.Key}", speaker = implementer.ToString(), round = 2, isIntervention = false, content = corrections.Output.Trim() });
-        body.AppendLine();
-        body.AppendLine($"### Correctifs ({implementer})");
-        body.AppendLine();
-        body.AppendLine(corrections.Output.Trim());
-    }
-    else
-    {
-        body.AppendLine();
-        body.AppendLine($"_Correctifs non appliqués (échec {implementer}) — à rejouer via --resume._");
-    }
-
-    var pub = await publisher.PublishAsync(issue.Key, new ActorRunResult(implementer, true, body.ToString(), null, 0, false), ct);
-    PrintPublishResult(issue.Key, implementer, pub);
-    // La directive donnée au checkpoint de revue part sur Jira portée par ce commentaire.
-    await FlushDirectivesForAsync(issue.Key, ct);
-    return true;
 }
 
 // Le handoff donne au moteur de relève l'état réel : travail partiel + consigne
