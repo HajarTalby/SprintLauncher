@@ -134,11 +134,13 @@ public static class ActorRoleExtensions
     public static bool IsPilotageActor(this ActorRole role) => role is
         ActorRole.ClaudePilotage or ActorRole.GptPilotage;
 
-    // Implementation actors publish their sprint-level analysis to the reference ticket only.
-    // Per-US analysis is a future US; posting to all N tickets would duplicate content (cf. comité C3 fix).
-    public static bool PublishesToReferenceTicketOnly(this ActorRole role) =>
-        role.IsPilotageActor() ||
+    public static bool UsesPerUsImplementationRouting(this ActorRole role) =>
         role is ActorRole.ClaudeImplementation or ActorRole.GptImplementation;
+
+    // Pilotage actors publish their sprint-level analysis to the reference ticket only.
+    // Implementation actors are routed per-US by the implementation scheduler.
+    public static bool PublishesToReferenceTicketOnly(this ActorRole role) =>
+        role.IsPilotageActor();
 
     public static bool IsCollective(this ActorRole role) =>
         role.GetGroup() is ActorGroup.Analysis

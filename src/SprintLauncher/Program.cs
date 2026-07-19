@@ -272,6 +272,24 @@ if (publishFromArtifacts)
         if (role.IsCollective() || role.IsSemiManual()) continue;
         if (rolesFilter is not null && !rolesFilter.Contains(role.ToString())) continue;
 
+        if (role.UsesPerUsImplementationRouting())
+        {
+            foreach (var route in ActorRouting.BuildIterations(role, issues, refKey))
+            {
+                var usOutputPath = Path.Combine(publishDir, $"output-{role}-{route.PublishIssueKey}.txt");
+                if (!File.Exists(usOutputPath)) continue;
+
+                var usContent = await File.ReadAllTextAsync(usOutputPath);
+                if (string.IsNullOrWhiteSpace(usContent)) continue;
+
+                var usResult = new ActorRunResult(role, true, usContent, null, 0, false);
+                var pub = await artifactPublisher.PublishAsync(route.PublishIssueKey, usResult, shutdownCts.Token);
+                PrintPublishResult(route.PublishIssueKey, role, pub);
+            }
+
+            continue;
+        }
+
         var outputPath = Path.Combine(publishDir, $"output-{role}.txt");
         if (!File.Exists(outputPath)) continue;
 
