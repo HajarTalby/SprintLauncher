@@ -122,6 +122,7 @@ public sealed class ActorRunner : IDisposable
             StandardOutputEncoding = Encoding.UTF8,
             StandardErrorEncoding = Encoding.UTF8,
         };
+        MarkAsActor(psi);
         psi.ArgumentList.Add("exec");
         psi.ArgumentList.Add("--model");
         psi.ArgumentList.Add(_directiveInterpreterModel);
@@ -170,6 +171,17 @@ public sealed class ActorRunner : IDisposable
             try { File.Delete(lastMsgFile); } catch (IOException) { }
         }
     }
+
+    /// Nom de la variable qui signale « ce process est un acteur du sprint launcher ».
+    /// Les hooks du repo cible s'en servent pour ne PAS injecter de contexte de session.
+    public const string ActorEnvVar = "SPRINTLAUNCHER_ACTOR";
+
+    // Les acteurs tournent avec WorkingDirectory = repo cible, donc claude.exe y démarre
+    // une vraie session et déclenche les hooks SessionStart de CE repo. Au run sprint 6 du
+    // 2026-07-19, le hook handoff de SERZENIA a injecté le handoff de la session de dev du
+    // launcher dans l'acteur de pilotage : il a exécuté cette to-do (merges, push) au lieu
+    // de piloter le sprint. Le marqueur ci-dessous laisse les hooks se désactiver eux-mêmes.
+    private static void MarkAsActor(ProcessStartInfo psi) => psi.EnvironmentVariables[ActorEnvVar] = "1";
 
     // Claude actors: claude -p (reads prompt from stdin) — subscription, no ANTHROPIC_API_KEY
     // Prompt passed via stdin to avoid Windows 32767-char command-line limit.
@@ -245,6 +257,7 @@ public sealed class ActorRunner : IDisposable
         psi.EnvironmentVariables.Remove("CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING");
         psi.EnvironmentVariables.Remove("CLAUDE_CODE_ENABLE_TASKS");
         psi.EnvironmentVariables.Remove("MCP_CONNECTION_NONBLOCKING");
+        MarkAsActor(psi);
 
         // Le contenu stdin diffère selon le mode : prompt brut (one-shot) vs premier
         // message stream-json (live). Le pompage des interventions suit dans le runner.
@@ -286,6 +299,7 @@ public sealed class ActorRunner : IDisposable
             StandardOutputEncoding = Encoding.UTF8,
             StandardErrorEncoding = Encoding.UTF8,
         };
+        MarkAsActor(psi);
         psi.ArgumentList.Add("exec");
         psi.ArgumentList.Add("--model");
         psi.ArgumentList.Add(string.IsNullOrWhiteSpace(modelOverride) ? _codexModel : modelOverride);
@@ -354,6 +368,7 @@ public sealed class ActorRunner : IDisposable
             StandardOutputEncoding = Encoding.UTF8,
             StandardErrorEncoding = Encoding.UTF8,
         };
+        MarkAsActor(psi);
         psi.ArgumentList.Add("app-server");
         if (!string.IsNullOrWhiteSpace(modelOverride))
         {
