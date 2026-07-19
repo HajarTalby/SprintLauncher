@@ -35,6 +35,8 @@ public static class DirectiveAddressing
         ["qa-gpt"]           = ActorRole.GptQaVerdict,
         ["pilotage-claude"]  = ActorRole.CommitteePilotageClaudeChat,
         ["pilotage-gpt"]     = ActorRole.CommitteePilotageGptChat,
+        ["retro-claude"]     = ActorRole.RetrospectiveClaude,
+        ["retro-gpt"]        = ActorRole.RetrospectiveGpt,
     };
 
     private static readonly Dictionary<string, ActorGroup> _groupAliases = new(StringComparer.OrdinalIgnoreCase)
@@ -45,6 +47,8 @@ public static class DirectiveAddressing
         ["comité"]      = ActorGroup.CommitteePilotage,
         ["analyse"]     = ActorGroup.Analysis,
         ["arbitrage"]   = ActorGroup.CommitteeArbitrage,
+        ["retro"]       = ActorGroup.Retrospective,
+        ["retrospective"] = ActorGroup.Retrospective,
     };
 
     /// <summary>

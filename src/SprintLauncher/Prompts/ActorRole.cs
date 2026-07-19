@@ -20,6 +20,7 @@ public static class SessionModeExtensions
             ActorGroup.FamilyGpt,
             ActorGroup.CommitteeArbitrage,
             ActorGroup.Qa,
+            ActorGroup.Retrospective,
         ],
         _ => [
             ActorGroup.Analysis,
@@ -28,6 +29,7 @@ public static class SessionModeExtensions
             ActorGroup.CommitteePilotage,
             ActorGroup.CommitteeArbitrage,
             ActorGroup.Qa,
+            ActorGroup.Retrospective,
         ],
     };
 
@@ -66,6 +68,10 @@ public enum ActorRole
     // ── QA ──
     ClaudeQaVerdict,
     GptQaVerdict,
+
+    // ── RÉTROSPECTIVE (SERZENIA-144 lot 4) : fin de run, un par moteur ──
+    RetrospectiveClaude,
+    RetrospectiveGpt,
 }
 
 public enum ActorGroup
@@ -76,6 +82,7 @@ public enum ActorGroup
     CommitteePilotage,
     CommitteeArbitrage,
     Qa,
+    Retrospective,
 }
 
 public static class ActorRoleExtensions
@@ -95,6 +102,8 @@ public static class ActorRoleExtensions
             => ActorGroup.CommitteeArbitrage,
         ActorRole.ClaudeQaVerdict or ActorRole.GptQaVerdict
             => ActorGroup.Qa,
+        ActorRole.RetrospectiveClaude or ActorRole.RetrospectiveGpt
+            => ActorGroup.Retrospective,
         _ => throw new ArgumentOutOfRangeException(nameof(role), role, null),
     };
 
@@ -106,6 +115,7 @@ public static class ActorRoleExtensions
         ActorGroup.CommitteePilotage   => "── COMITÉ DE PILOTAGE ──",
         ActorGroup.CommitteeArbitrage  => "── COMITÉ D'ARBITRAGE COMPLET ──",
         ActorGroup.Qa                  => "── QA ──",
+        ActorGroup.Retrospective       => "── RÉTROSPECTIVE ──",
         _ => throw new ArgumentOutOfRangeException(nameof(group), group, null),
     };
 
@@ -116,7 +126,8 @@ public static class ActorRoleExtensions
         ActorRole.CommitteePilotageClaudeChat or
         ActorRole.CommitteeClaudeChat or
         ActorRole.CommitteeCcode or
-        ActorRole.ClaudeQaVerdict;
+        ActorRole.ClaudeQaVerdict or
+        ActorRole.RetrospectiveClaude;
 
     public static bool IsSemiManual(this ActorRole role) => role is ActorRole.GptPilotage;
 
@@ -169,6 +180,8 @@ public static class ActorRoleExtensions
         ActorRole.CommitteeCodex             => "codex | role: comite-arbitrage",
         ActorRole.ClaudeQaVerdict            => "claude-chat | role: qa-verdict",
         ActorRole.GptQaVerdict               => "gpt-chat | role: qa-verdict",
+        ActorRole.RetrospectiveClaude        => "claude-code | role: retrospective",
+        ActorRole.RetrospectiveGpt           => "codex | role: retrospective",
         _                                    => role.ToString().ToLowerInvariant(),
     };
 

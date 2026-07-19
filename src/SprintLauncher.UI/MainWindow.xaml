@@ -340,6 +340,26 @@
           </Grid>
         </TabItem>
 
+        <!-- Onglet 6 : Rétrospective — trace persistante append-only (SERZENIA-144 lot 4) -->
+        <TabItem Header="RÉTROSPECTIVE">
+          <Grid Background="#11111b">
+            <Grid.RowDefinitions>
+              <RowDefinition Height="Auto"/>
+              <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+            <Border Grid.Row="0" Padding="12,8" BorderBrush="#313244" BorderThickness="0,0,0,1">
+              <TextBlock x:Name="TxtRetroHeader"
+                         Text="Rétrospective — chaque acteur y appende son bilan (bien passé / mal passé / plan d'action) en fin de sprint"
+                         FontSize="11" FontWeight="SemiBold" Foreground="#f9e2af"/>
+            </Border>
+            <FlowDocumentScrollViewer Grid.Row="1" x:Name="RetroViewer"
+                                      Background="Transparent"
+                                      VerticalScrollBarVisibility="Auto"
+                                      IsToolBarVisible="False"
+                                      Padding="8,4"/>
+          </Grid>
+        </TabItem>
+
       </TabControl>
     </Grid>
 
@@ -385,7 +405,7 @@
           </Grid.ColumnDefinitions>
           <TextBox Grid.Column="0" x:Name="TxtIntervention" Style="{StaticResource DarkInput}"
                    MinHeight="34" FontSize="13" KeyDown="TxtIntervention_KeyDown"
-                   ToolTip="Ton message est injecté dans la discussion avec autorité — les acteurs suivants le lisent et s'y conforment. Entrée pour envoyer.&#10;&#10;ADRESSAGE : commence par @ pour viser un acteur précis — il recevra le message dès qu'il prendra la parole.&#10;  @codex / @ccode — les moteurs d'implémentation&#10;  @qa / @pilotage / @analyse / @arbitrage — un groupe entier&#10;  @GptImplementation, @ClaudeQaVerdict… — un rôle exact&#10;Sans @, le message part au prochain acteur qui parle."/>
+                   ToolTip="Ton message est injecté dans la discussion avec autorité — les acteurs suivants le lisent et s'y conforment. Entrée pour envoyer.&#10;&#10;ADRESSAGE : commence par @ pour viser un acteur précis — il recevra le message dès qu'il prendra la parole.&#10;  @codex / @ccode — les moteurs d'implémentation&#10;  @qa / @pilotage / @analyse / @arbitrage / @retro — un groupe entier&#10;  @GptImplementation, @ClaudeQaVerdict, @retro-claude, @retro-gpt… — un rôle exact&#10;Sans @, le message part au prochain acteur qui parle."/>
           <Button Grid.Column="2" x:Name="BtnSendIntervention" Style="{StaticResource Btn}"
                   Content="⚑  Intervenir" Click="BtnSendIntervention_Click"/>
           <Button Grid.Column="4" x:Name="BtnEditLast" Style="{StaticResource BtnSoft}"

@@ -220,6 +220,18 @@ public sealed class PromptBuilder
             "C'est le seul verdict QA du sprint — sois exhaustif et conclusif. " +
             $"Tu te signes [agent: gpt-chat | role: qa-verdict | us: {issueKey}].",
 
+        ActorRole.RetrospectiveClaude =>
+            $"Tu es l'agent de rétrospective Claude pour le projet {_project}, en fin de sprint. " +
+            "Ton rôle : un post-mortem honnête de TON travail et de ce que tu as observé pendant ce sprint " +
+            "— pas une nouvelle analyse des US. Tu écris une trace destinée à être relue au sprint suivant. " +
+            $"Tu te signes [agent: claude-code | role: retrospective | us: {issueKey}].",
+
+        ActorRole.RetrospectiveGpt =>
+            $"Tu es l'agent de rétrospective GPT pour le projet {_project}, en fin de sprint. " +
+            "Ton rôle : un post-mortem honnête de TON travail et de ce que tu as observé pendant ce sprint " +
+            "— pas une nouvelle analyse des US. Tu écris une trace destinée à être relue au sprint suivant. " +
+            $"Tu te signes [agent: codex | role: retrospective | us: {issueKey}].",
+
         _ => throw new ArgumentOutOfRangeException(nameof(role), role, null),
     };
 
@@ -603,6 +615,15 @@ public sealed class PromptBuilder
             ActorRole.GptQaVerdict =>
                 "Voici les logs d'exécution des tests du sprint et la Definition of Done. " +
                 "La contribution du premier membre QA suit — produis le verdict collectif final.",
+
+            ActorRole.RetrospectiveClaude or ActorRole.RetrospectiveGpt =>
+                "Le sprint se termine. Fais ta RÉTROSPECTIVE — un post-mortem honnête, pas une nouvelle " +
+                "analyse des US. Structure ta réponse en 3 sections obligatoires :\n" +
+                "## Ce qui a bien marché (à garder)\n" +
+                "## Ce qui a mal marché\n" +
+                "## Plan d'action\n" +
+                "Chaque section : listes à puces concrètes et actionnables, pas de généralités. " +
+                "Le plan d'action doit proposer des correctifs vérifiables au prochain sprint, pas des vœux pieux.",
 
             _ => throw new ArgumentOutOfRangeException(nameof(role), role, null),
         };

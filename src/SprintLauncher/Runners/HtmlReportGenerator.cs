@@ -46,6 +46,7 @@ public static class HtmlReportGenerator
         sb.Append(ActorOutputsSection(entries));
         sb.Append(CacheSection(cacheFilePath));
         sb.Append(HandoffSection(handoff));
+        sb.Append(await RetrospectiveSectionAsync(artifactsDir));
         sb.Append(SemiManualSection(entries));
         sb.Append("</body></html>");
 
@@ -210,6 +211,22 @@ public static class HtmlReportGenerator
         return $"""
             <h2>Session handoff</h2>
             <div class="info-box"><pre class="handoff-pre">{Esc(handoff)}</pre></div>
+            """;
+    }
+
+    // Rétrospective (SERZENIA-144 lot 4) : trace persistante append-only du run,
+    // un bloc "## RETRO — <acteur>" par contribution — visible ici en complément
+    // de l'onglet dédié de l'UI et des fichiers output-Retrospective*.txt individuels.
+    private static async Task<string> RetrospectiveSectionAsync(string artifactsDir)
+    {
+        var path = Path.Combine(artifactsDir, "retrospective.md");
+        if (!File.Exists(path))
+            return "<h2>Rétrospective</h2><p class=\"meta\">Aucune rétrospective pour ce run.</p>";
+
+        var content = await File.ReadAllTextAsync(path);
+        return $"""
+            <h2>Rétrospective</h2>
+            <div class="info-box"><pre class="handoff-pre">{Esc(content)}</pre></div>
             """;
     }
 
