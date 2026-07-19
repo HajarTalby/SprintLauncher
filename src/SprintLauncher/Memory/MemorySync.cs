@@ -16,6 +16,8 @@ public sealed record AgentMemoryEntry(string Name, string Type, string Body);
 /// </summary>
 public static class MemorySync
 {
+    private const string SerzeniaClaudeProjectSlug = "c--Users-najwa-OneDrive-Desktop-SERZENIA";
+
     public static AgentMemoryContext Load(string? projectRoot = null)
     {
         var memDir = FindMemoryDir(projectRoot);
@@ -34,8 +36,9 @@ public static class MemorySync
                 if (!TryParseFrontmatter(content, out var type, out var injectFlag, out var body))
                     continue;
 
-                // Include: explicit inject_to_agents flag, or type=project
-                if (!injectFlag && type != "project") continue;
+                // Include: explicit inject_to_agents flag, or type=project.
+                if (!injectFlag && !string.Equals(type, "project", StringComparison.OrdinalIgnoreCase))
+                    continue;
 
                 entries.Add(new AgentMemoryEntry(name, type, body.Trim()));
             }
@@ -50,7 +53,25 @@ public static class MemorySync
         var candidates = new List<string>();
 
         if (projectRoot is not null)
-            candidates.Add(Path.Combine(projectRoot, "memory"));
+        {
+            var projectMemoryDir = Path.Combine(projectRoot, "memory");
+            return Directory.Exists(projectMemoryDir) ? projectMemoryDir : null;
+        }
+
+        var configuredMemoryDir = Environment.GetEnvironmentVariable("SPRINTLAUNCHER_MEMORY_DIR");
+        if (!string.IsNullOrWhiteSpace(configuredMemoryDir))
+            candidates.Add(configuredMemoryDir);
+
+        var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        if (!string.IsNullOrWhiteSpace(userProfile))
+        {
+            candidates.Add(Path.Combine(
+                userProfile,
+                ".claude",
+                "projects",
+                SerzeniaClaudeProjectSlug,
+                "memory"));
+        }
 
         // Walk up from AppContext.BaseDirectory looking for a memory/ sibling
         var dir = AppContext.BaseDirectory;
@@ -86,14 +107,20 @@ public static class MemorySync
         foreach (var line in frontmatter.Split('\n'))
         {
             var trimmed = line.Trim();
-            if (trimmed.StartsWith("type:"))
-                type = trimmed["type:".Length..].Trim();
-            if (trimmed.StartsWith("inject_to_agents:") &&
-                trimmed.Contains("true", StringComparison.OrdinalIgnoreCase))
-                injectToAgents = true;
+            var separator = trimmed.IndexOf(':');
+            if (separator <= 0) continue;
+
+            var key = trimmed[..separator].Trim();
+            var value = trimmed[(separator + 1)..].Trim().Trim('"', '\'');
+
+            if (string.Equals(key, "type", StringComparison.OrdinalIgnoreCase))
+                type = value;
+            else if (string.Equals(key, "inject_to_agents", StringComparison.OrdinalIgnoreCase) &&
+                bool.TryParse(value, out var parsed))
+                injectToAgents = parsed;
         }
 
-        return !string.IsNullOrEmpty(type);
+        return !string.IsNullOrEmpty(type) || injectToAgents;
     }
 
     public static string BuildPromptSection(AgentMemoryContext ctx)
