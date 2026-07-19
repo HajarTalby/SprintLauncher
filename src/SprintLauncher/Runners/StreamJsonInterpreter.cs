@@ -17,11 +17,21 @@ public sealed class StreamJsonInterpreter : ILiveInterpreter
     /// <summary>Résultat final officiel (événement "result") — prioritaire sur l'accumulé.</summary>
     public string? FinalResult { get; private set; }
 
+    /// <summary>Événements "result" vus : en session live, un par tour conclu.</summary>
+    public int TurnsCompleted { get; private set; }
+
     /// <summary>Texte assistant accumulé (secours si l'événement result manque).</summary>
     public string AccumulatedText => _accumulated.ToString();
 
-    /// <summary>Sortie retenue comme livrable de l'acteur.</summary>
-    public string Output => !string.IsNullOrWhiteSpace(FinalResult) ? FinalResult! : AccumulatedText;
+    /// <summary>
+    /// Sortie retenue comme livrable de l'acteur. Session à un tour : le result officiel.
+    /// Session live multi-tours (interventions en cours de tour) : le texte assistant
+    /// COMPLET — le result de chaque tour n'en couvre qu'un, or la réponse au tour 1
+    /// fait autant partie du livrable que celle à l'intervention (constat smoke live).
+    /// </summary>
+    public string Output => TurnsCompleted > 1
+        ? AccumulatedText
+        : (!string.IsNullOrWhiteSpace(FinalResult) ? FinalResult! : AccumulatedText);
 
     /// <summary>Traduit une ligne du flux en ligne(s) lisible(s) pour le live — null si rien à montrer.</summary>
     public string? Interpret(string line)
@@ -93,6 +103,7 @@ public sealed class StreamJsonInterpreter : ILiveInterpreter
                 case "result":
                     if (root.TryGetProperty("result", out var res) && res.ValueKind == JsonValueKind.String)
                         FinalResult = res.GetString();
+                    TurnsCompleted++;
                     return "── tour terminé ──";
 
                 default:

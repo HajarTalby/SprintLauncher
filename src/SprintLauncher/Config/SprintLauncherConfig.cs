@@ -5,8 +5,9 @@ public sealed class SprintLauncherConfig
     public required string JiraBaseUrl { get; init; }
     public required string JiraEmail { get; init; }
     public required string JiraApiToken { get; init; }
-    public string ClaudeModel { get; init; } = "claude-opus-4-8";
+    public string ClaudeModel { get; init; } = "sonnet-5";
     public string CodexModel { get; init; } = "gpt-5.5";
+    public string DirectiveInterpreterModel { get; init; } = "gpt-5-mini";
     public int ActorTimeoutSeconds { get; init; } = 600;
     // Timeout dédié aux acteurs d'implémentation (un vrai dev prend 15-45 min).
     public int ImplementationTimeoutSeconds { get; init; } = 3600;
@@ -22,6 +23,16 @@ public sealed class SprintLauncherConfig
     // true : checkpoint d'intervention après chaque prise de parole (INTERVENTION_MODE=turn) ;
     // false (défaut) : entre les rounds seulement.
     public bool InterventionEveryTurn { get; init; }
+    // Round 1 « à l'aveugle » : chaque membre d'une discussion produit SON analyse sans
+    // voir celle des autres, puis les tours suivants croisent (accords/désaccords/
+    // différentiel). Sans ça, le second membre se contente de valider le premier
+    // (retour de Hajar, 2026-07-16). BLIND_FIRST_ROUND=false pour couper.
+    public bool BlindFirstRound { get; init; } = true;
+    // Chat live (SL 2026-07-16) : injection d'interventions PENDANT le tour d'un acteur
+    // (claude --input-format stream-json / codex app-server turn/steer). DÉSACTIVÉ par
+    // défaut — protocole non encore validé contre les binaires (quota épuisé à
+    // l'écriture). LIVE_CHAT=true pour l'activer une fois le smoke live vert.
+    public bool LiveChatEnabled { get; init; }
     // Implémentation parallèle : les deux moteurs avancent EN MÊME TEMPS, chacun sur
     // sa file (front/back) — possible car les périmètres de code sont disjoints.
     // Les revues croisées sont faites en fin de phase (le réviseur est occupé pendant).
@@ -49,6 +60,23 @@ public sealed class SprintLauncherConfig
     // regardless of where the launcher is launched from.
     public string? SerzeniaRepoRoot { get; init; }
 
+    /// <summary>
+    /// Chargement léger pour les modes hors-Jira (--smoke-live) : modèles + repo,
+    /// sans exiger JIRA_BASE_URL/EMAIL/TOKEN. Lit le .env s'il existe.
+    /// </summary>
+    public static SprintLauncherConfig LoadModelsOnly(string? envFilePath = null)
+    {
+        EnvFileLoader.Load(envFilePath ?? FindEnvFile());
+        return new SprintLauncherConfig
+        {
+            JiraBaseUrl = "", JiraEmail = "", JiraApiToken = "",
+            ClaudeModel = Environment.GetEnvironmentVariable("CLAUDE_MODEL") ?? "sonnet-5",
+            CodexModel = Environment.GetEnvironmentVariable("CODEX_MODEL") ?? "gpt-5.5",
+            DirectiveInterpreterModel = Environment.GetEnvironmentVariable("DIRECTIVE_INTERPRETER_MODEL") ?? "gpt-5-mini",
+            SerzeniaRepoRoot = Environment.GetEnvironmentVariable("SERZENIA_REPO_ROOT"),
+        };
+    }
+
     public static SprintLauncherConfig Load(string? envFilePath = null)
     {
         EnvFileLoader.Load(envFilePath ?? FindEnvFile());
@@ -62,8 +90,9 @@ public sealed class SprintLauncherConfig
             JiraBaseUrl = baseUrl,
             JiraEmail = email,
             JiraApiToken = token,
-            ClaudeModel = Environment.GetEnvironmentVariable("CLAUDE_MODEL") ?? "claude-opus-4-8",
+            ClaudeModel = Environment.GetEnvironmentVariable("CLAUDE_MODEL") ?? "sonnet-5",
             CodexModel = Environment.GetEnvironmentVariable("CODEX_MODEL") ?? "gpt-5.5",
+            DirectiveInterpreterModel = Environment.GetEnvironmentVariable("DIRECTIVE_INTERPRETER_MODEL") ?? "gpt-5-mini",
             ActorTimeoutSeconds = ReadPositiveInt("ACTOR_TIMEOUT_SECONDS", 600),
             MaxDialogueRounds = ReadPositiveInt("MAX_DIALOGUE_ROUNDS", 3),
             ImplementationTimeoutSeconds = ReadPositiveInt("IMPL_TIMEOUT_SECONDS", 3600),
@@ -71,6 +100,8 @@ public sealed class SprintLauncherConfig
             EngineBack = Environment.GetEnvironmentVariable("ENGINE_BACK") ?? "ClaudeImplementation",
             CrossReviewEnabled = !string.Equals(Environment.GetEnvironmentVariable("CROSS_REVIEW"), "false", StringComparison.OrdinalIgnoreCase),
             InterventionEveryTurn = string.Equals(Environment.GetEnvironmentVariable("INTERVENTION_MODE"), "turn", StringComparison.OrdinalIgnoreCase),
+            BlindFirstRound = !string.Equals(Environment.GetEnvironmentVariable("BLIND_FIRST_ROUND"), "false", StringComparison.OrdinalIgnoreCase),
+            LiveChatEnabled = string.Equals(Environment.GetEnvironmentVariable("LIVE_CHAT"), "true", StringComparison.OrdinalIgnoreCase),
             ParallelImplementation = string.Equals(Environment.GetEnvironmentVariable("PARALLEL_IMPLEMENTATION"), "true", StringComparison.OrdinalIgnoreCase),
             GptPilotageAuto = !(Environment.GetEnvironmentVariable("GPT_PILOTAGE") ?? "auto").StartsWith("semi", StringComparison.OrdinalIgnoreCase),
             QuotaWaitEnabled = !string.Equals(Environment.GetEnvironmentVariable("QUOTA_WAIT"), "false", StringComparison.OrdinalIgnoreCase),

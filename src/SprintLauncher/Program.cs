@@ -70,7 +70,7 @@ var sessionMode = modeArg?.ToLowerInvariant() switch
 };
 
 var optionValues = new HashSet<int>();
-foreach (var flag in new[] { "--publish-manual", "--from-file", "--mode", "--sprint", "--roles", "--create-us" })
+foreach (var flag in new[] { "--publish-manual", "--from-file", "--mode", "--sprint", "--roles", "--create-us", "--pilotage-us" })
 {
     var index = Array.IndexOf(args, flag);
     if (index >= 0 && index + 1 < args.Length)
@@ -85,6 +85,8 @@ var issueKeys = args
 
 // Sprint tickets are resolved from Jira after config load (see below, after JiraClient creation)
 var sprintArg = GetArg(args, "--sprint");
+// US portant la synthèse sprint-level (comité de pilotage, verdict QA) — déclarée, pas devinée.
+var pilotageUsArg = GetArg(args, "--pilotage-us");
 
 // ─── --list-roles ──────────────────────────────────────────────────────────────
 if (listRoles)
@@ -104,17 +106,32 @@ if (listRoles)
     return 0;
 }
 
+// ─── --smoke-live : valide le chat live contre les vrais binaires ─────────────
+// Consomme un peu de quota. OBLIGATOIRE (vert) avant d'activer LIVE_CHAT en run réel.
+if (args.Contains("--smoke-live"))
+{
+    var engineArg = args.SkipWhile(a => a != "--smoke-live").Skip(1).FirstOrDefault(a => !a.StartsWith("--")) ?? "all";
+    var smokeModels = SprintLauncherConfig.LoadModelsOnly(); // .env optionnel : modèles + repo
+    using var smokeRunner = new ActorRunner(
+        claudeModel: smokeModels.ClaudeModel,
+        codexModel: smokeModels.CodexModel,
+        actorTimeout: TimeSpan.FromMinutes(5),
+        repoRoot: smokeModels.SerzeniaRepoRoot);
+    return await LiveChatSmoke.RunAsync(engineArg, smokeRunner, shutdownCts.Token);
+}
+
 // ─── Usage guard — before config load so no .env required just to show help ───
 if (issueKeys.Length == 0 && sprintArg is null && publishManualRole is null && createUsFile is null)
 {
     Console.Error.WriteLine("Usage: sprint-launcher <ISSUE-KEY> [<ISSUE-KEY> ...] [--write] [--no-cache] [--resume] [--interactive]");
-    Console.Error.WriteLine("       sprint-launcher --sprint <id> [options]");
+    Console.Error.WriteLine("       sprint-launcher --sprint <id> [--pilotage-us <CLE>] [options]");
     Console.Error.WriteLine("       sprint-launcher <ISSUE-KEY> --publish-from-artifacts [--roles <csv>] [--write]");
     Console.Error.WriteLine("       sprint-launcher <REF-KEY> --create-us <fichier.json> [--write]");
     Console.Error.WriteLine("       sprint-launcher --publish-manual <ROLE> --from-file <path> <ISSUE-KEY> [--write]");
     Console.Error.WriteLine("       sprint-launcher --list-roles");
     Console.Error.WriteLine();
     Console.Error.WriteLine("  --interactive   Checkpoints : GO/intervention/conclure entre rounds de discussion et groupes.");
+    Console.Error.WriteLine("  !pause / !resume dans pending-directive.txt : pause douce après l'acteur en cours, puis reprise.");
     Console.Error.WriteLine("  --mode cadrage  Comité Pilotage d'abord (discussion) → US proposées → Analyse → Implémentation → QA.");
     Console.Error.WriteLine("  --mode execution (défaut) Analyse → Implémentation (tour de rôle) → Pilotage → QA.");
     Console.Error.WriteLine("  --publish-from-artifacts  Publie les sorties dry-run validées, sans réexécuter les acteurs.");
@@ -146,7 +163,8 @@ if (publishManualRole is not null)
 
     var responseText = await File.ReadAllTextAsync(publishManualFile);
     using var http = new HttpClient();
-    var manualPublisher = new JiraCommentPublisher(http, config.JiraBaseUrl, config.JiraEmail, config.JiraApiToken, dryRun);
+    var manualPublisher = new JiraCommentPublisher(http, config.JiraBaseUrl, config.JiraEmail, config.JiraApiToken, dryRun)
+    { AllowedKeys = issueKeys };
     foreach (var key in issueKeys)
     {
         var result = await manualPublisher.PublishManualAsync(key, manualRole, responseText);
@@ -243,7 +261,8 @@ if (publishFromArtifacts)
         .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
         .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-    var artifactPublisher = new JiraCommentPublisher(httpClient, config.JiraBaseUrl, config.JiraEmail, config.JiraApiToken, dryRun);
+    var artifactPublisher = new JiraCommentPublisher(httpClient, config.JiraBaseUrl, config.JiraEmail, config.JiraApiToken, dryRun)
+    { AllowedKeys = issueKeys };
     var refKey = issueKeys[0];
     Console.WriteLine($"[{mode}] Publication depuis artefacts : {Path.GetFullPath(publishDir)}");
 
@@ -364,11 +383,18 @@ if (decisionEntries.Count > 0)
 using var runner = new ActorRunner(
     claudeModel: config.ClaudeModel,
     codexModel: config.CodexModel,
+    directiveInterpreterModel: config.DirectiveInterpreterModel,
     actorTimeout: TimeSpan.FromSeconds(config.ActorTimeoutSeconds),
     repoRoot: config.SerzeniaRepoRoot,
     implementationTimeout: TimeSpan.FromSeconds(config.ImplementationTimeoutSeconds),
     gptPilotageAuto: config.GptPilotageAuto);
-var publisher = new JiraCommentPublisher(httpClient, config.JiraBaseUrl, config.JiraEmail, config.JiraApiToken, dryRun);
+var modelLock = new object();
+var currentClaudeModel = config.ClaudeModel;
+var currentCodexModel = config.CodexModel;
+// Garde-fou de périmètre : toute écriture Jira hors des tickets du sprint est refusée
+// (incident sprint 6 : délibération publiée sur SERZENIA-98 au lieu de SERZENIA-111).
+var publisher = new JiraCommentPublisher(httpClient, config.JiraBaseUrl, config.JiraEmail, config.JiraApiToken, dryRun)
+{ AllowedKeys = issueKeys };
 
 // Collect entries for the HTML report
 var reportEntries = new List<ActorReportEntry>();
@@ -378,10 +404,18 @@ var artifactsDir = Path.Combine("artifacts", sprintTag, string.Join("-", issueKe
 Directory.CreateDirectory(artifactsDir);
 Console.WriteLine($"Artefacts dans : {Path.GetFullPath(artifactsDir)}");
 runner.LiveOutputDir = Path.GetFullPath(artifactsDir); // sorties acteurs visibles au fil de l'eau dans l'UI
+var actorTurnCoordinator = new ActorTurnCoordinator(config.SerzeniaRepoRoot ?? Directory.GetCurrentDirectory());
+// Chat live : n'active l'injection en cours de tour que si LIVE_CHAT=true (protocole
+// streaming/app-server à valider). Sinon, mode one-shot inchangé (release stable).
+if (config.LiveChatEnabled)
+{
+    runner.LiveInputDir = Path.GetFullPath(artifactsDir);
+    Console.WriteLine("  ⚡ Chat live ACTIVÉ (LIVE_CHAT=true) — interventions injectées pendant le tour. Protocole expérimental : surveiller la 1re exécution.");
+}
 
 // Sorties périmées : les live-* d'un run précédent ne doivent jamais passer
 // pour l'activité du run courant (constat Hajar : anciennes sorties affichées).
-foreach (var stale in Directory.GetFiles(artifactsDir, "live-*.txt"))
+foreach (var stale in Directory.GetFiles(artifactsDir, "live-*.txt").OrderBy(p => p, StringComparer.OrdinalIgnoreCase))
     try { File.Delete(stale); } catch (IOException) { }
 
 // Archivage des sorties d'AFFICHAGE du run précédent : la vue UI ne montre que
@@ -394,14 +428,37 @@ var displayFiles = Enum.GetValues<ActorRole>()
         Path.Combine(artifactsDir, $"prompt-{r}.txt"),
     })
     .Where(File.Exists)
+    .OrderBy(p => p, StringComparer.OrdinalIgnoreCase)
     .ToList();
 if (displayFiles.Count > 0)
 {
-    var archiveDir = Path.Combine(artifactsDir, "archive", DateTime.Now.ToString("yyyyMMdd-HHmmss"));
+    var archiveDir = Path.Combine(artifactsDir, "archive", "previous-display");
     Directory.CreateDirectory(archiveDir);
     foreach (var f in displayFiles)
         try { File.Move(f, Path.Combine(archiveDir, Path.GetFileName(f)), overwrite: true); } catch (IOException) { }
     Console.WriteLine($"  Sorties du run précédent archivées ({displayFiles.Count} fichiers → archive/).");
+}
+
+// ─── US de pilotage : LUE DANS JIRA, pas devinée ─────────────────────────────
+// La synthèse sprint-level (comité de pilotage, verdict QA) est publiée ICI et nulle
+// part ailleurs. L'info est dans le titre du ticket (« Pilotage Sprint 6 ») — l'outil
+// la lit au lieu de supposer que c'est le premier ticket de la liste.
+var pilotageResolution = PilotageUsResolver.Resolve(issues, issueKeys, sprintArg, pilotageUsArg
+    ?? Environment.GetEnvironmentVariable("PILOTAGE_US"));
+var pilotageKey = pilotageResolution.Key;
+
+if (pilotageResolution.IsFallback)
+{
+    Console.WriteLine($"⚠ US de pilotage NON identifiée — {pilotageResolution.Reason}.");
+    Console.WriteLine($"  Repli sur le premier ticket du sprint : {pilotageKey}. Si ce n'est pas la bonne, la synthèse");
+    Console.WriteLine($"  sprint-level partira au mauvais endroit (incident sprint 6 : délibération sur SERZENIA-98");
+    Console.WriteLine($"  au lieu de SERZENIA-111). Nomme l'US « Pilotage Sprint <N> » ou passe --pilotage-us <CLE>.");
+    EventEmitter.Emit("pilotage-us-fallback", new { key = pilotageKey, reason = pilotageResolution.Reason });
+}
+else
+{
+    Console.WriteLine($"  US de pilotage : {pilotageKey} — {pilotageResolution.Reason}. La synthèse sprint-level y sera publiée.");
+    EventEmitter.Emit("pilotage-us", new { key = pilotageKey, reason = pilotageResolution.Reason });
 }
 
 // Pré-directives déposées AVANT le lancement (fichier au répertoire courant, écrit
@@ -416,7 +473,7 @@ if (File.Exists(preDirectiveFile))
     try { File.Delete(preDirectiveFile); } catch (IOException) { }
     if (preText.Length > 0)
     {
-        var refKey = issueKeys[0]; // US de pilotage du sprint
+        var refKey = pilotageKey; // US de pilotage réelle (titre Jira), pas le 1er ticket de la liste
         Console.WriteLine($"  ⚑ Pré-directive(s) de {config.ApproverName} détectée(s) — stockée(s) et injectée(s) (publiée(s) quand un acteur commentera le sujet).");
         var preEntry = $"### [{refKey}] (pré-directive de ce run)\n{preText}";
         builder.DecisionsRegistry = builder.DecisionsRegistry is null ? preEntry : builder.DecisionsRegistry + "\n\n" + preEntry;
@@ -451,8 +508,7 @@ EventEmitter.Emit("manifest", new
 var stateFile  = Path.Combine(artifactsDir, "state.json");
 var handoffFile = Path.Combine(artifactsDir, "session-handoff.md");
 
-// The pilotage ticket: first key (sprint-level synthesis goes here, not duplicated on all scope tickets)
-var pilotageKey = issueKeys[0];
+// (US de pilotage : détectée plus haut, cf. PilotageUsResolver)
 
 SprintState sprintState;
 if (resume)
@@ -522,8 +578,30 @@ string? pendingApproverDirective = null;
 // en cours de run) — deux workers parallèles peuvent le lire en concurrence.
 var pendingDirectiveLock = new SemaphoreSlim(1, 1);
 
-foreach (var group in sessionMode.GetGroupOrder())
+// ─── Ticker d'ingestion : QUASI TEMPS RÉEL pour les dépôts de Hajar ────────────
+// (retour 2026-07-17 : « mes interventions ne sont pas prises en compte de manière
+// systématique en temps réel »). Le fichier pending-directive.txt est relevé toutes
+// les 15 s quel que soit l'endroit du pipeline : les effets d'ÉTAT (réactivation
+// quota, !model, !cancel, stockage/registre) sont immédiats ; la remise dans un
+// prompt reste au prochain tour du destinataire — un processus acteur déjà lancé
+// reçoit les messages via son inbox live, pas via ce ticker.
+_ = Task.Run(async () =>
 {
+    while (!shutdownCts.IsCancellationRequested)
+    {
+        try { await Task.Delay(TimeSpan.FromSeconds(15), shutdownCts.Token); }
+        catch (OperationCanceledException) { break; }
+        try { await IngestPendingDirectivesAsync(artifactsDir, shutdownCts.Token); }
+        catch (IOException) { } catch (OperationCanceledException) { break; }
+    }
+});
+
+var phaseOrder = sessionMode.GetGroupOrder().ToList();
+var phaseIndex = 0;
+phaseIndex = await ApplyPendingPhaseOrdersAsync(phaseOrder, -1, shutdownCts.Token);
+while (phaseIndex < phaseOrder.Count)
+{
+    var group = phaseOrder[phaseIndex];
     if (shutdownCts.IsCancellationRequested) break;
 
     var rolesInGroup = Enum.GetValues<ActorRole>()
@@ -612,8 +690,11 @@ foreach (var group in sessionMode.GetGroupOrder())
             var prevVerdict = File.Exists(prevVerdictFile) ? await File.ReadAllTextAsync(prevVerdictFile) : null;
             var mission =
                 "MISSION DE REDRESSEMENT : ce sprint a déjà été implémenté — vous reprenez la main pour DÉCIDER " +
-                "ce qui reste à traiter (ce n'est pas le rôle de la QA). Appuyez-vous sur : le verdict QA précédent " +
-                "ci-dessous, les décisions déjà actées au registre, et les inputs désormais fournis — un input externe " +
+                "ce qui reste à traiter (ce n'est pas le rôle de la QA). Votre audit ne se limite PAS au verdict QA " +
+                "ci-dessous : croisez-le avec les COMMENTAIRES JIRA de chaque US (restitutions et réserves des acteurs " +
+                "de dev), l'ÉCART entre le livré et la DESCRIPTION de chaque US, l'ÉCART avec l'US DE PILOTAGE " +
+                "(décisions actées, critères de sortie) et la CONFORMITÉ aux frameworks d'exécution et de validation. " +
+                "Tenez compte des décisions déjà actées au registre et des inputs désormais fournis — un input externe " +
                 "arrivé depuis (ex. DSN/secret dans l'environnement) LÈVE la stop-condition : la finalisation réelle et " +
                 "sa preuve deviennent DUES. Couvrez TOUTES les US du sprint, front ET backend. " +
                 "Votre synthèse DOIT contenir une section '## ECARTS' au format '- [CLE-US] action requise' " +
@@ -683,6 +764,13 @@ foreach (var group in sessionMode.GetGroupOrder())
             }
         }
     }
+    else if (group == ActorGroup.Retrospective)
+    {
+        // Rétrospective (SERZENIA-144 lot 4) : chaque acteur restitue son post-mortem,
+        // append IMMÉDIATEMENT sur disque dès sa sortie — pas de discussion multi-tours,
+        // pas de publication Jira automatique (mécanisme local, cf. mode opératoire).
+        await RunRetrospectivePhaseAsync(rolesInGroup, issues, artifactsDir, sprintState, stateFile, shutdownCts.Token);
+    }
     else
     {
         foreach (var role in rolesInGroup)
@@ -729,7 +817,7 @@ foreach (var group in sessionMode.GetGroupOrder())
     // remédiation, lui, reste interactif.
     if (interactive && !resume && !shutdownCts.IsCancellationRequested)
     {
-        var nextGroup = sessionMode.GetGroupOrder()
+        var nextGroup = phaseOrder
             .SkipWhile(g => g != group)
             .Skip(1)
             .FirstOrDefault();
@@ -758,6 +846,8 @@ foreach (var group in sessionMode.GetGroupOrder())
             }
         }
     }
+
+    phaseIndex = await ApplyPendingPhaseOrdersAsync(phaseOrder, phaseIndex, shutdownCts.Token);
 }
 
 // ─── BOUCLE DE REMÉDIATION (lot 8) : le sprint n'est PAS terminé tant que le ────
@@ -824,6 +914,25 @@ while (!shutdownCts.IsCancellationRequested)
         builder, runner, publisher, null, freshQaContext, shutdownCts.Token);
 }
 
+// ─── Directives jamais remises : une directive adressée à un acteur qui n'a plus
+// pris la parole ne doit PAS disparaître en silence (incident 2026-07-16). Elle
+// reste dans l'état persisté — le prochain run la livrera — et Hajar est prévenue ici.
+await IngestPendingDirectivesAsync(artifactsDir, shutdownCts.Token);
+var undelivered = sprintState.PendingDirectives.Where(d => !d.Delivered).ToList();
+if (undelivered.Count > 0)
+{
+    Console.WriteLine($"\n⚑ {undelivered.Count} directive(s) de {config.ApproverName} NON REMISE(S) — destinataire jamais reparu dans ce run :");
+    foreach (var d in undelivered)
+        Console.WriteLine($"  - → {d.TargetActor ?? d.TargetGroup ?? "tous"} : {Truncate(d.Text, 100)}");
+    Console.WriteLine("  Elles restent en attente et seront livrées au prochain run (état persisté).");
+    EventEmitter.Emit("directives-undelivered", new
+    {
+        count = undelivered.Count,
+        items = undelivered.Select(d => new { target = d.TargetActor ?? d.TargetGroup ?? "tous", text = d.Text }),
+    });
+}
+await SprintStateManager.SaveAsync(stateFile, sprintState);
+
 await SprintStateManager.WriteHandoffAsync(handoffFile, sprintState);
 
 // ─── Point F: generate HTML report ───────────────────────────────────────────
@@ -867,14 +976,22 @@ async Task RunSingleActorAsync(
     string? approverDirective,
     CancellationToken ct)
 {
+    await using var actorTurn = await actorTurnCoordinator.BeginAsync(role, ct);
+
     var prompt = builder.Build(role, issues, primaryKey, mode: sessionMode, frameworks: frameworks, memory: agentMemory);
-    if (!string.IsNullOrWhiteSpace(approverDirective))
-        prompt = prompt with { UserPrompt = prompt.UserPrompt + $"\n\n## Directive de {config.ApproverName} — à respecter\n{approverDirective}" };
+
+    // Directives déposées à tout moment + celles adressées nommément à CE rôle.
+    await IngestPendingDirectivesAsync(artifactsDir, ct);
+    await WaitIfPausedAsync(artifactsDir, ct);
+    var directives = Join(approverDirective, DirectivesForActor(role));
+    if (!string.IsNullOrWhiteSpace(directives))
+        prompt = prompt with { UserPrompt = prompt.UserPrompt + $"\n\n## Directive de {config.ApproverName} — à respecter\n{directives}" };
 
     var promptFile = Path.Combine(artifactsDir, $"prompt-{role}.txt");
     await File.WriteAllTextAsync(promptFile, $"=== SYSTEM ===\n{prompt.SystemPrompt}\n\n=== USER ===\n{prompt.UserPrompt}");
 
-    EventEmitter.Emit("actor-start", new { role = role.ToString() });
+    var model = ModelForRole(role);
+    EventEmitter.Emit("actor-start", new { role = role.ToString(), engine = EngineForRole(role).ToString().ToLowerInvariant(), model });
     // Correction 1: live timer
     var sw = Stopwatch.StartNew();
     if (Console.IsOutputRedirected) Console.WriteLine($"  > {role}");
@@ -883,13 +1000,14 @@ async Task RunSingleActorAsync(
     using var timerCts = new CancellationTokenSource();
     var timerTask = StartTimerTask(role.ToString(), sw, timerCts.Token);
 
-    var runResult = await runner.RunAsync(prompt, ct);
+    var runResult = await runner.RunAsync(prompt, model, ct);
 
     timerCts.Cancel();
     await timerTask;
     sw.Stop();
 
     PrintActorResult(role.ToString(), sw, runResult);
+    ApplyModelRecommendationsFromOutput(role, runResult.Output);
 
     var outputFile = Path.Combine(artifactsDir, $"output-{role}.txt");
     await File.WriteAllTextAsync(outputFile, runResult.Output);
@@ -933,6 +1051,121 @@ async Task RunSingleActorAsync(
     }
 
     await SprintStateManager.SaveAsync(stateFile, state);
+    await actorTurn.CompleteAsync(CancellationToken.None);
+}
+
+// ─── RÉTROSPECTIVE (fin de run, SERZENIA-144 lot 4) : chaque acteur restitue ce qui
+// a bien marché (à garder), ce qui a mal marché, et un plan d'action. PAS de
+// discussion multi-tours (contributions indépendantes, pas de consensus recherché),
+// PAS de publication Jira automatique — mécanisme de trace locale du sprint-launcher.
+//
+// Persistance IMMÉDIATE : chaque contribution est append sur disque (retrospective.md,
+// bloc "## RETRO — <acteur>") dès la sortie de l'acteur, AVANT toute autre étape — pour
+// survivre à un arrêt quota entre deux acteurs (jamais seulement en mémoire, incident
+// déclencheur : run mort avant publication = rétro perdue).
+async Task RunRetrospectivePhaseAsync(
+    ActorRole[] roles,
+    IReadOnlyList<SprintLauncher.Jira.JiraIssue> issues,
+    string artifactsDir,
+    SprintState state,
+    string stateFile,
+    CancellationToken ct)
+{
+    var retroFile = Path.Combine(artifactsDir, "retrospective.md");
+
+    // Contexte factuel du run, injecté à chaque acteur pour ancrer sa rétro dans
+    // les faits (pas juste le contexte Jira brut des US) : verdict QA, écarts,
+    // cycles de remédiation, litige — tout ce qui caractérise comment le sprint s'est passé.
+    var qaVerdictPath = Path.Combine(artifactsDir, "output-Qa-collective.txt");
+    var qaVerdict = File.Exists(qaVerdictPath)
+        ? await File.ReadAllTextAsync(qaVerdictPath, ct)
+        : "(aucun verdict QA trouvé pour ce run)";
+    var retroContext =
+        "## Résumé factuel du run — base ta rétrospective là-dessus\n" +
+        $"- Cycles de remédiation post-QA : {state.RemediationCycles}\n" +
+        $"- Litige détecté en analyse : {(state.LitigeDetected ? "oui" : "non")}\n" +
+        $"- Verdict QA final :\n{Truncate(qaVerdict, 2000)}\n";
+
+    foreach (var role in roles)
+    {
+        if (ct.IsCancellationRequested) break;
+        await WaitIfPausedAsync(artifactsDir, ct);
+        if (ct.IsCancellationRequested) break;
+
+        if (state.CompletedRoles.Contains(role.ToString()) &&
+            !state.InterruptedRoles.Contains(role.ToString()))
+        {
+            Console.WriteLine($"  ○ {role,-28} [déjà complété — ignoré]");
+            continue;
+        }
+
+        var prompt = builder.Build(role, issues, pilotageKey, mode: sessionMode, frameworks: frameworks, memory: agentMemory);
+        prompt = prompt with { UserPrompt = prompt.UserPrompt + "\n\n---\n\n" + retroContext };
+        await using var actorTurn = await actorTurnCoordinator.BeginAsync(role, ct);
+
+        var promptFile = Path.Combine(artifactsDir, $"prompt-{role}.txt");
+        await File.WriteAllTextAsync(promptFile, $"=== SYSTEM ===\n{prompt.SystemPrompt}\n\n=== USER ===\n{prompt.UserPrompt}", ct);
+
+        var model = ModelForRole(role);
+        EventEmitter.Emit("actor-start", new { role = role.ToString(), engine = EngineForRole(role).ToString().ToLowerInvariant(), model });
+        var sw = Stopwatch.StartNew();
+        if (Console.IsOutputRedirected) Console.WriteLine($"  > {role}");
+        else Console.Write($"  > {role,-28}");
+
+        using var timerCts = new CancellationTokenSource();
+        var timerTask = StartTimerTask(role.ToString(), sw, timerCts.Token);
+        var runResult = await runner.RunAsync(prompt, model, ct);
+        timerCts.Cancel();
+        await timerTask;
+        sw.Stop();
+        PrintActorResult(role.ToString(), sw, runResult);
+
+        var outputFile = Path.Combine(artifactsDir, $"output-{role}.txt");
+        await File.WriteAllTextAsync(outputFile, runResult.Output, CancellationToken.None);
+
+        if (runResult.Success)
+        {
+            // Append IMMÉDIAT — avant tout autre traitement — c'est la trace persistante
+            // qui survit à un arrêt quota juste après ce point.
+            var separator = File.Exists(retroFile) ? "\n\n" : "";
+            var block =
+                $"{separator}## RETRO — {role} — {DateTimeOffset.UtcNow:yyyy-MM-dd HH:mm} UTC\n\n" +
+                runResult.Output.Trim() + "\n";
+            try
+            {
+                await File.AppendAllTextAsync(retroFile, block, new UTF8Encoding(false), CancellationToken.None);
+                Console.WriteLine($"  ✓ {role} — rétro appendée dans {Path.GetFileName(retroFile)}");
+                EventEmitter.Emit("retro-entry", new { role = role.ToString(), file = Path.GetFullPath(retroFile), content = runResult.Output.Trim() });
+            }
+            catch (IOException ex)
+            {
+                Console.Error.WriteLine($"  ✗ Échec append rétro {role} sur disque : {ex.Message} — sortie conservée dans {outputFile}");
+            }
+
+            state.CompletedRoles.Add(role.ToString());
+            state.InterruptedRoles.Remove(role.ToString());
+        }
+        else if (ct.IsCancellationRequested)
+        {
+            state.InterruptedRoles.Add(role.ToString());
+            Console.WriteLine($"  ⚠ {role} marqué interrupted dans state.json");
+        }
+
+        reportEntries.Add(new ActorReportEntry(
+            Role: role,
+            Success: runResult.Success,
+            IsSemiManual: false,
+            IsSkipped: false,
+            ExitCode: runResult.ExitCode,
+            ElapsedSeconds: (int)sw.Elapsed.TotalSeconds,
+            OutputChars: runResult.Output.Length,
+            ErrorSnippet: runResult.ErrorOutput?.Trim() is { Length: > 0 } err ? err[..Math.Min(300, err.Length)] : null,
+            OutputFilePath: outputFile,
+            SemiManualPromptPath: null));
+
+        await SprintStateManager.SaveAsync(stateFile, state);
+        await actorTurn.CompleteAsync(CancellationToken.None);
+    }
 }
 
 // ─── QA outillée : exécution réelle de QA_COMMAND + audit automatique des preuves
@@ -981,30 +1214,268 @@ async Task<bool> WaitForQuotaWindowAsync(SprintState state, string stateFile, Ca
     return true;
 }
 
-// ─── Directive déposée par Hajar EN COURS DE RUN (fichier pending-directive.txt
-// écrit par l'UI à tout moment) : consommée avant chaque US, injectée dans le
-// prompt et publiée sur Jira par l'outil.
-async Task<string?> ConsumePendingDirectiveAsync(string artifactsDir, JiraCommentPublisher publisher, CancellationToken ct)
+// ─── Directives déposées par Hajar EN COURS DE RUN (fichier pending-directive.txt
+// écrit par l'UI à tout moment) : versées au stock dès qu'on les voit. Le fichier est
+// un SAS, pas un stockage : il est vidé ici et son contenu part dans l'état persisté
+// (incident 2026-07-16 : run mort avant le point de lecture → directive jamais lue).
+// Une ligne = une directive (l'UI en ajoute une par intervention).
+ModelEngine EngineForRole(ActorRole role) =>
+    role.IsClaudeFamily() ? ModelEngine.Claude : ModelEngine.Codex;
+
+string ModelForRole(ActorRole role)
+{
+    lock (modelLock)
+        return role.IsClaudeFamily() ? currentClaudeModel : currentCodexModel;
+}
+
+void ApplyModelRecommendation(ModelRecommendation recommendation, string source)
+{
+    lock (modelLock)
+    {
+        if (recommendation.Engine == ModelEngine.Claude)
+        {
+            currentClaudeModel = recommendation.Model;
+            runner.ClaudeModel = recommendation.Model;
+        }
+        else
+        {
+            currentCodexModel = recommendation.Model;
+            runner.CodexModel = recommendation.Model;
+        }
+    }
+
+    var engine = recommendation.Engine.ToString().ToLowerInvariant();
+    Console.WriteLine($"  ⚡ Modèle {engine} changé → {recommendation.Model} ({source}, effectif dès le prochain tour {engine}).");
+    EventEmitter.Emit("model-changed", new { engine, model = recommendation.Model, source });
+}
+
+void ApplyModelRecommendationsFromOutput(ActorRole role, string output)
+{
+    if (role.GetGroup() is not (ActorGroup.CommitteePilotage or ActorGroup.Analysis))
+        return;
+
+    var recommendations = ModelRecommendationParser.ExtractRecommendations(output, EngineForRole(role));
+    foreach (var recommendation in recommendations)
+        ApplyModelRecommendation(recommendation, $"{role} / complexité");
+}
+
+async Task IngestPendingDirectivesAsync(string artifactsDir, CancellationToken ct)
 {
     var file = Path.Combine(artifactsDir, "pending-directive.txt");
     await pendingDirectiveLock.WaitAsync(CancellationToken.None);
     try
     {
-        if (!File.Exists(file)) return null;
-        string text;
+        if (!File.Exists(file)) return;
+        string raw;
         try
         {
-            text = (await File.ReadAllTextAsync(file, ct)).Trim();
+            raw = await File.ReadAllTextAsync(file, ct);
             File.Delete(file);
         }
-        catch (IOException) { return null; } // en cours d'écriture par l'UI — prochain passage
+        catch (IOException) { return; } // en cours d'écriture par l'UI — prochain passage
 
-        if (text.Length == 0) return null;
-        Console.WriteLine($"  ⚑ Directive de {config.ApproverName} (déposée en cours de run) — appliquée à partir de la prochaine US.");
-        await AddDirectiveAsync(pilotageKey, text);
-        return text;
+        foreach (var line in raw.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (line.Equals("!pause", StringComparison.OrdinalIgnoreCase) ||
+                line.Equals("pause", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!sprintState.PauseRequested)
+                {
+                    sprintState.PauseRequested = true;
+                    sprintState.PauseRequestedAt = DateTimeOffset.UtcNow;
+                    await SprintStateManager.SaveAsync(stateFile, sprintState, CancellationToken.None);
+                    Console.WriteLine("  ⏸ Pause demandée — l'acteur en cours termine, puis le run attendra !resume.");
+                    EventEmitter.Emit("pause-requested", new { requestedAt = sprintState.PauseRequestedAt });
+                }
+                continue;
+            }
+
+            if (line.Equals("!resume", StringComparison.OrdinalIgnoreCase) ||
+                line.Equals("resume", StringComparison.OrdinalIgnoreCase))
+            {
+                if (sprintState.PauseRequested)
+                {
+                    sprintState.PauseRequested = false;
+                    sprintState.PauseRequestedAt = null;
+                    await SprintStateManager.SaveAsync(stateFile, sprintState, CancellationToken.None);
+                    Console.WriteLine("  ▶ Reprise demandée — lancement du prochain acteur.");
+                    EventEmitter.Emit("pause-resumed", new { });
+                }
+                continue;
+            }
+
+            // « !cancel <ligne d'origine> » : correction d'un envoi (retour Hajar,
+            // 2026-07-17) — retire la directive correspondante si elle n'a pas encore
+            // été remise. Une directive déjà remise ne se rappelle pas : la version
+            // corrigée qui suit la remplace par autorité de la consigne la plus récente.
+            if (line.StartsWith("!cancel ", StringComparison.OrdinalIgnoreCase))
+            {
+                CancelPendingDirective(line["!cancel ".Length..].Trim());
+                continue;
+            }
+            // « !model claude <id> » / « !model codex <id> » : changement de modèle EN
+            // COURS DE RUN (retour Hajar, 2026-07-17 : « changer le modèle et continuer »
+            // — l'acteur ne peut pas le faire lui-même, son modèle est fixé au lancement
+            // de son processus ; le prochain tour du moteur utilise le nouveau modèle).
+            if (line.StartsWith("!model ", StringComparison.OrdinalIgnoreCase))
+            {
+                if (ModelRecommendationParser.TryParseCommand(line, out var rec))
+                    ApplyModelRecommendation(rec, "directive Hajar");
+                else
+                    Console.WriteLine("  ⚠ !model : syntaxe attendue « !model claude|codex <identifiant-du-modèle> ».");
+                continue;
+            }
+            await AddDirectiveAsync(pilotageKey, line);
+        }
     }
     finally { pendingDirectiveLock.Release(); }
+}
+
+async Task<int> ApplyPendingPhaseOrdersAsync(List<ActorGroup> phaseOrder, int currentIndex, CancellationToken ct)
+{
+    var nextIndex = currentIndex;
+    var hadOrder = false;
+    while (true)
+    {
+        var applied = PhaseOrderQueue.ApplyNext(
+            phaseOrder,
+            sprintState.PendingPhaseOrders,
+            nextIndex,
+            ClearCompletionForPhase);
+        if (applied is null) break;
+
+        hadOrder = true;
+        nextIndex = applied.NextIndex;
+        Console.WriteLine($"  ↪ Ordre de phase appliqué : {applied.Kind} → {applied.Target}");
+        EventEmitter.Emit("phase-order-applied", new
+        {
+            kind = applied.Kind.ToString(),
+            target = applied.Target.ToString(),
+            nextIndex,
+        });
+    }
+
+    if (sprintState.PendingPhaseOrders.RemoveAll(o => o.Applied) > 0)
+        await SprintStateManager.SaveAsync(stateFile, sprintState, ct);
+    return hadOrder ? nextIndex : currentIndex + 1;
+}
+
+void ClearCompletionForPhase(ActorGroup group)
+{
+    sprintState.CompletedGroups.Remove(group.ToString());
+    foreach (var role in Enum.GetValues<ActorRole>().Where(r => r.GetGroup() == group))
+    {
+        sprintState.CompletedRoles.Remove(role.ToString());
+        sprintState.InterruptedRoles.Remove(role.ToString());
+    }
+
+    if (group is ActorGroup.FamilyClaude or ActorGroup.FamilyGpt)
+    {
+        sprintState.CompletedUsImplementations.Clear();
+        sprintState.PendingReviews.Clear();
+        implementationPhaseDone = false;
+    }
+}
+
+async Task WaitIfPausedAsync(string artifactsDir, CancellationToken ct)
+{
+    await IngestPendingDirectivesAsync(artifactsDir, ct);
+    if (!sprintState.PauseRequested) return;
+
+    var since = sprintState.PauseRequestedAt ?? DateTimeOffset.UtcNow;
+    Console.WriteLine($"  ⏸ Run en pause depuis {since:HH:mm:ss} UTC — écrire !resume dans pending-directive.txt pour reprendre.");
+    EventEmitter.Emit("pause-waiting", new { requestedAt = since });
+
+    while (sprintState.PauseRequested && !ct.IsCancellationRequested)
+    {
+        try { await Task.Delay(TimeSpan.FromSeconds(2), ct); }
+        catch (OperationCanceledException) { break; }
+        await IngestPendingDirectivesAsync(artifactsDir, CancellationToken.None);
+    }
+}
+
+// Annule la dernière directive non remise correspondant à la ligne d'origine
+// (même cible, même texte). Sans correspondance : rien à faire, on le signale.
+void CancelPendingDirective(string originalLine)
+{
+    var addresses = DirectiveAddressing.ParseMulti(originalLine);
+    var text = addresses[0].Text.Trim();
+    var removed = 0;
+    foreach (var address in addresses)
+    {
+        var match = sprintState.PendingDirectives.LastOrDefault(d =>
+            !d.Delivered && !d.Published &&
+            d.Text == text &&
+            d.TargetActor == address.Actor?.ToString() &&
+            d.TargetGroup == address.Group?.ToString());
+        if (match is not null && sprintState.PendingDirectives.Remove(match)) removed++;
+    }
+    if (removed > 0)
+    {
+        Console.WriteLine($"  ⚑ {removed} directive(s) annulée(s) par {config.ApproverName} (correction d'envoi) : {Truncate(text, 80)}");
+        EventEmitter.Emit("directive-cancelled", new { text, count = removed });
+        try { SprintStateManager.SaveAsync(stateFile, sprintState).GetAwaiter().GetResult(); } catch (IOException) { }
+    }
+    else
+    {
+        Console.WriteLine($"  ⚑ Correction reçue mais la directive d'origine était déjà remise — la version corrigée fera autorité.");
+    }
+}
+
+// Directives dues à CET acteur : adressées à lui (@ActorRole), à son groupe
+// (@qa, @pilotage…), ou non adressées (= tout le monde). Livrées une fois, puis
+// marquées — le stock survit à un crash tant qu'elles n'ont pas trouvé leur cible.
+string? DirectivesForActor(ActorRole role)
+{
+    var due = sprintState.PendingDirectives.Where(d => !d.Delivered && DirectiveTargets(d, role)).ToList();
+    if (due.Count == 0) return null;
+
+    var parts = new List<string>();
+    foreach (var d in due)
+    {
+        d.Delivered = true;
+
+        // Pièces jointes (SERZENIA-144 Lot 3) : copiées MAINTENANT, une fois la
+        // cible réelle connue — un même dossier "attachments/<role>" par acteur
+        // pour ne jamais mélanger les pièces jointes de deux destinataires.
+        var body = d.Text;
+        if (d.AttachmentSourcePaths.Count > 0)
+        {
+            var attachDir = Path.Combine(artifactsDir, "attachments", role.ToString());
+            var copied = DirectiveAttachments.CopyToRunFolder(d.AttachmentSourcePaths, attachDir);
+            body += DirectiveAttachments.FormatForPrompt(copied);
+        }
+
+        var attachNote = d.AttachmentSourcePaths.Count > 0 ? $" [+{d.AttachmentSourcePaths.Count} pièce(s) jointe(s)]" : "";
+        Console.WriteLine($"  ⚑ Directive de {config.ApproverName} → {role} : {Truncate(d.Text, 80)}{attachNote}");
+        EventEmitter.Emit("directive-delivered", new { target = role.ToString(), text = d.Text, attachments = d.AttachmentSourcePaths.Count });
+
+        parts.Add(d.TargetActor is not null || d.TargetGroup is not null
+            ? $"(adressée à {d.TargetActor ?? d.TargetGroup} — c'est toi) {body}"
+            : body);
+    }
+    try { SprintStateManager.SaveAsync(stateFile, sprintState).GetAwaiter().GetResult(); } catch (IOException) { }
+
+    return string.Join("\n\n", parts);
+}
+
+static bool DirectiveTargets(PendingDirective d, ActorRole role)
+{
+    if (d.TargetActor is { Length: > 0 } a)
+        return Enum.TryParse<ActorRole>(a, ignoreCase: true, out var r) && r == role;
+    if (d.TargetGroup is { Length: > 0 } g)
+        return Enum.TryParse<ActorGroup>(g, ignoreCase: true, out var gr) && role.GetGroup() == gr;
+    return true; // non adressée : pour le prochain acteur qui parle
+}
+
+static string Truncate(string s, int max) =>
+    s.Length <= max ? s : s[..max] + "…";
+
+// Concatène des blocs de directives non vides (directive de groupe + directives adressées).
+static string? Join(params string?[] parts)
+{
+    var kept = parts.Where(p => !string.IsNullOrWhiteSpace(p)).ToArray();
+    return kept.Length == 0 ? null : string.Join("\n\n", kept);
 }
 
 // ─── Registre des décisions : toute décision donnée EN COURS DE RUN y entre ────
@@ -1029,16 +1500,89 @@ async Task RecordDecisionInRegistryAsync(string usKey, string text)
 // n'arrive sur Jira que portée par le commentaire de l'acteur qui traite l'US liée.
 async Task AddDirectiveAsync(string subjectKey, string text)
 {
-    var clean = text.Trim();
-    if (clean.Length == 0) return;
-    sprintState.PendingDirectives.Add(new PendingDirective
+    // Pièces jointes (SERZENIA-144 Lot 3) : marqueur en fin de ligne, retiré AVANT
+    // l'adressage @cible pour ne pas interférer avec le parsing des destinataires.
+    var (textNoAttach, attachSourcePaths) = DirectiveAttachments.Extract(text);
+
+    var interpretation = await runner.InterpretDirectiveAsync(
+        textNoAttach,
+        DirectiveAddressing.KnownTargets(),
+        Enum.GetNames<ActorGroup>(),
+        shutdownCts.Token);
+
+    if (interpretation?.PhaseOrder is { } phaseOrder)
     {
-        SubjectKey = subjectKey, Text = clean,
-        CreatedAt = DateTimeOffset.UtcNow, Published = false
-    });
-    await RecordDecisionInRegistryAsync(subjectKey, clean); // registre + fichier (tab + prompts)
+        sprintState.PendingPhaseOrders.Add(phaseOrder);
+        Console.WriteLine($"  ↪ Ordre de phase mis en file : {phaseOrder.Kind} → {phaseOrder.TargetGroup} (appliqué à la prochaine frontière de phase).");
+        EventEmitter.Emit("phase-order-queued", new
+        {
+            kind = phaseOrder.Kind.ToString(),
+            target = phaseOrder.TargetGroup,
+            text = textNoAttach,
+        });
+    }
+
+    // Interprétation IA si disponible ; sinon repli strict sur l'adressage @.
+    // « @ccode et @codex revoyez X » → UNE directive PAR destinataire, même texte
+    // (retour de Hajar, 2026-07-17 : seul le premier @ était pris en compte).
+    var addresses = interpretation?.HasTargets == true
+        ? interpretation.ToAddresses(textNoAttach.Trim())
+        : DirectiveAddressing.ParseMulti(textNoAttach);
+    var clean = addresses.Count > 0 ? addresses[0].Text.Trim() : textNoAttach.Trim();
+    if (clean.Length == 0)
+    {
+        if (attachSourcePaths.Count == 0) return;
+        clean = DirectiveAttachments.EmptyTextPlaceholder; // pièce jointe sans commentaire
+    }
+
+    var phaseOrderOnly = interpretation?.PhaseOrder is not null && !interpretation.HasTargets
+        && !textNoAttach.TrimStart().StartsWith('@');
+    if (phaseOrderOnly)
+    {
+        var attachNoteOnly = attachSourcePaths.Count > 0 ? $" [+{attachSourcePaths.Count} pièce(s) jointe(s)]" : "";
+        await RecordDecisionInRegistryAsync(subjectKey, $"ordre de phase : {clean}{attachNoteOnly}");
+        try { await SprintStateManager.SaveAsync(stateFile, sprintState); } catch (IOException) { }
+        return;
+    }
+
+    foreach (var address in addresses)
+    {
+        sprintState.PendingDirectives.Add(new PendingDirective
+        {
+            SubjectKey = subjectKey, Text = clean,
+            CreatedAt = DateTimeOffset.UtcNow, Published = false,
+            TargetActor = address.Actor?.ToString(),
+            TargetGroup = address.Group?.ToString(),
+            Delivered = false,
+            Intent = interpretation?.Intent,
+            AttachmentSourcePaths = [.. attachSourcePaths],
+        });
+    }
+
+    // RÉACTIVATION QUOTA PAR INTERVENTION (retour de Hajar, 2026-07-17 : « pas la
+    // peine de redémarrer l'exécution pour seulement ça ») : adresser une directive
+    // à un moteur arrêté pour quota vaut signal que les crédits sont revenus — le
+    // flag est levé et le moteur reprend au prochain tour, sans relance du run.
+    foreach (var address in addresses)
+    {
+        if (address.Actor is { } engine && sprintState.QuotaExhaustedEngines.Remove(engine.ToString()))
+        {
+            Console.WriteLine($"  ⚡ {engine} réactivé sur intervention de {config.ApproverName} (quota signalé disponible) — il reprend au prochain tour.");
+            EventEmitter.Emit("engine-reactivated", new { engine = engine.ToString() });
+        }
+    }
+
+    var attachNote = attachSourcePaths.Count > 0 ? $" [+{attachSourcePaths.Count} pièce(s) jointe(s)]" : "";
+    var targets = string.Join(", ", addresses.Select(a => a.TargetLabel).Distinct());
+    var anyTargeted = addresses.Any(a => a.IsTargeted);
+    var registryEntry = (anyTargeted ? $"→ {targets} : {clean}" : clean) + attachNote;
+    await RecordDecisionInRegistryAsync(subjectKey, registryEntry); // registre + fichier (tab + prompts)
     try { await SprintStateManager.SaveAsync(stateFile, sprintState); } catch (IOException) { }
-    Console.WriteLine($"  ⚑ Directive de {config.ApproverName} stockée pour [{subjectKey}] — publiée dès qu'un acteur commentera ce sujet.");
+
+    Console.WriteLine(anyTargeted
+        ? $"  ⚑ Directive de {config.ApproverName} stockée pour [{subjectKey}] → destinataire(s) : {targets}{attachNote} (appliquée dès que chacun prend la parole)."
+        : $"  ⚑ Directive de {config.ApproverName} stockée pour [{subjectKey}]{attachNote} — appliquée au prochain acteur, publiée dès qu'un acteur commentera ce sujet.");
+    EventEmitter.Emit("directive-stored", new { subject = subjectKey, target = targets, text = clean, attachments = attachSourcePaths.Count });
 }
 
 // ─── Dispatch de remédiation : traite une liste d'écarts/actions par US ─────────
@@ -1086,7 +1630,12 @@ async Task RemediateEcartsAsync(
             Console.WriteLine($"  ▶ Remédiation {issue.Key} → {engine}");
             EventEmitter.Emit("implementation-us", new { key = issue.Key, engine = engine.ToString(), relief = false, remediation = true });
 
-            var remPrompt = builder.BuildRemediation(engine, issue, descs, directive);
+            // Directives de Hajar : ingérées et livrées AUSSI en remédiation — c'était
+            // le seul chemin sans ingestion, donc ses dépôts restaient lettre morte
+            // pendant toute la boucle (retour du 2026-07-17 : « pas systématique »).
+            await IngestPendingDirectivesAsync(artifactsDir, ct);
+            var remDirective = Join(directive, DirectivesForActor(engine));
+            var remPrompt = builder.BuildRemediation(engine, issue, descs, remDirective);
             var remResult = await RunDialogueTurnAsync(engine, remPrompt, artifactsDir, runner, ct);
 
             if (remResult.IsQuotaExhausted)
@@ -1218,7 +1767,8 @@ async Task RunImplementationPhaseAsync(
         EventEmitter.Emit("implementation-us", new { key = issue.Key, engine = engine.ToString(), relief = false, usType = usType.ToString() });
 
         var prompt = builder.Build(engine, [issue], issue.Key, mode: sessionMode, frameworks: frameworks, memory: agentMemory);
-        prompt = WithDirective(prompt, await ConsumePendingDirectiveAsync(artifactsDir, publisher, ct), config.ApproverName);
+        await IngestPendingDirectivesAsync(artifactsDir, ct);
+        prompt = WithDirective(prompt, DirectivesForActor(engine), config.ApproverName);
         var result = await RunDialogueTurnAsync(engine, prompt, artifactsDir, runner, ct);
 
         // ── Relève : quota épuisé → l'autre moteur reprend avec le handoff ────
@@ -1307,33 +1857,199 @@ async Task ProcessPendingReviewsAsync(
     CancellationToken ct)
 {
     if (state.PendingReviews.Count == 0) return;
-    Console.WriteLine($"  [revues croisées : {state.PendingReviews.Count} en attente]");
 
-    foreach (var pending in state.PendingReviews.ToList())
+    // PIPELINE PARALLÈLE (principe de Hajar, 2026-07-17 : tout ce qui peut avancer en
+    // parallèle avance sans attendre). Chaque US suit son flux revue → correctifs →
+    // publication ; un verrou PAR MOTEUR sérialise les tours d'un même moteur, mais
+    // les deux moteurs travaillent en même temps : pendant que l'implémenteur corrige
+    // l'US n, le réviseur enchaîne sur la revue de l'US n+1. AUCUN checkpoint bloquant :
+    // Hajar oriente par intervention live/directive à tout moment ; un désaccord
+    // persistant relève du comité de pilotage/arbitrage, pas d'une mise en attente.
+    Console.WriteLine($"  [revues croisées : {state.PendingReviews.Count} en attente — pipeline parallèle revue/correctifs]");
+
+    // Visibilité (retour de Hajar, 2026-07-17 : « codex n'a pas repris ») : quand
+    // toutes les US en attente ont le MÊME implémenteur, l'autre moteur porte toutes
+    // les revues et l'implémenteur attend la première livraison — c'est structurel
+    // (on ne se relit pas soi-même), pas une panne. Le dire évite de le chercher.
+    var byImplementer = state.PendingReviews.GroupBy(p => p.Implementer).ToList();
+    if (byImplementer.Count == 1)
     {
-        if (ct.IsCancellationRequested) break;
+        var impl = byImplementer[0].Key;
+        var rev = ImplementationRotation.PickRelief(impl, state.QuotaExhaustedEngines) ?? "(aucun)";
+        Console.WriteLine($"  · Toutes les US en attente sont de {impl} → {rev} porte TOUTES les revues.");
+        Console.WriteLine($"  · {impl} est en attente de la 1re revue livrée (on ne se relit pas soi-même) — il enchaînera les correctifs pendant que {rev} passera à la revue suivante.");
+        EventEmitter.Emit("review-pipeline", new { reviewer = rev, implementer = impl, count = state.PendingReviews.Count });
+    }
 
-        var issue = issues.FirstOrDefault(i => i.Key == pending.Key);
-        if (issue is null)
+    var reviewStateLock = new SemaphoreSlim(1, 1);
+    var engineLocks = new Dictionary<ActorRole, SemaphoreSlim>
+    {
+        [ActorRole.ClaudeImplementation] = new(1, 1),
+        [ActorRole.GptImplementation] = new(1, 1),
+    };
+
+    async Task RemovePendingAsync(PendingReview p)
+    {
+        await reviewStateLock.WaitAsync(CancellationToken.None);
+        try { state.PendingReviews.Remove(p); await SprintStateManager.SaveAsync(stateFile, state); }
+        finally { reviewStateLock.Release(); }
+    }
+
+    async Task MarkQuotaAsync(ActorRole engine)
+    {
+        await reviewStateLock.WaitAsync(CancellationToken.None);
+        try { state.QuotaExhaustedEngines.Add(engine.ToString()); await SprintStateManager.SaveAsync(stateFile, state); }
+        finally { reviewStateLock.Release(); }
+    }
+
+    async Task FlowAsync(PendingReview pending)
+    {
+        try
         {
-            state.PendingReviews.Remove(pending);
-            continue;
+            var issue = issues.FirstOrDefault(i => i.Key == pending.Key);
+            if (issue is null) { await RemovePendingAsync(pending); return; }
+
+            var implementer = Enum.Parse<ActorRole>(pending.Implementer);
+            ActorRole? reliefFrom = pending.ReliefFrom is null ? null : Enum.Parse<ActorRole>(pending.ReliefFrom);
+
+            var reviewerName = ImplementationRotation.PickRelief(pending.Implementer, state.QuotaExhaustedEngines);
+            if (reviewerName is null)
+            {
+                Console.WriteLine($"  ○ {pending.Key} — revue croisée reportée (réviseur à quota épuisé) — reste en attente.");
+                return;
+            }
+            var reviewer = Enum.Parse<ActorRole>(reviewerName);
+
+            var outputFile = Path.Combine(artifactsDir, $"output-{pending.Implementer}-{pending.Key}.txt");
+            var implOutput = File.Exists(outputFile)
+                ? await File.ReadAllTextAsync(outputFile, ct)
+                : "(sortie d'implémentation indisponible — revue basée sur l'état réel du dépôt : git log/diff)";
+
+            // ── Revue (sérialisée par moteur réviseur, en parallèle de l'autre moteur) ──
+            ActorRunResult review;
+            await engineLocks[reviewer].WaitAsync(ct);
+            try
+            {
+                if (ct.IsCancellationRequested) return;
+                Console.WriteLine($"  ⟲ {pending.Key} — revue croisée : {reviewer} relit {implementer}");
+                var reviewPrompt = builder.BuildCrossReview(reviewer, issue, implementer, implOutput, reliefFrom);
+                // Directives de Hajar (y compris @adressées au réviseur) : livrées AUSSI
+                // pendant la phase de revue (retour 2026-07-17 : interventions ignorées).
+                await IngestPendingDirectivesAsync(artifactsDir, ct);
+                reviewPrompt = WithDirective(reviewPrompt, DirectivesForActor(reviewer), config.ApproverName);
+                review = await RunDialogueTurnAsync(reviewer, reviewPrompt, artifactsDir, runner, ct);
+            }
+            finally { engineLocks[reviewer].Release(); }
+
+            if (!review.Success)
+            {
+                if (review.IsQuotaExhausted) await MarkQuotaAsync(reviewer);
+                Console.WriteLine($"  ○ {pending.Key} — revue croisée reportée (échec {reviewer}) — reste en attente pour --resume.");
+                return;
+            }
+
+            await File.WriteAllTextAsync(Path.Combine(artifactsDir, $"output-Review-{pending.Key}.txt"), review.Output);
+            EventEmitter.Emit("turn", new { group = $"RevueCroisee-{pending.Key}", speaker = reviewer.ToString(), round = 1, isIntervention = false, content = review.Output.Trim() });
+
+            // ── Correctifs (sérialisés par moteur implémenteur) — SANS attente ──
+            ActorRunResult corrections;
+            await engineLocks[implementer].WaitAsync(ct);
+            try
+            {
+                if (ct.IsCancellationRequested) return;
+                Console.WriteLine($"  ↺ {pending.Key} — correctifs : {implementer} applique la revue de {reviewer}");
+                await IngestPendingDirectivesAsync(artifactsDir, ct);
+                var corrPrompt = builder.BuildReviewCorrections(implementer, issue, review.Output, DirectivesForActor(implementer));
+                corrections = await RunDialogueTurnAsync(implementer, corrPrompt, artifactsDir, runner, ct);
+            }
+            finally { engineLocks[implementer].Release(); }
+
+            if (!corrections.Success)
+            {
+                if (corrections.IsQuotaExhausted) await MarkQuotaAsync(implementer);
+                // On ne publie PAS une revue sans ses correctifs : l'US reste en attente
+                // et --resume rejouera le flux complet (l'ancien code publiait puis
+                // retirait l'US de la file — le « à rejouer » était donc impossible).
+                Console.WriteLine($"  ○ {pending.Key} — correctifs non appliqués (échec {implementer}) — flux conservé pour --resume.");
+                return;
+            }
+
+            await File.WriteAllTextAsync(Path.Combine(artifactsDir, $"output-{implementer}-{pending.Key}-corrections.txt"), corrections.Output);
+            EventEmitter.Emit("turn", new { group = $"RevueCroisee-{pending.Key}", speaker = implementer.ToString(), round = 2, isIntervention = false, content = corrections.Output.Trim() });
+
+            var body = new StringBuilder();
+            body.AppendLine($"## Revue croisée {pending.Key}");
+            body.AppendLine();
+            body.AppendLine($"### Observations ({reviewer})");
+            body.AppendLine();
+            body.AppendLine(review.Output.Trim());
+            body.AppendLine();
+            body.AppendLine($"### Correctifs ({implementer})");
+            body.AppendLine();
+            body.AppendLine(corrections.Output.Trim());
+
+            var pub = await publisher.PublishAsync(pending.Key, new ActorRunResult(implementer, true, body.ToString(), null, 0, false), ct);
+            PrintPublishResult(pending.Key, implementer, pub);
+            await FlushDirectivesForAsync(pending.Key, ct);
+
+            await RemovePendingAsync(pending);
         }
-
-        var implementer = Enum.Parse<ActorRole>(pending.Implementer);
-        var outputFile = Path.Combine(artifactsDir, $"output-{pending.Implementer}-{pending.Key}.txt");
-        var implOutput = File.Exists(outputFile)
-            ? await File.ReadAllTextAsync(outputFile, ct)
-            : "(sortie d'implémentation indisponible — revue basée sur l'état réel du dépôt : git log/diff)";
-        ActorRole? reliefFrom = pending.ReliefFrom is null ? null : Enum.Parse<ActorRole>(pending.ReliefFrom);
-
-        var done = await RunCrossReviewAsync(issue, implementer, implOutput, artifactsDir, state, stateFile, builder, runner, publisher, ct, reliefFrom);
-        if (done && !ct.IsCancellationRequested)
+        catch (OperationCanceledException)
         {
-            state.PendingReviews.Remove(pending);
-            await SprintStateManager.SaveAsync(stateFile, state);
+            // Arrêt demandé : le flux reste en PendingReviews — --resume le rejouera.
         }
     }
+
+    // ── Moteur SANS revue à conduire : il ne reste pas les bras croisés ────────
+    // (retour de Hajar, 2026-07-17 : « il devrait avancer sur le travail interrompu
+    // sans attendre »). Toute directive qui lui est adressée déclenche un TOUR DE
+    // TRAVAIL immédiat, en parallèle des revues de l'autre moteur — le verrou par
+    // moteur garantit qu'il ne télescope jamais ses propres correctifs.
+    var reviewerEngines = state.PendingReviews
+        .Select(p => ImplementationRotation.PickRelief(p.Implementer, state.QuotaExhaustedEngines))
+        .Where(r => r is not null)
+        .Select(r => Enum.Parse<ActorRole>(r!))
+        .ToHashSet();
+    using var pipelineDone = new CancellationTokenSource();
+    using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, pipelineDone.Token);
+
+    async Task IdleDirectiveWorkerAsync(ActorRole engine)
+    {
+        try
+        {
+            while (!linked.Token.IsCancellationRequested)
+            {
+                await IngestPendingDirectivesAsync(artifactsDir, linked.Token);
+                var directive = DirectivesForActor(engine);
+                if (directive is null)
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(5), linked.Token);
+                    continue;
+                }
+
+                await engineLocks[engine].WaitAsync(linked.Token);
+                try
+                {
+                    Console.WriteLine($"  ▶ {engine} — tour de travail immédiat sur directive de {config.ApproverName} (en parallèle des revues)");
+                    var prompt = builder.BuildDirectiveTurn(engine, issues, directive);
+                    var result = await RunDialogueTurnAsync(engine, prompt, artifactsDir, runner, ct);
+                    if (result.IsQuotaExhausted) { await MarkQuotaAsync(engine); return; }
+                }
+                finally { engineLocks[engine].Release(); }
+            }
+        }
+        catch (OperationCanceledException) { } // fin de la phase de revues — fin du worker
+    }
+
+    var idleWorkers = Enum.GetValues<ActorRole>()
+        .Where(r => r is ActorRole.ClaudeImplementation or ActorRole.GptImplementation)
+        .Where(r => !reviewerEngines.Contains(r) && !state.QuotaExhaustedEngines.Contains(r.ToString()))
+        .Select(IdleDirectiveWorkerAsync)
+        .ToList();
+
+    await Task.WhenAll(state.PendingReviews.ToList().Select(FlowAsync));
+    pipelineDone.Cancel();
+    await Task.WhenAll(idleWorkers);
 }
 
 // ─── Implémentation PARALLÈLE : moteur front et moteur back en même temps ──────
@@ -1392,7 +2108,8 @@ async Task RunImplementationParallelAsync(
             EventEmitter.Emit("implementation-us", new { key = issue.Key, engine = engine.ToString(), relief = false, parallel = true });
 
             var prompt = builder.Build(engine, [issue], issue.Key, mode: sessionMode, frameworks: frameworks, memory: agentMemory);
-            prompt = WithDirective(prompt, await ConsumePendingDirectiveAsync(artifactsDir, publisher, ct), config.ApproverName);
+            await IngestPendingDirectivesAsync(artifactsDir, ct);
+            prompt = WithDirective(prompt, DirectivesForActor(engine), config.ApproverName);
             var result = await RunDialogueTurnAsync(engine, prompt, artifactsDir, runner, ct);
 
             if (result.IsQuotaExhausted)
@@ -1488,105 +2205,6 @@ async Task RunImplementationParallelAsync(
         await ProcessPendingReviewsAsync(issues, artifactsDir, state, stateFile, builder, runner, publisher, ct);
 }
 
-// ─── Revue croisée post-dev (lot 7) : observations par l'autre moteur, ─────────
-// correctifs chez l'implémenteur, intervention de Hajar possible entre les deux.
-// Retourne false si la revue n'a pas pu être faite (réviseur indisponible/échec) —
-// elle reste alors en attente persistée pour un prochain passage.
-async Task<bool> RunCrossReviewAsync(
-    SprintLauncher.Jira.JiraIssue issue,
-    ActorRole implementer,
-    string implementationOutput,
-    string artifactsDir,
-    SprintState state,
-    string stateFile,
-    PromptBuilder builder,
-    ActorRunner runner,
-    JiraCommentPublisher publisher,
-    CancellationToken ct,
-    ActorRole? reliefFrom = null)
-{
-    var reviewerName = ImplementationRotation.PickRelief(implementer.ToString(), state.QuotaExhaustedEngines);
-    if (reviewerName is null)
-    {
-        Console.WriteLine($"  ○ {issue.Key} — revue croisée reportée (réviseur à quota épuisé) — reste en attente.");
-        return false;
-    }
-
-    var reviewer = Enum.Parse<ActorRole>(reviewerName);
-    Console.WriteLine($"  ⟲ {issue.Key} — revue croisée : {reviewer} relit {implementer}");
-
-    var reviewPrompt = builder.BuildCrossReview(reviewer, issue, implementer, implementationOutput, reliefFrom);
-    var review = await RunDialogueTurnAsync(reviewer, reviewPrompt, artifactsDir, runner, ct);
-    if (!review.Success)
-    {
-        if (review.IsQuotaExhausted)
-        {
-            state.QuotaExhaustedEngines.Add(reviewer.ToString());
-            await SprintStateManager.SaveAsync(stateFile, state);
-        }
-        Console.WriteLine($"  ○ {issue.Key} — revue croisée reportée (échec {reviewer}), l'implémentation reste valide.");
-        return false;
-    }
-
-    await File.WriteAllTextAsync(Path.Combine(artifactsDir, $"output-Review-{issue.Key}.txt"), review.Output);
-    EventEmitter.Emit("turn", new { group = $"RevueCroisee-{issue.Key}", speaker = reviewer.ToString(), round = 1, isIntervention = false, content = review.Output.Trim() });
-
-    // Checkpoint : Hajar peut orienter les correctifs (ou les sauter)
-    string? directive = null;
-    if (interactive)
-    {
-        EventEmitter.Emit("checkpoint", new { kind = "review", group = $"RevueCroisee-{issue.Key}", round = 1 });
-        Console.Write($"  Revue {issue.Key} reçue — [Entrée=appliquer les correctifs / texte=directive / n=passer] > ");
-        var answer = CleanLine(Console.ReadLine());
-        if (answer?.ToLowerInvariant() is "n" or "non" or "no")
-        {
-            Console.WriteLine("  Correctifs sautés sur décision de Hajar — revue publiée telle quelle.");
-            var reviewOnly = $"## Revue croisée {issue.Key}\n\n### Observations ({reviewer})\n\n{review.Output.Trim()}\n\n_Correctifs non appliqués (décision de Hajar)._";
-            var pubR = await publisher.PublishAsync(issue.Key, new ActorRunResult(implementer, true, reviewOnly, null, 0, false), ct);
-            PrintPublishResult(issue.Key, implementer, pubR);
-            await FlushDirectivesForAsync(issue.Key, ct);
-            return true;
-        }
-        if (!string.IsNullOrEmpty(answer))
-        {
-            directive = answer;
-            // Stockée + injectée ; publiée sur Jira portée par le commentaire de
-            // correction de l'acteur sur cette US (FlushDirectivesForAsync).
-            await AddDirectiveAsync(issue.Key, answer);
-        }
-    }
-
-    var corrPrompt = builder.BuildReviewCorrections(implementer, issue, review.Output, directive);
-    var corrections = await RunDialogueTurnAsync(implementer, corrPrompt, artifactsDir, runner, ct);
-
-    var body = new StringBuilder();
-    body.AppendLine($"## Revue croisée {issue.Key}");
-    body.AppendLine();
-    body.AppendLine($"### Observations ({reviewer})");
-    body.AppendLine();
-    body.AppendLine(review.Output.Trim());
-    if (corrections.Success)
-    {
-        await File.WriteAllTextAsync(Path.Combine(artifactsDir, $"output-{implementer}-{issue.Key}-corrections.txt"), corrections.Output);
-        EventEmitter.Emit("turn", new { group = $"RevueCroisee-{issue.Key}", speaker = implementer.ToString(), round = 2, isIntervention = false, content = corrections.Output.Trim() });
-        body.AppendLine();
-        body.AppendLine($"### Correctifs ({implementer})");
-        body.AppendLine();
-        body.AppendLine(corrections.Output.Trim());
-    }
-    else
-    {
-        body.AppendLine();
-        body.AppendLine($"_Correctifs non appliqués (échec {implementer}) — à rejouer via --resume._");
-    }
-
-    var pub = await publisher.PublishAsync(issue.Key, new ActorRunResult(implementer, true, body.ToString(), null, 0, false), ct);
-    PrintPublishResult(issue.Key, implementer, pub);
-    // La directive donnée au checkpoint de revue part sur Jira portée par ce commentaire.
-    await FlushDirectivesForAsync(issue.Key, ct);
-    return true;
-}
-
 // Le handoff donne au moteur de relève l'état réel : travail partiel + consigne
 // de vérifier le dépôt avant d'agir — il ne repart pas de zéro.
 static ActorPrompt BuildHandoffPrompt(ActorPrompt basePrompt, ActorRole failedEngine, string partialOutput)
@@ -1624,9 +2242,10 @@ async Task RunDialogueGroupAsync(
 {
     var transcriptBase = Path.Combine(artifactsDir, $"dialogue-{group}");
 
-    // Directive déposée à tout moment : consommée aussi à l'entrée d'une discussion
-    // (pas seulement avant les US d'implémentation).
-    approverDirective ??= await ConsumePendingDirectiveAsync(artifactsDir, publisher, ct);
+    // Directives déposées à tout moment : versées au stock à l'entrée du groupe, puis
+    // relues et livrées AU TOUR DE CHAQUE ACTEUR (cf. buildPrompt) — une directive
+    // adressée à un acteur précis doit atteindre CET acteur, pas le premier venu.
+    await IngestPendingDirectivesAsync(artifactsDir, ct);
 
     // Reprise : le transcript persisté est rechargé, la discussion continue au tour suivant.
     var resumedTurns = resume ? await DialogueEngine.TryLoadTranscriptAsync(transcriptBase, ct) : null;
@@ -1644,7 +2263,10 @@ async Task RunDialogueGroupAsync(
         resumedTurns = (resumedTurns ?? []).Append(directiveTurn).ToList();
     }
 
-    var engine = new DialogueEngine(config.MaxDialogueRounds, config.ApproverName, config.InterventionEveryTurn);
+    var engine = new DialogueEngine(config.MaxDialogueRounds, config.ApproverName, config.InterventionEveryTurn,
+        blindFirstRound: config.BlindFirstRound);
+    if (config.BlindFirstRound)
+        Console.WriteLine("  (round 1 à l'aveugle : chaque membre produit son analyse propre avant de lire les autres)");
 
     // Le round/synthèse du tour courant est capturé par buildPrompt pour l'événement "turn"
     // (runTurn ne connaît pas le round ; les deux delegates sont appelés séquentiellement).
@@ -1657,10 +2279,22 @@ async Task RunDialogueGroupAsync(
         {
             currentRound = round;
             currentIsFinal = isFinal;
+            // Round 1 en mode aveugle : le moteur a déjà masqué les pairs du transcript —
+            // le prompt doit le dire à l'acteur, sinon il croit ouvrir la discussion.
+            var isBlind = config.BlindFirstRound && round == 1 && !isFinal && roles.Length > 1;
             var p = builder.BuildDialogueTurn(role, issues, publishKey, transcript, round,
-                config.MaxDialogueRounds, isFinal, sessionMode, frameworks, agentMemory);
+                config.MaxDialogueRounds, isFinal, sessionMode, frameworks, agentMemory, blindRound: isBlind);
             if (qaContext is not null)
                 p = p with { UserPrompt = p.UserPrompt + "\n\n---\n\n## LOGS D'EXÉCUTION RÉELS (QA_COMMAND) + AUDIT DES PREUVES\n" + qaContext };
+
+            // Directives déposées pendant que le groupe parlait : relues à chaque tour et
+            // livrées à leur destinataire. Pas de contexte de synchro en console → pas de
+            // deadlock sur ce GetResult ; l'IO est locale et brève.
+            // (La directive de groupe, elle, est déjà entrée dans le transcript ci-dessus.)
+            IngestPendingDirectivesAsync(artifactsDir, ct).GetAwaiter().GetResult();
+            var turnDirectives = DirectivesForActor(role);
+            if (!string.IsNullOrWhiteSpace(turnDirectives))
+                p = p with { UserPrompt = p.UserPrompt + $"\n\n---\n\n## Directive de {config.ApproverName} — autorité, à respecter\n{turnDirectives}" };
             return p;
         },
         runTurn: async (role, prompt, token) =>
@@ -1784,10 +2418,14 @@ async Task RunDialogueGroupAsync(
 async Task<ActorRunResult> RunDialogueTurnAsync(
     ActorRole role, ActorPrompt prompt, string artifactsDir, ActorRunner runner, CancellationToken ct)
 {
+    await using var actorTurn = await actorTurnCoordinator.BeginAsync(role, ct);
+
     var promptFile = Path.Combine(artifactsDir, $"prompt-{role}.txt");
+    await WaitIfPausedAsync(artifactsDir, ct);
     await File.WriteAllTextAsync(promptFile, $"=== SYSTEM ===\n{prompt.SystemPrompt}\n\n=== USER ===\n{prompt.UserPrompt}");
 
-    EventEmitter.Emit("actor-start", new { role = role.ToString() });
+    var model = ModelForRole(role);
+    EventEmitter.Emit("actor-start", new { role = role.ToString(), engine = EngineForRole(role).ToString().ToLowerInvariant(), model });
     var sw = Stopwatch.StartNew();
     if (Console.IsOutputRedirected) Console.WriteLine($"  > {role}");
     else Console.Write($"  > {role,-28}");
@@ -1795,13 +2433,14 @@ async Task<ActorRunResult> RunDialogueTurnAsync(
     using var timerCts = new CancellationTokenSource();
     var timerTask = StartTimerTask(role.ToString(), sw, timerCts.Token);
 
-    var runResult = await runner.RunAsync(prompt, ct);
+    var runResult = await runner.RunAsync(prompt, model, ct);
 
     timerCts.Cancel();
     await timerTask;
     sw.Stop();
 
     PrintActorResult(role.ToString(), sw, runResult);
+    ApplyModelRecommendationsFromOutput(role, runResult.Output);
 
     // Dernier tour du rôle = fichier de sortie affiché par l'UI (écrasé à chaque tour).
     var outputFile = Path.Combine(artifactsDir, $"output-{role}.txt");
@@ -1823,6 +2462,7 @@ async Task<ActorRunResult> RunDialogueTurnAsync(
             SemiManualPromptPath: null));
     }
 
+    await actorTurn.CompleteAsync(CancellationToken.None);
     return runResult;
 }
 
@@ -1846,6 +2486,21 @@ async Task<DialogueIntervention> RequestInterventionAsync(ActorGroup group, int 
 
     if (intervention.Kind == InterventionKind.Message)
     {
+        // Pièces jointes (SERZENIA-144 Lot 3) : le texte de checkpoint peut porter le
+        // même marqueur que les directives déposées par fichier. Copiées tout de
+        // suite (cible = le groupe entier, pas un acteur précis) pour que le tour
+        // suivant du transcript référence des chemins réels, pas le marqueur brut.
+        var (cleanText, attachSourcePaths) = DirectiveAttachments.Extract(intervention.Text!);
+        var finalText = cleanText;
+        if (attachSourcePaths.Count > 0)
+        {
+            var attachDir = Path.Combine(artifactsDir, "attachments", group.ToString());
+            var copied = DirectiveAttachments.CopyToRunFolder(attachSourcePaths, attachDir);
+            finalText = (cleanText.Length == 0 ? DirectiveAttachments.EmptyTextPlaceholder : cleanText)
+                + DirectiveAttachments.FormatForPrompt(copied);
+        }
+        intervention = intervention with { Text = finalText };
+
         Console.WriteLine($"  ⚑ Intervention de {config.ApproverName} injectée dans la discussion.");
         EventEmitter.Emit("turn", new { group = group.ToString(), speaker = config.ApproverName, round, isIntervention = true, content = intervention.Text });
         // Stockée + injectée aux acteurs ; publiée sur Jira portée par le commentaire

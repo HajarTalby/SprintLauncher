@@ -64,14 +64,32 @@ public sealed class DialogueEngine
     private readonly int _maxRounds;
     private readonly string _approverLabel;
     private readonly bool _interventionEveryTurn;
+    private readonly bool _blindFirstRound;
 
-    public DialogueEngine(int maxRounds, string approverName, bool interventionEveryTurn = false)
+    public DialogueEngine(int maxRounds, string approverName, bool interventionEveryTurn = false,
+        bool blindFirstRound = false)
     {
         _maxRounds = maxRounds > 0 ? maxRounds : 3;
         // Le nom seul, sans titre ni qualificatif (demande explicite de Hajar).
         _approverLabel = approverName;
         // true : checkpoint après CHAQUE prise de parole (pas seulement entre rounds).
         _interventionEveryTurn = interventionEveryTurn;
+        // true : au round 1, chaque membre travaille SANS voir ses pairs — il produit une
+        // analyse propre. Les tours suivants voient tout et croisent (retour de Hajar,
+        // 2026-07-16 : les acteurs GPT se contentaient de valider la lecture de Claude
+        // au lieu de produire leur propre analyse). Coût identique : mêmes tours, réordonnés.
+        _blindFirstRound = blindFirstRound;
+    }
+
+    /// <summary>
+    /// Transcript visible par l'acteur qui parle. Au round 1 en mode aveugle, les
+    /// contributions des pairs sont masquées — mais JAMAIS les interventions de Hajar,
+    /// qui ont autorité et doivent porter dès le premier tour.
+    /// </summary>
+    private IReadOnlyList<DialogueTurn> VisibleTranscript(IReadOnlyList<DialogueTurn> turns, int round, bool isFinal)
+    {
+        if (!_blindFirstRound || round > 1 || isFinal) return turns;
+        return [.. turns.Where(t => t.IsIntervention)];
     }
 
     public static bool HasConvergenceMarker(string content) =>
@@ -109,6 +127,28 @@ public sealed class DialogueEngine
         bool concludeRequested = false;
         int rescuesUsed = 0;
 
+        // Membres à court de quota : ÉCARTÉS de la rotation, les autres prennent la relève
+        // (retour de Hajar, 2026-07-16 : le membre Claude du comité de pilotage est sorti en
+        // erreur de quota et le membre GPT n'a jamais pris la relève — la discussion mourait).
+        // La relève ne vaut que pour l'épuisement de quota, pas pour un vrai échec d'acteur.
+        var exhausted = new HashSet<ActorRole>();
+        List<ActorRole> Live() => participants.Where(p => !exhausted.Contains(p)).ToList();
+
+        // Écarte un membre épuisé et laisse une trace dans le transcript (visible SL/Jira,
+        // et conservée pour la reprise) : on voit QUI a manqué et que les autres ont pris le relais.
+        void MarkExhausted(ActorRole role)
+        {
+            exhausted.Add(role);
+            var others = Live();
+            var relief = others.Count > 0
+                ? $"Relève assurée par : {string.Join(", ", others)}."
+                : "Aucun membre disponible pour la relève.";
+            turns.Add(new DialogueTurn("Sprint Launcher (quota)",
+                $"{role} à court de quota — écarté de la discussion. {relief}",
+                DateTimeOffset.UtcNow, turns.Count(t => !t.IsIntervention) / Math.Max(1, participants.Count) + 1,
+                IsIntervention: true));
+        }
+
         // Refuse une conclusion incomplète : injecte la raison comme directive et
         // prolonge la discussion d'un tour de rattrapage. Budget épuisé → on accepte
         // avec le signalement dans le transcript (jamais de boucle infinie).
@@ -129,10 +169,14 @@ public sealed class DialogueEngine
             if (ct.IsCancellationRequested)
                 return new DialogueOutcome(turns, DialogueEndReason.Stopped, null);
 
+            var live = Live();
+            if (live.Count == 0) // tous les membres épuisés — la discussion ne peut plus avancer
+                return new DialogueOutcome(turns, DialogueEndReason.ActorFailed, null);
+
             int actorTurns = turns.Count(t => !t.IsIntervention);
-            int round = actorTurns / participants.Count + 1;
+            int round = actorTurns / live.Count + 1;
             bool atCheckpoint = actorTurns > 0 &&
-                (_interventionEveryTurn || actorTurns % participants.Count == 0);
+                (_interventionEveryTurn || actorTurns % live.Count == 0);
 
             // ── Checkpoint intervention (entre rounds, ou à chaque tour) ──────
             // Boucle : l'approbatrice peut enchaîner PLUSIEURS interventions au
@@ -160,14 +204,24 @@ public sealed class DialogueEngine
             // ── Plafond atteint ou clôture demandée → tour de synthèse forcé ──
             if (concludeRequested || round > _maxRounds)
             {
-                var synthesist = participants[^1];
+                // La synthèse finale voit TOUJOURS l'intégralité du transcript : c'est
+                // elle qui est affichée dans le SL et postée sur Jira (exigence de Hajar).
+                // Le synthétiseur est le dernier membre VIVANT (relève si le titulaire est épuisé).
+                var synthesist = live[^1];
                 var synthPrompt = buildPrompt(synthesist, turns, Math.Min(round, _maxRounds), true);
                 var synthResult = await runTurn(synthesist, synthPrompt, ct);
                 if (!synthResult.Success)
                 {
-                    return new DialogueOutcome(turns,
-                        ct.IsCancellationRequested ? DialogueEndReason.Stopped : DialogueEndReason.ActorFailed,
-                        synthesist);
+                    if (ct.IsCancellationRequested)
+                        return new DialogueOutcome(turns, DialogueEndReason.Stopped, synthesist);
+                    // Épuisé sur la synthèse : on l'écarte et un autre membre vivant reprend.
+                    if (synthResult.IsQuotaExhausted && Live().Count > 1)
+                    {
+                        MarkExhausted(synthesist);
+                        await PersistAsync(turns, transcriptBasePath, ct);
+                        continue;
+                    }
+                    return new DialogueOutcome(turns, DialogueEndReason.ActorFailed, synthesist);
                 }
                 turns.Add(new DialogueTurn(synthesist.ToString(), synthResult.Output.Trim(),
                     DateTimeOffset.UtcNow, Math.Min(round, _maxRounds), IsIntervention: false));
@@ -180,15 +234,29 @@ public sealed class DialogueEngine
             }
 
             // ── Tour normal ────────────────────────────────────────────────────
-            var role = participants[actorTurns % participants.Count];
-            var prompt = buildPrompt(role, turns, round, false);
+            var role = live[actorTurns % live.Count];
+            var prompt = buildPrompt(role, VisibleTranscript(turns, round, isFinal: false), round, false);
             var result = await runTurn(role, prompt, ct);
 
             if (!result.Success)
             {
-                return new DialogueOutcome(turns,
-                    ct.IsCancellationRequested ? DialogueEndReason.Stopped : DialogueEndReason.ActorFailed,
-                    role);
+                if (ct.IsCancellationRequested)
+                    return new DialogueOutcome(turns, DialogueEndReason.Stopped, role);
+
+                // Relève sur quota : on écarte le membre épuisé, les autres poursuivent.
+                // Un run ne meurt plus parce qu'un seul moteur est à court de crédits.
+                if (result.IsQuotaExhausted && participants.Count > 1)
+                {
+                    MarkExhausted(role);
+                    await PersistAsync(turns, transcriptBasePath, ct);
+                    if (Live().Count == 0)
+                        return new DialogueOutcome(turns, DialogueEndReason.ActorFailed, role);
+                    // Dernier survivant : il porte directement la synthèse plutôt que de
+                    // tourner en solo sur plusieurs rounds.
+                    if (Live().Count == 1) concludeRequested = true;
+                    continue;
+                }
+                return new DialogueOutcome(turns, DialogueEndReason.ActorFailed, role);
             }
 
             turns.Add(new DialogueTurn(role.ToString(), result.Output.Trim(),

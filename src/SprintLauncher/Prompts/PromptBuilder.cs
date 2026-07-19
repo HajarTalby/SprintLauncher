@@ -62,6 +62,19 @@ public sealed class PromptBuilder
         return string.Join("\n---\n", parts);
     }
 
+    // Mandat d'audit du comité de pilotage (retour de Hajar, 2026-07-16) : le pilotage
+    // ne se contente JAMAIS de relire le verdict QA — il audite le sprint sur toutes
+    // ses sources. Injecté dans les prompts système des deux membres du comité.
+    private const string PilotageAuditMandate =
+        "TON AUDIT COUVRE OBLIGATOIREMENT, pour CHAQUE US du sprint : " +
+        "(1) le verdict et les sorties QA ; " +
+        "(2) les COMMENTAIRES JIRA de l'US — restitutions, décisions, blocages, réserves ; " +
+        "(3) les RETOURS DES ACTEURS DE DEV — ce qu'ils déclarent livré, leurs réserves, leurs écarts assumés ; " +
+        "(4) l'ÉCART entre le livré et la DESCRIPTION Jira de l'US — chaque critère d'acceptation, chaque section du périmètre ; " +
+        "(5) l'ÉCART avec l'US DE PILOTAGE du sprint — décisions actées, ordre d'exécution, critères de sortie, principes (providers réels, règle coût/qualité) ; " +
+        "(6) la CONFORMITÉ aux frameworks d'exécution et de validation fournis en référence — y compris les règles de restitution et d'écriture Jira (bon ticket, bon format, artefacts exigés). " +
+        "Un point non vérifiable faute d'information est un CONSTAT à lister, pas un point à passer sous silence. ";
+
     private const string FormatDirective =
         "\n\nFORMAT DE RÉPONSE OBLIGATOIRE : " +
         "Sois concis et structuré. " +
@@ -69,6 +82,13 @@ public sealed class PromptBuilder
         "Évite les paragraphes de prose longue. " +
         "5 à 10 points maximum par section. " +
         "Chaque point tient en 1 à 2 lignes.";
+
+    private const string ModelChoiceDirective =
+        "\n\nCHOIX DU MODÈLE PAR COMPLEXITÉ : évalue la complexité du traitement suivant " +
+        "(simple / moyen / complexe / critique) et propose le modèle LLM à utiliser pour " +
+        "le prochain développement. Termine ta sortie par une ligne parsable : " +
+        "'Modèle dev recommandé : <claude|codex> <identifiant-du-modèle>'. " +
+        "Si aucun surclassement n'est utile, recommande le modèle par défaut sonnet-5.";
 
     private string GetSystemPrompt(ActorRole role, string issueKey, SessionMode mode = SessionMode.Execution)
         => GetBaseSystemPrompt(role, issueKey, mode) + FormatDirective;
@@ -122,9 +142,12 @@ public sealed class PromptBuilder
 
         ActorRole.AnalysisCodex =>
             $"Tu es le second membre de la session d'analyse {_project} (perspective Codex). " +
-            "Tu reçois l'analyse du premier membre (claude-code) et tu la challenges : " +
-            "valide ou conteste les choix techniques, complète les manques, identifie les risques omis. " +
-            "Tu n'implémentes RIEN — tu analyses. Ne répète pas ce qui est déjà dit. " +
+            "Tu es un analyste À PART ENTIÈRE, pas un relecteur : tu produis TA propre analyse " +
+            "(actions techniques, fichiers impactés, dépendances, permissions nécessaires, réutilisation, " +
+            "points flous), puis tu la CROISES avec celle de l'autre membre quand elle t'est présentée — " +
+            "accords, désaccords argumentés, et différentiel dans les deux sens. " +
+            "Valider en bloc l'analyse de l'autre sans apport propre n'est PAS une contribution. " +
+            "Tu n'implémentes RIEN — tu analyses. " +
             "Si un désaccord de fond persiste, signale-le explicitement par un marqueur [LITIGE: <sujet>]. " +
             $"Tu te signes [agent: codex | role: analyse | us: {issueKey}].",
 
@@ -146,15 +169,18 @@ public sealed class PromptBuilder
 
         ActorRole.CommitteePilotageClaudeChat =>
             $"Tu es le premier membre du comité de pilotage {_project} (perspective Claude). " +
-            "Le comité reçoit un contexte sprint et produit une délibération collective séquentielle. " +
-            "Tu fournis la première contribution : analyse, position et recommandation structurée. " +
-            "Le membre suivant lira ta contribution et construira dessus. 1 seul commentaire Jira en sortie finale. " +
+            "Le comité PILOTE le sprint — son audit est BEAUCOUP plus large que la validation QA " +
+            "(retour de Hajar, 2026-07-16 : le pilotage se limitait aux sorties QA). " +
+            PilotageAuditMandate +
+            "Tu fournis la première contribution : audit complet, position et recommandation structurée. " +
             $"Tu te signes [agent: claude-chat | role: comite-pilotage | us: {issueKey}].",
 
         ActorRole.CommitteePilotageGptChat =>
             $"Tu es le second membre du comité de pilotage {_project} (perspective GPT). " +
-            "Tu reçois la contribution du premier membre (claude-chat) et tu construis dessus. " +
-            "Complète, nuance ou confirme — ne répète pas ce qui a déjà été dit. " +
+            "Tu es un auditeur À PART ENTIÈRE : tu produis TON propre audit (même périmètre que " +
+            "le premier membre), puis tu croises avec sa contribution — accords, désaccords " +
+            "argumentés, différentiel. Valider sa lecture sans audit propre n'est PAS une contribution. " +
+            PilotageAuditMandate +
             "Ta contribution clôt la délibération du comité de pilotage. " +
             $"Tu te signes [agent: gpt-chat | role: comite-pilotage | us: {issueKey}].",
 
@@ -193,10 +219,25 @@ public sealed class PromptBuilder
 
         ActorRole.GptQaVerdict =>
             $"Tu es le second membre du comité de verdict QA {_project} (perspective gpt-chat). " +
-            "Tu reçois les logs de tests, la DoD, et la contribution du premier membre (claude-chat). " +
-            "Construis dessus pour produire le verdict collectif final : PASS / PASS-avec-réserves / FAIL. " +
+            "Tu formes TON PROPRE verdict à partir des logs de tests, de la DoD et des preuves réelles — " +
+            "jamais en te reposant sur le verdict de l'autre membre. Quand sa contribution t'est présentée, " +
+            "tu la croises avec la tienne : accords, désaccords argumentés, différentiel (ce qu'il a manqué, " +
+            "ce que tu avais manqué). Un écart vu par un seul des deux membres reste un écart. " +
+            "Tu portes ensuite le verdict collectif final : PASS / PASS-avec-réserves / FAIL. " +
             "C'est le seul verdict QA du sprint — sois exhaustif et conclusif. " +
             $"Tu te signes [agent: gpt-chat | role: qa-verdict | us: {issueKey}].",
+
+        ActorRole.RetrospectiveClaude =>
+            $"Tu es l'agent de rétrospective Claude pour le projet {_project}, en fin de sprint. " +
+            "Ton rôle : un post-mortem honnête de TON travail et de ce que tu as observé pendant ce sprint " +
+            "— pas une nouvelle analyse des US. Tu écris une trace destinée à être relue au sprint suivant. " +
+            $"Tu te signes [agent: claude-code | role: retrospective | us: {issueKey}].",
+
+        ActorRole.RetrospectiveGpt =>
+            $"Tu es l'agent de rétrospective GPT pour le projet {_project}, en fin de sprint. " +
+            "Ton rôle : un post-mortem honnête de TON travail et de ce que tu as observé pendant ce sprint " +
+            "— pas une nouvelle analyse des US. Tu écris une trace destinée à être relue au sprint suivant. " +
+            $"Tu te signes [agent: codex | role: retrospective | us: {issueKey}].",
 
         _ => throw new ArgumentOutOfRangeException(nameof(role), role, null),
     };
@@ -216,7 +257,8 @@ public sealed class PromptBuilder
         bool isFinalSynthesis,
         SessionMode mode = SessionMode.Execution,
         FrameworkContext? frameworks = null,
-        AgentMemoryContext? memory = null)
+        AgentMemoryContext? memory = null,
+        bool blindRound = false)
     {
         var dialogueDirective =
             $"\n\nDISCUSSION MULTI-TOURS : tu participes à une vraie discussion avec les autres membres " +
@@ -301,17 +343,55 @@ public sealed class PromptBuilder
         string instruction;
         if (isFinalSynthesis)
         {
+            // Ce tour est le SEUL livrable visible : c'est lui qui s'affiche dans le Sprint
+            // Launcher et part sur Jira en un commentaire unique (exigence de Hajar).
             instruction =
-                $"La discussion doit se conclure maintenant (plafond de {maxRounds} tours atteint ou clôture demandée par {_approver}). " +
-                "Produis la SYNTHÈSE FINALE de la délibération : décision commune, points d'accord, désaccords résiduels " +
-                $"explicitement listés s'il en reste, et prochaine étape concrète pour {_approver}. " +
+                $"SYNTHÈSE FINALE — la discussion se conclut maintenant (plafond de {maxRounds} tours atteint " +
+                $"ou clôture demandée par {_approver}). Tu portes la synthèse de TOUTE la délibération. " +
+                "C'est la SEULE sortie qui sera affichée et publiée sur Jira : elle doit se suffire à elle-même, " +
+                "sans que personne ait besoin de relire le transcript. " +
+                "Elle DOIT contenir : la décision commune ; les points d'accord ; les désaccords résiduels " +
+                "explicitement listés s'il en reste (ne les gomme pas pour faire propre) ; ce que chaque membre " +
+                "a apporté en propre (le différentiel des analyses indépendantes) ; " +
+                $"et la prochaine étape concrète pour {_approver}. " +
                 $"Termine impérativement par le marqueur {DialogueEngine.FinalDecisionMarker}.";
+        }
+        else if (blindRound)
+        {
+            // Tour à l'aveugle (retour de Hajar, 2026-07-16) : chaque membre produit SA
+            // propre analyse sans voir celle des autres. Sans ça, le second membre se
+            // contentait de valider la lecture du premier au lieu d'analyser.
+            instruction =
+                $"ANALYSE PROPRE — round 1/{maxRounds}, À L'AVEUGLE. Tu ne vois PAS la contribution des autres " +
+                "membres : c'est volontaire. Produis TA propre analyse, complète et autonome, à partir du " +
+                "contexte fourni uniquement (US, commentaires Jira, frameworks, décisions actées). " +
+                "Ne dis jamais « je rejoins l'analyse précédente » ni « rien à ajouter » : il n'y a rien à rejoindre à ce stade. " +
+                "Va au bout de ton raisonnement — analyse, points à trancher, risques, recommandation structurée. " +
+                "Au tour suivant tu découvriras l'analyse des autres membres et vous les croiserez. " +
+                $"N'émets AUCUN marqueur de convergence ({DialogueEngine.ConsensusMarker} / {DialogueEngine.FinalDecisionMarker}) " +
+                "à ce tour : on ne converge pas avant de s'être lus.";
         }
         else if (transcript.Count == 0)
         {
             instruction =
                 $"Ouvre la discussion (round 1/{maxRounds}). Pose ta position initiale : analyse, points à trancher, " +
                 "recommandation structurée. Les autres membres vont répondre et construire dessus.";
+        }
+        else if (round == 2)
+        {
+            // Premier tour où les analyses à l'aveugle se rencontrent : le croisement est
+            // le livrable, pas une politesse. Le différentiel est ce que Hajar veut voir.
+            instruction =
+                $"CROISEMENT — round {round}/{maxRounds}. Tu découvres maintenant l'analyse des autres membres, " +
+                "produite indépendamment de la tienne. Croise-la avec la tienne et structure ta réponse ainsi :\n" +
+                "1. '## ACCORDS' — les points où vos analyses convergent (cite-les, ne les réécris pas).\n" +
+                "2. '## DÉSACCORDS' — les points où vous divergez : dis lequel tu tiens, et POURQUOI (argument, pas autorité). " +
+                $"Si un désaccord de fond ne peut pas être résolu entre vous, marque-le [LITIGE: <sujet>].\n" +
+                "3. '## DIFFÉRENTIEL' — ce que TON analyse apporte et qui est ABSENT de la leur, et inversement " +
+                "ce qu'ils ont vu que tu avais manqué (reconnais-le explicitement).\n" +
+                $"Les interventions de {_approver} ont autorité et tranchent. " +
+                "Interdit : valider en bloc l'analyse de l'autre sans différentiel — s'il n'y a réellement aucun " +
+                "écart, dis-le et prouve-le en citant les points couverts de part et d'autre.";
         }
         else
         {
@@ -400,6 +480,40 @@ public sealed class PromptBuilder
         return new ActorPrompt(engine, systemPrompt, sb.ToString());
     }
 
+    /// <summary>
+    /// Tour de travail déclenché par une directive de Hajar adressée à un moteur
+    /// SANS revue à conduire (retour 2026-07-17 : « il devrait avancer sur le travail
+    /// interrompu sans attendre »). Mission = la directive, rien d'autre — surtout pas
+    /// le prompt d'implémentation complet, qui referait le sprint.
+    /// </summary>
+    public ActorPrompt BuildDirectiveTurn(ActorRole engine, IReadOnlyList<JiraIssue> issues, string directive)
+    {
+        var systemPrompt = GetSystemPrompt(engine, issues.Count > 0 ? issues[0].Key : "sprint");
+
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine($"DIRECTIVE DE {_approver.ToUpperInvariant()} — À EXÉCUTER MAINTENANT. " +
+            "Tu es sollicité en parallèle de la phase de revues croisées : exécute cette directive, rien d'autre. " +
+            "AVANT d'agir : vérifie l'état réel du dépôt (git status, git log -10) — ne réimplémente RIEN qui existe, " +
+            "ne touche pas aux US en cours de revue par l'autre moteur au-delà de ce que la directive demande. " +
+            "Si la directive vise une étape ultérieure (ex. « à la fin des revues »), prépare ce qui peut l'être " +
+            "et dis-le explicitement — n'exécute pas prématurément. " +
+            "Commence ta sortie par « ⚑ Intervention de Hajar prise en compte : » suivi de ce que tu fais. " +
+            "Commit préfixé de la clé US concernée si tu modifies du code.");
+        sb.AppendLine();
+        sb.AppendLine($"## Directive de {_approver}");
+        sb.AppendLine(directive);
+        sb.AppendLine();
+        sb.AppendLine("## Périmètre du sprint (référence)");
+        foreach (var i in issues) sb.AppendLine($"- [{i.Key}] {i.Summary}");
+        if (!string.IsNullOrWhiteSpace(DecisionsRegistry))
+        {
+            sb.AppendLine();
+            sb.AppendLine($"## DÉCISIONS DÉJÀ ACTÉES PAR {_approver.ToUpperInvariant()}");
+            sb.AppendLine(DecisionsRegistry);
+        }
+        return new ActorPrompt(engine, systemPrompt, sb.ToString());
+    }
+
     /// <summary>Retour de la revue croisée vers l'implémenteur : il applique ou écarte, en justifiant.</summary>
     public ActorPrompt BuildReviewCorrections(
         ActorRole implementer, JiraIssue issue, string reviewObservations, string? approverDirective)
@@ -449,7 +563,12 @@ public sealed class PromptBuilder
                 "(PowerShell System.Drawing CopyFromScreen), résultats de tests dans test-results/, logs dans logs/. " +
                 "VIDÉO : si la variable d'environnement FFMPEG est définie, enregistre le scénario en vidéo " +
                 "(`& $env:FFMPEG -f gdigrab -framerate 10 -t <durée> -i desktop videos/<scenario>.mp4`) pendant que tu le joues. " +
-                "Une US sans preuves n'est PAS terminée.",
+                "Une US sans preuves n'est PAS terminée. " +
+                "DÉCLARATION D'INSTALLATIONS (traçabilité, sans blocage — le GO du run les autorise) : toute " +
+                "installation ou modification d'environnement (winget, npm/dotnet tool install, paquet, pilote, " +
+                "service, variable machine) doit apparaître dans ta restitution sous une section '## INSTALLATIONS' " +
+                "listant quoi, pourquoi, et comment le désinstaller. Aucune installation ? Ne mets pas la section. " +
+                "Une installation non déclarée est un écart de process.",
 
             ActorRole.AnalysisCcode =>
                 "Voici les US du sprint à analyser avant implémentation. " +
@@ -504,11 +623,22 @@ public sealed class PromptBuilder
                 "Voici les logs d'exécution des tests du sprint et la Definition of Done. " +
                 "La contribution du premier membre QA suit — produis le verdict collectif final.",
 
+            ActorRole.RetrospectiveClaude or ActorRole.RetrospectiveGpt =>
+                "Le sprint se termine. Fais ta RÉTROSPECTIVE — un post-mortem honnête, pas une nouvelle " +
+                "analyse des US. Structure ta réponse en 3 sections obligatoires :\n" +
+                "## Ce qui a bien marché (à garder)\n" +
+                "## Ce qui a mal marché\n" +
+                "## Plan d'action\n" +
+                "Chaque section : listes à puces concrètes et actionnables, pas de généralités. " +
+                "Le plan d'action doit proposer des correctifs vérifiables au prochain sprint, pas des vœux pieux.",
+
             _ => throw new ArgumentOutOfRangeException(nameof(role), role, null),
         };
 
         var sb = new System.Text.StringBuilder();
         sb.AppendLine(instruction);
+        if (role.GetGroup() is ActorGroup.CommitteePilotage or ActorGroup.Analysis)
+            sb.AppendLine(ModelChoiceDirective);
 
         if (previousContributions is not null)
         {

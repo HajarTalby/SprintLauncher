@@ -28,11 +28,18 @@ public sealed class SprintState
     public List<PendingReview> PendingReviews { get; set; } = [];
     // Cycles de remédiation déjà joués (bornés par MAX_REMEDIATION_CYCLES).
     public int RemediationCycles { get; set; }
+    // Pause douce demandée : le run termine l'acteur en cours, puis attend une reprise
+    // avant de lancer le tour suivant. Persisté pour survivre à --resume.
+    public bool PauseRequested { get; set; }
+    public DateTimeOffset? PauseRequestedAt { get; set; }
     // Directives données par Hajar mais PAS encore publiées sur Jira : stockées
     // (onglet DÉCISIONS + registre injecté aux acteurs) et publiées uniquement quand
     // un acteur commente sur l'US liée au sujet (choix de Hajar, 2026-07). Persistées
     // pour survivre aux interruptions/--resume.
     public List<PendingDirective> PendingDirectives { get; set; } = [];
+    // Ordres de phases demandés par Hajar (rejouer/insérer/sauter) : appliqués
+    // uniquement aux frontières de phases, jamais pendant le tour d'un acteur.
+    public List<PendingPhaseOrder> PendingPhaseOrders { get; set; } = [];
     public DateTimeOffset? LastCompletedAt { get; set; }
 }
 
@@ -49,6 +56,23 @@ public sealed class PendingDirective
     public string Text { get; set; } = "";
     public DateTimeOffset CreatedAt { get; set; }
     public bool Published { get; set; }
+
+    // Adressage (2026-07-16) : nom d'ActorRole ou d'ActorGroup ; null = tous les acteurs.
+    // Une directive adressée attend SON destinataire au lieu d'être appliquée au
+    // premier acteur venu.
+    public string? TargetActor { get; set; }
+    public string? TargetGroup { get; set; }
+
+    // Injectée au moins une fois dans le prompt de sa cible. Distinct de Published,
+    // qui concerne l'écriture Jira : une directive peut être appliquée sans être
+    // encore publiée, et le run peut mourir entre les deux.
+    public bool Delivered { get; set; }
+    public string? Intent { get; set; }
+
+    // Pièces jointes (SERZENIA-144 Lot 3) : chemins SOURCES (poste de Hajar), pas
+    // encore copiés. La copie vers le dossier du run se fait à la livraison
+    // (DirectivesForActor), une fois la cible réelle connue.
+    public List<string> AttachmentSourcePaths { get; set; } = [];
 }
 
 public static class SprintStateManager

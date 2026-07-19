@@ -104,6 +104,9 @@
                   ToolTip="Ouvre le rapport HTML du run"/>
           <Button x:Name="BtnOpenArtifacts" Style="{StaticResource BtnSoft}" Content="Artefacts" FontSize="11"
                   IsEnabled="False" Click="BtnOpenArtifacts_Click" Margin="0,0,10,0"/>
+          <Button x:Name="BtnPause" Style="{StaticResource BtnSoft}" Content="Pause"
+                  IsEnabled="False" Click="BtnPause_Click" Margin="0,0,6,0"
+                  ToolTip="Pause douce : l'acteur en cours termine, puis le run attend la reprise."/>
           <Button x:Name="BtnRun" Style="{StaticResource Btn}" Content="▶  Lancer" Click="BtnRun_Click" MinWidth="90"/>
         </StackPanel>
 
@@ -340,6 +343,26 @@
           </Grid>
         </TabItem>
 
+        <!-- Onglet 6 : Rétrospective — trace persistante append-only (SERZENIA-144 lot 4) -->
+        <TabItem Header="RÉTROSPECTIVE">
+          <Grid Background="#11111b">
+            <Grid.RowDefinitions>
+              <RowDefinition Height="Auto"/>
+              <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+            <Border Grid.Row="0" Padding="12,8" BorderBrush="#313244" BorderThickness="0,0,0,1">
+              <TextBlock x:Name="TxtRetroHeader"
+                         Text="Rétrospective — chaque acteur y appende son bilan (bien passé / mal passé / plan d'action) en fin de sprint"
+                         FontSize="11" FontWeight="SemiBold" Foreground="#f9e2af"/>
+            </Border>
+            <FlowDocumentScrollViewer Grid.Row="1" x:Name="RetroViewer"
+                                      Background="Transparent"
+                                      VerticalScrollBarVisibility="Auto"
+                                      IsToolBarVisible="False"
+                                      Padding="8,4"/>
+          </Grid>
+        </TabItem>
+
       </TabControl>
     </Grid>
 
@@ -374,21 +397,44 @@
 
         <!-- Intervention libre dans la discussion (checkpoints entre rounds) -->
         <Grid Grid.Row="1" x:Name="PnlInterventionInput" Margin="0,12,0,0" Visibility="Collapsed">
+          <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+          </Grid.RowDefinitions>
           <Grid.ColumnDefinitions>
             <ColumnDefinition Width="*"/>
             <ColumnDefinition Width="10"/>
             <ColumnDefinition Width="Auto"/>
             <ColumnDefinition Width="10"/>
             <ColumnDefinition Width="Auto"/>
+            <ColumnDefinition Width="10"/>
+            <ColumnDefinition Width="Auto"/>
+            <ColumnDefinition Width="10"/>
+            <ColumnDefinition Width="Auto"/>
           </Grid.ColumnDefinitions>
-          <TextBox Grid.Column="0" x:Name="TxtIntervention" Style="{StaticResource DarkInput}"
+          <TextBox Grid.Row="0" Grid.Column="0" x:Name="TxtIntervention" Style="{StaticResource DarkInput}"
                    MinHeight="34" FontSize="13" KeyDown="TxtIntervention_KeyDown"
-                   ToolTip="Ton message est injecté dans la discussion avec autorité — les acteurs suivants le lisent et s'y conforment. Entrée pour envoyer."/>
-          <Button Grid.Column="2" x:Name="BtnSendIntervention" Style="{StaticResource Btn}"
+                   ToolTip="Ton message est injecté dans la discussion avec autorité — les acteurs suivants le lisent et s'y conforment. Entrée pour envoyer.&#10;&#10;ADRESSAGE : commence par @ pour viser un acteur précis — il recevra le message dès qu'il prendra la parole.&#10;  @codex / @ccode — les moteurs d'implémentation&#10;  @qa / @pilotage / @analyse / @arbitrage / @retro — un groupe entier&#10;  @GptImplementation, @ClaudeQaVerdict, @retro-claude, @retro-gpt… — un rôle exact&#10;Sans @, le message part au prochain acteur qui parle."/>
+          <Button Grid.Row="0" Grid.Column="2" x:Name="BtnAttachFiles" Style="{StaticResource BtnSoft}"
+                  Content="📎 Joindre" Click="BtnAttachFiles_Click"
+                  ToolTip="Joindre une ou plusieurs pièces jointes (images, documents, vidéos…) à cette intervention. Les fichiers sont copiés dans le dossier du run de l'acteur ciblé et référencés par leur chemin dans son prompt — pas d'OCR."/>
+          <Button Grid.Row="0" Grid.Column="4" x:Name="BtnSendIntervention" Style="{StaticResource Btn}"
                   Content="⚑  Intervenir" Click="BtnSendIntervention_Click"/>
-          <Button Grid.Column="4" x:Name="BtnConclude" Style="{StaticResource BtnSoft}"
+          <Button Grid.Row="0" Grid.Column="6" x:Name="BtnEditLast" Style="{StaticResource BtnSoft}"
+                  Content="✎ Corriger" Click="BtnEditLast_Click" IsEnabled="False"
+                  ToolTip="Recharge ton dernier envoi pour le corriger. À l'envoi de la version corrigée, les directives non encore remises sont annulées et remplacées ; un message déjà lu en live est remplacé par la nouvelle consigne (qui fait autorité)."/>
+          <Button Grid.Row="0" Grid.Column="8" x:Name="BtnConclude" Style="{StaticResource BtnSoft}"
                   Content="Conclure maintenant" Click="BtnConclude_Click"
                   ToolTip="Force le tour de synthèse finale sans attendre les rounds restants"/>
+
+          <DockPanel Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="9" Margin="0,6,0,0"
+                     x:Name="PnlAttachmentsSummary" Visibility="Collapsed">
+            <Button DockPanel.Dock="Right" x:Name="BtnClearAttachments" Style="{StaticResource BtnSoft}"
+                    Content="✕" Padding="8,2" Click="BtnClearAttachments_Click"
+                    ToolTip="Retirer les pièces jointes en attente"/>
+            <TextBlock x:Name="TxtAttachmentsSummary" Foreground="#a6adc8" FontSize="11"
+                       VerticalAlignment="Center" TextWrapping="Wrap" Margin="0,0,10,0"/>
+          </DockPanel>
         </Grid>
       </Grid>
     </Border>
@@ -400,12 +446,24 @@
           <ColumnDefinition Width="*"/>
           <ColumnDefinition Width="Auto"/>
           <ColumnDefinition Width="Auto"/>
+          <ColumnDefinition Width="Auto"/>
+          <ColumnDefinition Width="Auto"/>
         </Grid.ColumnDefinitions>
         <TextBlock x:Name="TxtStatus" Grid.Column="0" Foreground="#6c7086" FontSize="11.5"
                    Text="Pret — configurez les issues et cliquez Lancer."/>
-        <TextBlock x:Name="TxtProgress" Grid.Column="1" Foreground="#6c7086" FontSize="11.5"
+        <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,18,0">
+          <TextBlock Text="Modele" Foreground="#6c7086" FontSize="11.5" VerticalAlignment="Center" Margin="0,0,6,0"/>
+          <TextBox x:Name="TxtCurrentModel" Style="{StaticResource DarkInput}"
+                   Width="150" Height="24" FontSize="11.5"
+                   KeyDown="TxtCurrentModel_KeyDown"
+                   ToolTip="Modèle du moteur courant. Entrée ou Appliquer envoie !model au CLI."/>
+          <Button x:Name="BtnApplyModel" Style="{StaticResource BtnSoft}" Content="Appliquer"
+                  Padding="8,2" FontSize="11" Margin="5,0,0,0"
+                  Click="BtnApplyModel_Click"/>
+        </StackPanel>
+        <TextBlock x:Name="TxtProgress" Grid.Column="2" Foreground="#6c7086" FontSize="11.5"
                    Margin="0,0,20,0"/>
-        <TextBlock x:Name="TxtTimer" Grid.Column="2" Foreground="#6c7086" FontSize="11.5"
+        <TextBlock x:Name="TxtTimer" Grid.Column="3" Foreground="#6c7086" FontSize="11.5"
                    FontFamily="Consolas" Text="00:00"/>
       </Grid>
     </Border>

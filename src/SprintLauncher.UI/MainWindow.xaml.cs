@@ -27,13 +27,36 @@ public partial class MainWindow : Window
     private FlowDocument _chatDoc = new();
     private bool _chatHasTurns;
     private string _lastRunKeys = "";
+    // Acteur en train de travailler : cible d'une intervention live (chat live).
+    private string? _activeActor;
+    private string _activeModelEngine = "claude";
+    private string _currentModel = "sonnet-5";
+    // TOUS les acteurs en cours (pipeline parallèle : deux moteurs peuvent tourner
+    // en même temps). Le live ne route QUE vers un acteur réellement en cours —
+    // sinon le message pourrit dans une inbox que personne ne lit (constat
+    // 2026-07-17 : intervention routée vers un moteur mort au quota).
+    private readonly HashSet<string> _runningActors = new(StringComparer.OrdinalIgnoreCase);
+    // Correction d'un envoi (retour Hajar 2026-07-17) : dernier texte envoyé + lignes
+    // mises en file qu'une version corrigée doit annuler (« !cancel » côté CLI).
+    private string? _lastSentRaw;
+    private List<string> _lastQueuedLines = [];
+    private List<string> _cancelOnNextSend = [];
+    // Pièces jointes du dernier envoi — restaurées par « Corriger » (SERZENIA-144 Lot 3).
+    private List<string> _lastAttachments = [];
     private bool _lastRunWasDryRun = true;
     private bool _publishMode; // run courant = --publish-from-artifacts / --create-us (pas de pipeline acteurs)
+    private bool _pauseRequested;
     private string? _usProposalsRefKey;
     private readonly List<UsProposalDialog.ProposalView> _usProposals = [];
     // true = le CLI attend une réponse (checkpoint) → le champ envoie sur stdin ;
     // false = run en cours → le champ dépose pending-directive.txt (consommé à la prochaine US).
     private bool _checkpointActive;
+
+    // Pièces jointes en attente sur la prochaine intervention (SERZENIA-144 Lot 3) :
+    // chemins SOURCES choisis via le sélecteur de fichiers, vidés à l'envoi.
+    private readonly List<string> _pendingAttachments = [];
+    private const string AttachStartMarker = "[[SL_ATTACH]]";
+    private const string AttachEndMarker = "[[/SL_ATTACH]]";
 
     // Panneau en mode « run » : directive déposable à tout moment, boutons de checkpoint inactifs.
     private void ShowRunModePanel()
@@ -65,6 +88,8 @@ public partial class MainWindow : Window
         ("CommitteeCodex",             "COMITE ARBITRAGE", "CommitteeArbitrage"),
         ("ClaudeQaVerdict",            "QA",               "Qa"),
         ("GptQaVerdict",               "QA",               "Qa"),
+        ("RetrospectiveClaude",        "RETROSPECTIVE",    "Retrospective"),
+        ("RetrospectiveGpt",           "RETROSPECTIVE",    "Retrospective"),
     ];
 
     public MainWindow()
@@ -72,11 +97,13 @@ public partial class MainWindow : Window
         InitializeComponent();
         _repoRoot = FindRepoRoot(AppContext.BaseDirectory) ?? Directory.GetCurrentDirectory();
         BuildActorList();
+        TxtCurrentModel.Text = _currentModel;
         _timer.Tick += (_, _) =>
         {
             TxtTimer.Text = _elapsed.Elapsed.ToString(@"mm\:ss");
             RefreshLiveOutput();
             RefreshDecisions();
+            RefreshRetro();
         };
         ActorList.ItemsSource = _actors;
         ShowPreRunPanel(); // directives déposables AVANT même le lancement
@@ -214,6 +241,9 @@ public partial class MainWindow : Window
         TabMain.SelectedIndex = 0; // journal tab during run
         BtnOpenReport.IsEnabled = false;
         BtnOpenArtifacts.IsEnabled = false;
+        BtnPause.IsEnabled = false;
+        BtnPause.Content = "Pause";
+        _pauseRequested = false;
         BtnPublish.IsEnabled = false;
         ShowRunModePanel();
         _htmlReportPath = null;
@@ -368,6 +398,7 @@ public partial class MainWindow : Window
                     _lastRunWasDryRun = data.GetProperty("dryRun").GetBoolean();
                     RebuildActorsFromManifest(data.GetProperty("roles"));
                     BtnOpenArtifacts.IsEnabled = Directory.Exists(_artifactsDir);
+                    BtnPause.IsEnabled = _process is { HasExited: false } && Directory.Exists(_artifactsDir);
                     break;
 
                 case "group":
@@ -378,6 +409,16 @@ public partial class MainWindow : Window
                 case "actor-start":
                 {
                     var role = data.GetProperty("role").GetString() ?? "";
+                    var model = data.TryGetProperty("model", out var m) ? m.GetString() ?? "" : "";
+                    var engine = data.TryGetProperty("engine", out var en) ? en.GetString() ?? "" : "";
+                    _activeActor = role; // cible d'une intervention live non adressée
+                    if (!string.IsNullOrWhiteSpace(engine)) _activeModelEngine = engine;
+                    if (!string.IsNullOrWhiteSpace(model))
+                    {
+                        _currentModel = model;
+                        TxtCurrentModel.Text = model;
+                    }
+                    _runningActors.Add(role);
                     SetStatus(role, "running");
                     TxtStatus.Text = $"En cours : {role}";
                     break;
@@ -386,6 +427,8 @@ public partial class MainWindow : Window
                 case "actor-done":
                 {
                     var role = data.GetProperty("role").GetString() ?? "";
+                    _runningActors.Remove(role);
+                    if (_activeActor == role) _activeActor = _runningActors.FirstOrDefault();
                     var success = data.GetProperty("success").GetBoolean();
                     var semi = data.GetProperty("semiManual").GetBoolean();
                     var secs = data.GetProperty("seconds").GetInt32();
@@ -466,11 +509,72 @@ public partial class MainWindow : Window
                     break;
                 }
 
+                case "live-delivered":
+                {
+                    // Confirmation de remise d'une intervention live : visible dans le
+                    // fil DISCUSSION et le journal, pas seulement dans la sortie acteur.
+                    var target = data.GetProperty("target").GetString() ?? "";
+                    var txt = data.GetProperty("text").GetString() ?? "";
+                    AppendChatTurn("Sprint Launcher", $"⚑ Intervention transmise à **{target}** en cours de tour — il doit en accuser réception dans sa sortie.", isIntervention: true, round: 0, isFinal: false);
+                    AppendLog($"⚑ live → {target} : {txt}");
+                    break;
+                }
+
+                case "pause-requested":
+                {
+                    _pauseRequested = true;
+                    BtnPause.Content = "Reprendre";
+                    TxtStatus.Text = "Pause demandée — l'acteur en cours termine";
+                    AppendLog("PAUSE demandée — arrêt au prochain point entre deux acteurs.");
+                    break;
+                }
+
+                case "pause-waiting":
+                {
+                    _pauseRequested = true;
+                    BtnPause.Content = "Reprendre";
+                    TxtStatus.Text = "En pause — cliquez Reprendre pour continuer";
+                    AppendLog("PAUSE active — aucun nouvel acteur ne sera lancé.");
+                    break;
+                }
+
+                case "pause-resumed":
+                {
+                    _pauseRequested = false;
+                    BtnPause.Content = "Pause";
+                    TxtStatus.Text = "Reprise demandée — le prochain acteur va démarrer";
+                    AppendLog("REPRISE demandée.");
+                    break;
+                }
+
+                case "engine-reactivated":
+                {
+                    var engine = data.GetProperty("engine").GetString() ?? "";
+                    AppendChatTurn("Sprint Launcher", $"⚡ **{engine}** réactivé sur intervention de Hajar (quota signalé disponible) — il reprend au prochain tour.", isIntervention: true, round: 0, isFinal: false);
+                    AppendLog($"⚡ {engine} réactivé (quota)");
+                    break;
+                }
+
+                case "model-changed":
+                {
+                    var engine = data.GetProperty("engine").GetString() ?? "";
+                    var model = data.GetProperty("model").GetString() ?? "";
+                    if (!string.IsNullOrWhiteSpace(engine)) _activeModelEngine = engine;
+                    if (!string.IsNullOrWhiteSpace(model))
+                    {
+                        _currentModel = model;
+                        TxtCurrentModel.Text = model;
+                    }
+                    AppendLog($"Modele {engine} -> {model}");
+                    break;
+                }
+
                 case "implementation-us":
                 {
                     var key = data.GetProperty("key").GetString();
                     var engine = data.GetProperty("engine").GetString();
                     var relief = data.TryGetProperty("relief", out var rl) && rl.GetBoolean();
+                    _activeActor = engine; // moteur d'implémentation = cible d'une intervention live
                     TxtStatus.Text = $"Implémentation {key} → {engine}{(relief ? " (relève)" : "")}";
                     AppendLog(relief ? $"US {key} -> RELEVE par {engine}" : $"US {key} -> {engine}");
                     break;
@@ -623,6 +727,9 @@ public partial class MainWindow : Window
         {
             _timer.Stop();
             BtnRun.Content = "  Lancer";
+            BtnPause.IsEnabled = false;
+            BtnPause.Content = "Pause";
+            _pauseRequested = false;
             HideCheckpoint();
             var code = _process?.ExitCode ?? -1;
 
@@ -812,6 +919,7 @@ public partial class MainWindow : Window
     private static readonly Brush ColorBullet   = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#6c7086")!);
     private static readonly Brush ColorBold     = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#ffffff")!);
     private static readonly Brush ColorApprover = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#f9e2af")!);
+    private static readonly Brush ColorMuted    = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#6c7086")!);
     private static readonly FontFamily SansFont = new("Segoe UI, Arial");
 
     // ─── Fil de discussion (onglet DISCUSSION) ─────────────────────────────────
@@ -842,6 +950,12 @@ public partial class MainWindow : Window
             FontWeight = FontWeights.Bold,
             FontSize = 13.5,
             Foreground = isIntervention ? ColorApprover : ColorH2,
+        });
+        // Date + heure sur CHAQUE message, y compris ceux de Hajar (demande 2026-07-17).
+        header.Inlines.Add(new Run($"   {DateTime.Now:dd/MM HH:mm:ss}")
+        {
+            FontSize = 11,
+            Foreground = ColorMuted,
         });
         _chatDoc.Blocks.Add(header);
 
@@ -1017,7 +1131,10 @@ public partial class MainWindow : Window
 
     private void AppendLog(string line)
     {
-        TxtLog.AppendText(line + "\n");
+        // Horodatage systématique (demande de Hajar, 2026-07-17) — les lignes déjà
+        // horodatées par le CLI ne sont pas doublées.
+        var stamped = line.StartsWith('[') ? line : $"[{DateTime.Now:dd/MM HH:mm:ss}] {line}";
+        TxtLog.AppendText(stamped + "\n");
         LogScroll.ScrollToEnd();
     }
 
@@ -1063,6 +1180,44 @@ public partial class MainWindow : Window
     {
         if (!ReferenceEquals(e.OriginalSource, TabMain)) return;
         RefreshDecisions();
+        RefreshRetro();
+    }
+
+    // ─── Onglet RÉTROSPECTIVE : trace persistante append-only (SERZENIA-144 lot 4) ─
+    // Le fichier retrospective.md grandit par append côté CLI, un bloc "## RETRO —
+    // <acteur>" par contribution, dès la sortie de l'acteur (survit à un arrêt quota
+    // entre deux acteurs). Cet onglet le relit tel quel — pas de reconstruction.
+    private DateTime _retroLastWrite = DateTime.MinValue;
+
+    private void RefreshRetro()
+    {
+        if (TabMain.SelectedIndex != 5) return;
+        var path = _artifactsDir is null ? null : Path.Combine(_artifactsDir, "retrospective.md");
+        if (path is null || !File.Exists(path))
+        {
+            if (_retroLastWrite != DateTime.MinValue || RetroViewer.Document is null)
+            {
+                _retroLastWrite = DateTime.MinValue;
+                TxtRetroHeader.Text = "Aucune rétrospective pour l'instant — elle se remplit en fin de run, un bloc par acteur.";
+                RetroViewer.Document = new FlowDocument(new Paragraph(new Run(
+                    "Chaque acteur (Claude, GPT) y appende son bilan de sprint dès qu'il le produit : " +
+                    "ce qui a bien marché (à garder), ce qui a mal marché, un plan d'action. " +
+                    "L'écriture est immédiate sur disque — rien n'est perdu si un moteur s'arrête au quota.")));
+            }
+            return;
+        }
+        try
+        {
+            var ts = File.GetLastWriteTime(path);
+            if (ts == _retroLastWrite) return; // rien de nouveau
+            _retroLastWrite = ts;
+            TxtRetroHeader.Text = $"Rétrospective — dernière contribution appendée le {ts:dd/MM HH:mm}";
+            RetroViewer.Document = MarkdownToFlow(File.ReadAllText(path));
+        }
+        catch (IOException ex)
+        {
+            RetroViewer.Document = new FlowDocument(new Paragraph(new Run($"Lecture impossible : {ex.Message}")));
+        }
     }
 
     // ─── Actor selection ───────────────────────────────────────────────────────
@@ -1132,51 +1287,248 @@ public partial class MainWindow : Window
 
     private void BtnSendIntervention_Click(object sender, RoutedEventArgs e) => SendInterventionText();
 
+    private void BtnApplyModel_Click(object sender, RoutedEventArgs e) => ApplyModelFromUi();
+
+    private void TxtCurrentModel_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Enter) return;
+        ApplyModelFromUi();
+        e.Handled = true;
+    }
+
+    private void ApplyModelFromUi()
+    {
+        var model = TxtCurrentModel.Text.Trim();
+        if (model.Length == 0) return;
+        _currentModel = model;
+        var line = $"!model {_activeModelEngine} {model}";
+        var targetDir = _process is { HasExited: false } && _artifactsDir is not null
+            ? _artifactsDir
+            : AppContext.BaseDirectory;
+        try
+        {
+            File.AppendAllText(Path.Combine(targetDir, "pending-directive.txt"), line + Environment.NewLine);
+            TxtStatus.Text = $"Modele {_activeModelEngine} demande : {model}";
+            AppendLog($">>> {line}");
+        }
+        catch (IOException ex)
+        {
+            AppendLog($"(modele non appliqué : {ex.Message})");
+        }
+    }
+
     private void TxtIntervention_KeyDown(object sender, KeyEventArgs e)
     {
         if (e.Key == Key.Enter) SendInterventionText();
     }
 
+    // ─── Pièces jointes (SERZENIA-144 Lot 3) ───────────────────────────────────
+    // Sélection de fichiers pour la prochaine intervention — le CLI copie les
+    // fichiers dans le dossier du run de l'acteur ciblé et les référence par leur
+    // chemin dans son prompt (image, document, vidéo… — jamais d'OCR).
+    private void BtnAttachFiles_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = "Joindre des fichiers à l'intervention",
+            Multiselect = true,
+            CheckFileExists = true,
+        };
+        if (dialog.ShowDialog(this) != true) return;
+
+        foreach (var path in dialog.FileNames)
+            if (!_pendingAttachments.Contains(path, StringComparer.OrdinalIgnoreCase))
+                _pendingAttachments.Add(path);
+
+        UpdateAttachmentsSummary();
+    }
+
+    private void BtnClearAttachments_Click(object sender, RoutedEventArgs e)
+    {
+        _pendingAttachments.Clear();
+        UpdateAttachmentsSummary();
+    }
+
+    private void UpdateAttachmentsSummary()
+    {
+        if (_pendingAttachments.Count == 0)
+        {
+            PnlAttachmentsSummary.Visibility = Visibility.Collapsed;
+            TxtAttachmentsSummary.Text = "";
+            return;
+        }
+        var names = string.Join(", ", _pendingAttachments.Select(Path.GetFileName));
+        TxtAttachmentsSummary.Text = $"📎 {_pendingAttachments.Count} pièce(s) jointe(s) en attente : {names}";
+        PnlAttachmentsSummary.Visibility = Visibility.Visible;
+    }
+
+    // Encode les chemins sources en fin de ligne — miroir de
+    // SprintLauncher.Dialogue.DirectiveAttachments.Encode (CLI) côté UI, qui n'a
+    // pas de référence au projet core (elle lance le CLI en sous-processus).
+    private static string EncodeAttachments(string text, IReadOnlyList<string> filePaths) =>
+        filePaths.Count == 0 ? text : $"{text} {AttachStartMarker}{string.Join('|', filePaths)}{AttachEndMarker}";
+
     private void SendInterventionText()
     {
         var text = TxtIntervention.Text.Trim();
         TxtIntervention.Clear();
+        var attachments = _pendingAttachments.ToList();
+        _pendingAttachments.Clear();
+        UpdateAttachmentsSummary();
+        var attachSuffix = attachments.Count > 0 ? $" [+{attachments.Count} pièce(s) jointe(s)]" : "";
 
         // À un checkpoint : réponse directe au CLI (stdin)
         if (_checkpointActive)
         {
             ShowRunModePanel();
-            if (string.IsNullOrEmpty(text))
+            if (string.IsNullOrEmpty(text) && attachments.Count == 0)
             {
                 AppendLog(">>> GO");
                 SendStdin("\n");
                 return;
             }
             TxtStatus.Text = "Intervention envoyée — prise en compte immédiatement.";
-            AppendLog($">>> Intervention : {text}");
-            SendStdin(text + "\n");
+            AppendLog($">>> Intervention : {text}{attachSuffix}");
+            SendStdin(EncodeAttachments(text, attachments) + "\n");
             return;
         }
 
-        // Hors checkpoint : directive déposée (elles s'ACCUMULENT), consommée par le
-        // run en cours à la prochaine US/discussion — ou par le prochain run si aucun
+        // Hors checkpoint : directive déposée (elles s'ACCUMULENT), remise à son
+        // destinataire dès qu'il prend la parole — ou par le prochain run si aucun
         // run n'est actif (dépôt AVANT lancement).
-        if (string.IsNullOrEmpty(text)) return;
+        if (string.IsNullOrEmpty(text) && attachments.Count == 0) return;
         var targetDir = _process is { HasExited: false } && _artifactsDir is not null
             ? _artifactsDir
             : AppContext.BaseDirectory; // pré-directive : ramassée au démarrage du prochain run
         try
         {
-            File.AppendAllText(Path.Combine(targetDir, "pending-directive.txt"), text + Environment.NewLine);
-            AppendLog($">>> Directive déposée : {text}");
-            TxtStatus.Text = _process is { HasExited: false }
-                ? "Directive déposée — publiée et appliquée à partir de la prochaine étape."
-                : "Directive pré-déposée — elle sera publiée et appliquée dès le lancement du prochain run.";
+            // Version corrigée d'un envoi : annuler d'abord les directives en file de
+            // la version précédente (les lignes déjà lues en live ne se rappellent pas —
+            // la correction les remplace par autorité de la consigne la plus récente).
+            if (_cancelOnNextSend.Count > 0)
+            {
+                foreach (var line in _cancelOnNextSend)
+                    File.AppendAllText(Path.Combine(targetDir, "pending-directive.txt"), "!cancel " + line + Environment.NewLine);
+                AppendLog($">>> {_cancelOnNextSend.Count} directive(s) de l'envoi précédent annulée(s) — remplacée(s) par la version corrigée.");
+                _cancelOnNextSend = [];
+            }
+            _lastQueuedLines = [];
+
+            // ADRESSAGE MULTIPLE (« @ccode et @codex … ») : chaque destinataire reçoit
+            // le message — l'acteur ACTIF en live (inbox lue en cours de tour), les
+            // autres en directive (remise à leur prochaine prise de parole). Les alias
+            // (@ccode, @codex…) sont résolus AVANT comparaison — sans ça, « @ccode » ≠
+            // « ClaudeImplementation » et tout partait en file (retours 2026-07-17).
+            var (targets, multiBody) = SplitDirectiveTargets(text);
+            // Le marqueur de pièces jointes est ajouté à ce qui est ÉCRIT (fichier/stdin) —
+            // jamais à multiBody, qui reste le texte lisible pour l'affichage, le log et
+            // la correspondance !cancel (le CLI extrait le marqueur avant de comparer).
+            var bodyToWrite = EncodeAttachments(multiBody, attachments);
+            var running = _process is { HasExited: false };
+            var liveSent = new List<string>();
+            var queued = new List<string>();
+
+            if (targets.Count == 0)
+            {
+                // Non adressé : live vers l'acteur actif s'il TOURNE réellement, sinon file.
+                if (running && _activeActor is not null && _runningActors.Contains(_activeActor) && _artifactsDir is not null)
+                {
+                    File.AppendAllText(Path.Combine(_artifactsDir, $"live-input-{_activeActor}.txt"), bodyToWrite + Environment.NewLine);
+                    liveSent.Add(_activeActor);
+                }
+                else
+                {
+                    File.AppendAllText(Path.Combine(targetDir, "pending-directive.txt"), bodyToWrite + Environment.NewLine);
+                    _lastQueuedLines.Add(multiBody);
+                    queued.Add("prochain acteur");
+                }
+            }
+            else
+            {
+                foreach (var t in targets)
+                {
+                    var resolved = ResolveActorAlias(t) ?? t;
+                    // Live vers N'IMPORTE QUEL acteur en cours (pipeline parallèle :
+                    // deux moteurs peuvent tourner), jamais vers un acteur à l'arrêt.
+                    if (running && _artifactsDir is not null && _runningActors.Contains(resolved))
+                    {
+                        File.AppendAllText(Path.Combine(_artifactsDir, $"live-input-{resolved}.txt"), bodyToWrite + Environment.NewLine);
+                        liveSent.Add(resolved);
+                    }
+                    else
+                    {
+                        File.AppendAllText(Path.Combine(targetDir, "pending-directive.txt"), $"@{resolved} {bodyToWrite}" + Environment.NewLine);
+                        _lastQueuedLines.Add($"@{resolved} {multiBody}");
+                        queued.Add(resolved);
+                    }
+                }
+            }
+
+            var destLabel = string.Join(", ", liveSent.Select(a => $"{a} (live)").Concat(queued));
+            AppendChatTurn($"Hajar → {destLabel}", multiBody + attachSuffix, isIntervention: true, round: 0, isFinal: false);
+            AppendLog($">>> Intervention → {destLabel} : {multiBody}{attachSuffix}");
+            _lastSentRaw = text;
+            _lastAttachments = attachments;
+            BtnEditLast.IsEnabled = true;
+            TxtStatus.Text = liveSent.Count > 0
+                ? $"Intervention envoyée — {string.Join(", ", liveSent)} la lira en cours de tour" +
+                  (queued.Count > 0 ? $" ; {string.Join(", ", queued)} à sa prochaine prise de parole." : ".")
+                : running
+                    ? $"Directive déposée → {string.Join(", ", queued)} — remise à la prochaine prise de parole."
+                    : "Directive pré-déposée — remise dès le lancement du prochain run.";
         }
         catch (IOException ex)
         {
-            AppendLog($"(directive non déposée : {ex.Message})");
+            AppendLog($"(intervention non déposée : {ex.Message})");
         }
+    }
+
+    // Miroir UI des alias de DirectiveAddressing (CLI) : @ccode/@codex/@gpt… → nom de
+    // rôle exact, pour que le routage live reconnaisse l'acteur actif. Null = pas de
+    // cible (message pour l'acteur en cours).
+    private static string? ResolveActorAlias(string? target) => target?.ToLowerInvariant() switch
+    {
+        null => null,
+        "ccode" or "claude-code" or "claudecode" or "claudeimpl" => "ClaudeImplementation",
+        "codex" or "gpt" or "gptimpl" => "GptImplementation",
+        var t => t, // rôle exact ou groupe : comparé tel quel
+    };
+
+    // Miroir UI de DirectiveAddressing.ParseMulti (CLI) : « @ccode et @codex fais X »
+    // → cibles [ccode, codex] + corps « fais X ». Les connecteurs entre cibles
+    // (et, virgule, +, &) sont absorbés. Le CLI reste seul juge du routage réel.
+    private static (List<string> Targets, string Body) SplitDirectiveTargets(string text)
+    {
+        var targets = new List<string>();
+        var rest = text.Trim();
+        while (rest.StartsWith('@'))
+        {
+            var sep = rest.IndexOfAny([' ', ':', ',', '\t', '\n']);
+            if (sep <= 1) break;
+            targets.Add(rest[1..sep].Trim());
+            rest = rest[(sep + 1)..].TrimStart(' ', ':', ',', '+', '&');
+            // « et @codex … » : absorber le connecteur si une cible suit.
+            if (rest.StartsWith("et ", StringComparison.OrdinalIgnoreCase) && rest[3..].TrimStart().StartsWith('@'))
+                rest = rest[3..].TrimStart();
+        }
+        return (targets, rest.Trim());
+    }
+
+    // ✎ Corriger : recharge le dernier envoi ; l'envoi suivant annule les directives
+    // en file de la version précédente (« !cancel » côté CLI) et les remplace.
+    private void BtnEditLast_Click(object sender, RoutedEventArgs e)
+    {
+        if (_lastSentRaw is null) return;
+        TxtIntervention.Text = _lastSentRaw;
+        TxtIntervention.Focus();
+        TxtIntervention.CaretIndex = TxtIntervention.Text.Length;
+        _cancelOnNextSend = [.. _lastQueuedLines];
+        _pendingAttachments.Clear();
+        _pendingAttachments.AddRange(_lastAttachments);
+        UpdateAttachmentsSummary();
+        TxtStatus.Text = _cancelOnNextSend.Count > 0
+            ? "Corrige puis renvoie — les directives non remises de l'envoi précédent seront annulées et remplacées."
+            : "Corrige puis renvoie — le message précédent a déjà été lu en live : ta correction le remplacera par autorité.";
     }
 
     private void BtnConclude_Click(object sender, RoutedEventArgs e)
@@ -1186,6 +1538,28 @@ public partial class MainWindow : Window
         TxtStatus.Text = "Clôture demandée — tour de synthèse finale en cours...";
         AppendLog(">>> Conclure maintenant");
         SendStdin("fin\n");
+    }
+
+    private void BtnPause_Click(object sender, RoutedEventArgs e)
+    {
+        if (_process is not { HasExited: false } || _artifactsDir is null) return;
+        var command = _pauseRequested ? "!resume" : "!pause";
+        try
+        {
+            File.AppendAllText(Path.Combine(_artifactsDir, "pending-directive.txt"), command + Environment.NewLine);
+            _pauseRequested = !_pauseRequested;
+            BtnPause.Content = _pauseRequested ? "Reprendre" : "Pause";
+            TxtStatus.Text = _pauseRequested
+                ? "Pause demandée — l'acteur en cours termine"
+                : "Reprise demandée";
+            AppendLog(_pauseRequested
+                ? ">>> Pause douce demandée"
+                : ">>> Reprise demandée");
+        }
+        catch (IOException ex)
+        {
+            AppendLog($"(commande pause non déposée : {ex.Message})");
+        }
     }
 
     private void HideCheckpoint()
