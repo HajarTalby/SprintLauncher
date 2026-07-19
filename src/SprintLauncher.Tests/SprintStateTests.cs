@@ -115,4 +115,34 @@ public class SprintStateTests : IDisposable
         Assert.NotNull(directive.AttachmentSourcePaths);
         Assert.Empty(directive.AttachmentSourcePaths);
     }
+
+    [Fact]
+    public async Task Pending_phase_orders_roundtrip_through_save_and_load()
+    {
+        var path = Path.Combine(_tempDir, "state.json");
+        var state = new SprintState
+        {
+            StartedAt = DateTimeOffset.UtcNow,
+            Keys = ["SERZ-1"],
+            PendingPhaseOrders =
+            [
+                new PendingPhaseOrder
+                {
+                    Kind = PhaseOrderKind.SkipTo,
+                    TargetGroup = "Qa",
+                    SourceText = "va directement a la QA",
+                    CreatedAt = DateTimeOffset.UtcNow,
+                },
+            ],
+        };
+
+        await SprintStateManager.SaveAsync(path, state);
+        var loaded = await SprintStateManager.TryLoadAsync(path);
+
+        Assert.NotNull(loaded);
+        var order = Assert.Single(loaded!.PendingPhaseOrders);
+        Assert.Equal(PhaseOrderKind.SkipTo, order.Kind);
+        Assert.Equal("Qa", order.TargetGroup);
+        Assert.False(order.Applied);
+    }
 }

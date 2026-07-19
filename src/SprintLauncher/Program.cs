@@ -382,6 +382,7 @@ if (decisionEntries.Count > 0)
 using var runner = new ActorRunner(
     claudeModel: config.ClaudeModel,
     codexModel: config.CodexModel,
+    directiveInterpreterModel: config.DirectiveInterpreterModel,
     actorTimeout: TimeSpan.FromSeconds(config.ActorTimeoutSeconds),
     repoRoot: config.SerzeniaRepoRoot,
     implementationTimeout: TimeSpan.FromSeconds(config.ImplementationTimeoutSeconds),
@@ -589,8 +590,12 @@ _ = Task.Run(async () =>
     }
 });
 
-foreach (var group in sessionMode.GetGroupOrder())
+var phaseOrder = sessionMode.GetGroupOrder().ToList();
+var phaseIndex = 0;
+phaseIndex = await ApplyPendingPhaseOrdersAsync(phaseOrder, -1, shutdownCts.Token);
+while (phaseIndex < phaseOrder.Count)
 {
+    var group = phaseOrder[phaseIndex];
     if (shutdownCts.IsCancellationRequested) break;
 
     var rolesInGroup = Enum.GetValues<ActorRole>()
@@ -806,7 +811,7 @@ foreach (var group in sessionMode.GetGroupOrder())
     // remédiation, lui, reste interactif.
     if (interactive && !resume && !shutdownCts.IsCancellationRequested)
     {
-        var nextGroup = sessionMode.GetGroupOrder()
+        var nextGroup = phaseOrder
             .SkipWhile(g => g != group)
             .Skip(1)
             .FirstOrDefault();
@@ -835,6 +840,8 @@ foreach (var group in sessionMode.GetGroupOrder())
             }
         }
     }
+
+    phaseIndex = await ApplyPendingPhaseOrdersAsync(phaseOrder, phaseIndex, shutdownCts.Token);
 }
 
 // ─── BOUCLE DE REMÉDIATION (lot 8) : le sprint n'est PAS terminé tant que le ────
@@ -1257,6 +1264,52 @@ async Task IngestPendingDirectivesAsync(string artifactsDir, CancellationToken c
     finally { pendingDirectiveLock.Release(); }
 }
 
+async Task<int> ApplyPendingPhaseOrdersAsync(List<ActorGroup> phaseOrder, int currentIndex, CancellationToken ct)
+{
+    var nextIndex = currentIndex;
+    var hadOrder = false;
+    while (true)
+    {
+        var applied = PhaseOrderQueue.ApplyNext(
+            phaseOrder,
+            sprintState.PendingPhaseOrders,
+            nextIndex,
+            ClearCompletionForPhase);
+        if (applied is null) break;
+
+        hadOrder = true;
+        nextIndex = applied.NextIndex;
+        Console.WriteLine($"  ↪ Ordre de phase appliqué : {applied.Kind} → {applied.Target}");
+        EventEmitter.Emit("phase-order-applied", new
+        {
+            kind = applied.Kind.ToString(),
+            target = applied.Target.ToString(),
+            nextIndex,
+        });
+    }
+
+    if (sprintState.PendingPhaseOrders.RemoveAll(o => o.Applied) > 0)
+        await SprintStateManager.SaveAsync(stateFile, sprintState, ct);
+    return hadOrder ? nextIndex : currentIndex + 1;
+}
+
+void ClearCompletionForPhase(ActorGroup group)
+{
+    sprintState.CompletedGroups.Remove(group.ToString());
+    foreach (var role in Enum.GetValues<ActorRole>().Where(r => r.GetGroup() == group))
+    {
+        sprintState.CompletedRoles.Remove(role.ToString());
+        sprintState.InterruptedRoles.Remove(role.ToString());
+    }
+
+    if (group is ActorGroup.FamilyClaude or ActorGroup.FamilyGpt)
+    {
+        sprintState.CompletedUsImplementations.Clear();
+        sprintState.PendingReviews.Clear();
+        implementationPhaseDone = false;
+    }
+}
+
 // Annule la dernière directive non remise correspondant à la ligne d'origine
 // (même cible, même texte). Sans correspondance : rien à faire, on le signale.
 void CancelPendingDirective(string originalLine)
@@ -1367,14 +1420,45 @@ async Task AddDirectiveAsync(string subjectKey, string text)
     // l'adressage @cible pour ne pas interférer avec le parsing des destinataires.
     var (textNoAttach, attachSourcePaths) = DirectiveAttachments.Extract(text);
 
+    var interpretation = await runner.InterpretDirectiveAsync(
+        textNoAttach,
+        DirectiveAddressing.KnownTargets(),
+        Enum.GetNames<ActorGroup>(),
+        shutdownCts.Token);
+
+    if (interpretation?.PhaseOrder is { } phaseOrder)
+    {
+        sprintState.PendingPhaseOrders.Add(phaseOrder);
+        Console.WriteLine($"  ↪ Ordre de phase mis en file : {phaseOrder.Kind} → {phaseOrder.TargetGroup} (appliqué à la prochaine frontière de phase).");
+        EventEmitter.Emit("phase-order-queued", new
+        {
+            kind = phaseOrder.Kind.ToString(),
+            target = phaseOrder.TargetGroup,
+            text = textNoAttach,
+        });
+    }
+
+    // Interprétation IA si disponible ; sinon repli strict sur l'adressage @.
     // « @ccode et @codex revoyez X » → UNE directive PAR destinataire, même texte
     // (retour de Hajar, 2026-07-17 : seul le premier @ était pris en compte).
-    var addresses = DirectiveAddressing.ParseMulti(textNoAttach);
-    var clean = addresses[0].Text.Trim();
+    var addresses = interpretation?.HasTargets == true
+        ? interpretation.ToAddresses(textNoAttach.Trim())
+        : DirectiveAddressing.ParseMulti(textNoAttach);
+    var clean = addresses.Count > 0 ? addresses[0].Text.Trim() : textNoAttach.Trim();
     if (clean.Length == 0)
     {
         if (attachSourcePaths.Count == 0) return;
         clean = DirectiveAttachments.EmptyTextPlaceholder; // pièce jointe sans commentaire
+    }
+
+    var phaseOrderOnly = interpretation?.PhaseOrder is not null && !interpretation.HasTargets
+        && !textNoAttach.TrimStart().StartsWith('@');
+    if (phaseOrderOnly)
+    {
+        var attachNoteOnly = attachSourcePaths.Count > 0 ? $" [+{attachSourcePaths.Count} pièce(s) jointe(s)]" : "";
+        await RecordDecisionInRegistryAsync(subjectKey, $"ordre de phase : {clean}{attachNoteOnly}");
+        try { await SprintStateManager.SaveAsync(stateFile, sprintState); } catch (IOException) { }
+        return;
     }
 
     foreach (var address in addresses)
@@ -1386,6 +1470,7 @@ async Task AddDirectiveAsync(string subjectKey, string text)
             TargetActor = address.Actor?.ToString(),
             TargetGroup = address.Group?.ToString(),
             Delivered = false,
+            Intent = interpretation?.Intent,
             AttachmentSourcePaths = [.. attachSourcePaths],
         });
     }
