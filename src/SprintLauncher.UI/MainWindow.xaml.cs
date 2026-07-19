@@ -39,6 +39,8 @@ public partial class MainWindow : Window
     private string? _lastSentRaw;
     private List<string> _lastQueuedLines = [];
     private List<string> _cancelOnNextSend = [];
+    // Pièces jointes du dernier envoi — restaurées par « Corriger » (SERZENIA-144 Lot 3).
+    private List<string> _lastAttachments = [];
     private bool _lastRunWasDryRun = true;
     private bool _publishMode; // run courant = --publish-from-artifacts / --create-us (pas de pipeline acteurs)
     private string? _usProposalsRefKey;
@@ -46,6 +48,12 @@ public partial class MainWindow : Window
     // true = le CLI attend une réponse (checkpoint) → le champ envoie sur stdin ;
     // false = run en cours → le champ dépose pending-directive.txt (consommé à la prochaine US).
     private bool _checkpointActive;
+
+    // Pièces jointes en attente sur la prochaine intervention (SERZENIA-144 Lot 3) :
+    // chemins SOURCES choisis via le sélecteur de fichiers, vidés à l'envoi.
+    private readonly List<string> _pendingAttachments = [];
+    private const string AttachStartMarker = "[[SL_ATTACH]]";
+    private const string AttachEndMarker = "[[/SL_ATTACH]]";
 
     // Panneau en mode « run » : directive déposable à tout moment, boutons de checkpoint inactifs.
     private void ShowRunModePanel()
@@ -1224,31 +1232,81 @@ public partial class MainWindow : Window
         if (e.Key == Key.Enter) SendInterventionText();
     }
 
+    // ─── Pièces jointes (SERZENIA-144 Lot 3) ───────────────────────────────────
+    // Sélection de fichiers pour la prochaine intervention — le CLI copie les
+    // fichiers dans le dossier du run de l'acteur ciblé et les référence par leur
+    // chemin dans son prompt (image, document, vidéo… — jamais d'OCR).
+    private void BtnAttachFiles_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = "Joindre des fichiers à l'intervention",
+            Multiselect = true,
+            CheckFileExists = true,
+        };
+        if (dialog.ShowDialog(this) != true) return;
+
+        foreach (var path in dialog.FileNames)
+            if (!_pendingAttachments.Contains(path, StringComparer.OrdinalIgnoreCase))
+                _pendingAttachments.Add(path);
+
+        UpdateAttachmentsSummary();
+    }
+
+    private void BtnClearAttachments_Click(object sender, RoutedEventArgs e)
+    {
+        _pendingAttachments.Clear();
+        UpdateAttachmentsSummary();
+    }
+
+    private void UpdateAttachmentsSummary()
+    {
+        if (_pendingAttachments.Count == 0)
+        {
+            PnlAttachmentsSummary.Visibility = Visibility.Collapsed;
+            TxtAttachmentsSummary.Text = "";
+            return;
+        }
+        var names = string.Join(", ", _pendingAttachments.Select(Path.GetFileName));
+        TxtAttachmentsSummary.Text = $"📎 {_pendingAttachments.Count} pièce(s) jointe(s) en attente : {names}";
+        PnlAttachmentsSummary.Visibility = Visibility.Visible;
+    }
+
+    // Encode les chemins sources en fin de ligne — miroir de
+    // SprintLauncher.Dialogue.DirectiveAttachments.Encode (CLI) côté UI, qui n'a
+    // pas de référence au projet core (elle lance le CLI en sous-processus).
+    private static string EncodeAttachments(string text, IReadOnlyList<string> filePaths) =>
+        filePaths.Count == 0 ? text : $"{text} {AttachStartMarker}{string.Join('|', filePaths)}{AttachEndMarker}";
+
     private void SendInterventionText()
     {
         var text = TxtIntervention.Text.Trim();
         TxtIntervention.Clear();
+        var attachments = _pendingAttachments.ToList();
+        _pendingAttachments.Clear();
+        UpdateAttachmentsSummary();
+        var attachSuffix = attachments.Count > 0 ? $" [+{attachments.Count} pièce(s) jointe(s)]" : "";
 
         // À un checkpoint : réponse directe au CLI (stdin)
         if (_checkpointActive)
         {
             ShowRunModePanel();
-            if (string.IsNullOrEmpty(text))
+            if (string.IsNullOrEmpty(text) && attachments.Count == 0)
             {
                 AppendLog(">>> GO");
                 SendStdin("\n");
                 return;
             }
             TxtStatus.Text = "Intervention envoyée — prise en compte immédiatement.";
-            AppendLog($">>> Intervention : {text}");
-            SendStdin(text + "\n");
+            AppendLog($">>> Intervention : {text}{attachSuffix}");
+            SendStdin(EncodeAttachments(text, attachments) + "\n");
             return;
         }
 
         // Hors checkpoint : directive déposée (elles s'ACCUMULENT), remise à son
         // destinataire dès qu'il prend la parole — ou par le prochain run si aucun
         // run n'est actif (dépôt AVANT lancement).
-        if (string.IsNullOrEmpty(text)) return;
+        if (string.IsNullOrEmpty(text) && attachments.Count == 0) return;
         var targetDir = _process is { HasExited: false } && _artifactsDir is not null
             ? _artifactsDir
             : AppContext.BaseDirectory; // pré-directive : ramassée au démarrage du prochain run
@@ -1272,6 +1330,10 @@ public partial class MainWindow : Window
             // (@ccode, @codex…) sont résolus AVANT comparaison — sans ça, « @ccode » ≠
             // « ClaudeImplementation » et tout partait en file (retours 2026-07-17).
             var (targets, multiBody) = SplitDirectiveTargets(text);
+            // Le marqueur de pièces jointes est ajouté à ce qui est ÉCRIT (fichier/stdin) —
+            // jamais à multiBody, qui reste le texte lisible pour l'affichage, le log et
+            // la correspondance !cancel (le CLI extrait le marqueur avant de comparer).
+            var bodyToWrite = EncodeAttachments(multiBody, attachments);
             var running = _process is { HasExited: false };
             var liveSent = new List<string>();
             var queued = new List<string>();
@@ -1281,12 +1343,12 @@ public partial class MainWindow : Window
                 // Non adressé : live vers l'acteur actif s'il TOURNE réellement, sinon file.
                 if (running && _activeActor is not null && _runningActors.Contains(_activeActor) && _artifactsDir is not null)
                 {
-                    File.AppendAllText(Path.Combine(_artifactsDir, $"live-input-{_activeActor}.txt"), multiBody + Environment.NewLine);
+                    File.AppendAllText(Path.Combine(_artifactsDir, $"live-input-{_activeActor}.txt"), bodyToWrite + Environment.NewLine);
                     liveSent.Add(_activeActor);
                 }
                 else
                 {
-                    File.AppendAllText(Path.Combine(targetDir, "pending-directive.txt"), multiBody + Environment.NewLine);
+                    File.AppendAllText(Path.Combine(targetDir, "pending-directive.txt"), bodyToWrite + Environment.NewLine);
                     _lastQueuedLines.Add(multiBody);
                     queued.Add("prochain acteur");
                 }
@@ -1300,12 +1362,12 @@ public partial class MainWindow : Window
                     // deux moteurs peuvent tourner), jamais vers un acteur à l'arrêt.
                     if (running && _artifactsDir is not null && _runningActors.Contains(resolved))
                     {
-                        File.AppendAllText(Path.Combine(_artifactsDir, $"live-input-{resolved}.txt"), multiBody + Environment.NewLine);
+                        File.AppendAllText(Path.Combine(_artifactsDir, $"live-input-{resolved}.txt"), bodyToWrite + Environment.NewLine);
                         liveSent.Add(resolved);
                     }
                     else
                     {
-                        File.AppendAllText(Path.Combine(targetDir, "pending-directive.txt"), $"@{resolved} {multiBody}" + Environment.NewLine);
+                        File.AppendAllText(Path.Combine(targetDir, "pending-directive.txt"), $"@{resolved} {bodyToWrite}" + Environment.NewLine);
                         _lastQueuedLines.Add($"@{resolved} {multiBody}");
                         queued.Add(resolved);
                     }
@@ -1313,9 +1375,10 @@ public partial class MainWindow : Window
             }
 
             var destLabel = string.Join(", ", liveSent.Select(a => $"{a} (live)").Concat(queued));
-            AppendChatTurn($"Hajar → {destLabel}", multiBody, isIntervention: true, round: 0, isFinal: false);
-            AppendLog($">>> Intervention → {destLabel} : {multiBody}");
+            AppendChatTurn($"Hajar → {destLabel}", multiBody + attachSuffix, isIntervention: true, round: 0, isFinal: false);
+            AppendLog($">>> Intervention → {destLabel} : {multiBody}{attachSuffix}");
             _lastSentRaw = text;
+            _lastAttachments = attachments;
             BtnEditLast.IsEnabled = true;
             TxtStatus.Text = liveSent.Count > 0
                 ? $"Intervention envoyée — {string.Join(", ", liveSent)} la lira en cours de tour" +
@@ -1370,6 +1433,9 @@ public partial class MainWindow : Window
         TxtIntervention.Focus();
         TxtIntervention.CaretIndex = TxtIntervention.Text.Length;
         _cancelOnNextSend = [.. _lastQueuedLines];
+        _pendingAttachments.Clear();
+        _pendingAttachments.AddRange(_lastAttachments);
+        UpdateAttachmentsSummary();
         TxtStatus.Text = _cancelOnNextSend.Count > 0
             ? "Corrige puis renvoie — les directives non remises de l'envoi précédent seront annulées et remplacées."
             : "Corrige puis renvoie — le message précédent a déjà été lu en live : ta correction le remplacera par autorité.";

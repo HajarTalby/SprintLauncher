@@ -1293,18 +1293,33 @@ string? DirectivesForActor(ActorRole role)
     var due = sprintState.PendingDirectives.Where(d => !d.Delivered && DirectiveTargets(d, role)).ToList();
     if (due.Count == 0) return null;
 
+    var parts = new List<string>();
     foreach (var d in due)
     {
         d.Delivered = true;
-        Console.WriteLine($"  ⚑ Directive de {config.ApproverName} → {role} : {Truncate(d.Text, 80)}");
-        EventEmitter.Emit("directive-delivered", new { target = role.ToString(), text = d.Text });
+
+        // Pièces jointes (SERZENIA-144 Lot 3) : copiées MAINTENANT, une fois la
+        // cible réelle connue — un même dossier "attachments/<role>" par acteur
+        // pour ne jamais mélanger les pièces jointes de deux destinataires.
+        var body = d.Text;
+        if (d.AttachmentSourcePaths.Count > 0)
+        {
+            var attachDir = Path.Combine(artifactsDir, "attachments", role.ToString());
+            var copied = DirectiveAttachments.CopyToRunFolder(d.AttachmentSourcePaths, attachDir);
+            body += DirectiveAttachments.FormatForPrompt(copied);
+        }
+
+        var attachNote = d.AttachmentSourcePaths.Count > 0 ? $" [+{d.AttachmentSourcePaths.Count} pièce(s) jointe(s)]" : "";
+        Console.WriteLine($"  ⚑ Directive de {config.ApproverName} → {role} : {Truncate(d.Text, 80)}{attachNote}");
+        EventEmitter.Emit("directive-delivered", new { target = role.ToString(), text = d.Text, attachments = d.AttachmentSourcePaths.Count });
+
+        parts.Add(d.TargetActor is not null || d.TargetGroup is not null
+            ? $"(adressée à {d.TargetActor ?? d.TargetGroup} — c'est toi) {body}"
+            : body);
     }
     try { SprintStateManager.SaveAsync(stateFile, sprintState).GetAwaiter().GetResult(); } catch (IOException) { }
 
-    return string.Join("\n\n", due.Select(d =>
-        d.TargetActor is not null || d.TargetGroup is not null
-            ? $"(adressée à {d.TargetActor ?? d.TargetGroup} — c'est toi) {d.Text}"
-            : d.Text));
+    return string.Join("\n\n", parts);
 }
 
 static bool DirectiveTargets(PendingDirective d, ActorRole role)
@@ -1348,11 +1363,19 @@ async Task RecordDecisionInRegistryAsync(string usKey, string text)
 // n'arrive sur Jira que portée par le commentaire de l'acteur qui traite l'US liée.
 async Task AddDirectiveAsync(string subjectKey, string text)
 {
+    // Pièces jointes (SERZENIA-144 Lot 3) : marqueur en fin de ligne, retiré AVANT
+    // l'adressage @cible pour ne pas interférer avec le parsing des destinataires.
+    var (textNoAttach, attachSourcePaths) = DirectiveAttachments.Extract(text);
+
     // « @ccode et @codex revoyez X » → UNE directive PAR destinataire, même texte
     // (retour de Hajar, 2026-07-17 : seul le premier @ était pris en compte).
-    var addresses = DirectiveAddressing.ParseMulti(text);
+    var addresses = DirectiveAddressing.ParseMulti(textNoAttach);
     var clean = addresses[0].Text.Trim();
-    if (clean.Length == 0) return;
+    if (clean.Length == 0)
+    {
+        if (attachSourcePaths.Count == 0) return;
+        clean = DirectiveAttachments.EmptyTextPlaceholder; // pièce jointe sans commentaire
+    }
 
     foreach (var address in addresses)
     {
@@ -1363,6 +1386,7 @@ async Task AddDirectiveAsync(string subjectKey, string text)
             TargetActor = address.Actor?.ToString(),
             TargetGroup = address.Group?.ToString(),
             Delivered = false,
+            AttachmentSourcePaths = [.. attachSourcePaths],
         });
     }
 
@@ -1379,16 +1403,17 @@ async Task AddDirectiveAsync(string subjectKey, string text)
         }
     }
 
+    var attachNote = attachSourcePaths.Count > 0 ? $" [+{attachSourcePaths.Count} pièce(s) jointe(s)]" : "";
     var targets = string.Join(", ", addresses.Select(a => a.TargetLabel).Distinct());
     var anyTargeted = addresses.Any(a => a.IsTargeted);
-    var registryEntry = anyTargeted ? $"→ {targets} : {clean}" : clean;
+    var registryEntry = (anyTargeted ? $"→ {targets} : {clean}" : clean) + attachNote;
     await RecordDecisionInRegistryAsync(subjectKey, registryEntry); // registre + fichier (tab + prompts)
     try { await SprintStateManager.SaveAsync(stateFile, sprintState); } catch (IOException) { }
 
     Console.WriteLine(anyTargeted
-        ? $"  ⚑ Directive de {config.ApproverName} stockée pour [{subjectKey}] → destinataire(s) : {targets} (appliquée dès que chacun prend la parole)."
-        : $"  ⚑ Directive de {config.ApproverName} stockée pour [{subjectKey}] — appliquée au prochain acteur, publiée dès qu'un acteur commentera ce sujet.");
-    EventEmitter.Emit("directive-stored", new { subject = subjectKey, target = targets, text = clean });
+        ? $"  ⚑ Directive de {config.ApproverName} stockée pour [{subjectKey}] → destinataire(s) : {targets}{attachNote} (appliquée dès que chacun prend la parole)."
+        : $"  ⚑ Directive de {config.ApproverName} stockée pour [{subjectKey}]{attachNote} — appliquée au prochain acteur, publiée dès qu'un acteur commentera ce sujet.");
+    EventEmitter.Emit("directive-stored", new { subject = subjectKey, target = targets, text = clean, attachments = attachSourcePaths.Count });
 }
 
 // ─── Dispatch de remédiation : traite une liste d'écarts/actions par US ─────────
@@ -2286,6 +2311,21 @@ async Task<DialogueIntervention> RequestInterventionAsync(ActorGroup group, int 
 
     if (intervention.Kind == InterventionKind.Message)
     {
+        // Pièces jointes (SERZENIA-144 Lot 3) : le texte de checkpoint peut porter le
+        // même marqueur que les directives déposées par fichier. Copiées tout de
+        // suite (cible = le groupe entier, pas un acteur précis) pour que le tour
+        // suivant du transcript référence des chemins réels, pas le marqueur brut.
+        var (cleanText, attachSourcePaths) = DirectiveAttachments.Extract(intervention.Text!);
+        var finalText = cleanText;
+        if (attachSourcePaths.Count > 0)
+        {
+            var attachDir = Path.Combine(artifactsDir, "attachments", group.ToString());
+            var copied = DirectiveAttachments.CopyToRunFolder(attachSourcePaths, attachDir);
+            finalText = (cleanText.Length == 0 ? DirectiveAttachments.EmptyTextPlaceholder : cleanText)
+                + DirectiveAttachments.FormatForPrompt(copied);
+        }
+        intervention = intervention with { Text = finalText };
+
         Console.WriteLine($"  ⚑ Intervention de {config.ApproverName} injectée dans la discussion.");
         EventEmitter.Emit("turn", new { group = group.ToString(), speaker = config.ApproverName, round, isIntervention = true, content = intervention.Text });
         // Stockée + injectée aux acteurs ; publiée sur Jira portée par le commentaire

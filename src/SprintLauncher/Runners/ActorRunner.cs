@@ -1,5 +1,6 @@
 ﻿using System.Diagnostics;
 using System.Text;
+using SprintLauncher.Dialogue;
 using SprintLauncher.Prompts;
 
 namespace SprintLauncher.Runners;
@@ -365,7 +366,8 @@ public sealed class ActorRunner : IDisposable
                     foreach (var line in inbox.DrainNewLines())
                         if (LiveChatProtocol.IsSendable(line))
                         {
-                            Send(CodexAppServerProtocol.TurnSteer(nextId++, threadId, turnId, WrapLiveIntervention(line)));
+                            var resolved = ResolveLiveAttachments(prompt.Role, line);
+                            Send(CodexAppServerProtocol.TurnSteer(nextId++, threadId, turnId, WrapLiveIntervention(resolved)));
                             NotifyLiveDelivery(prompt.Role, line);
                         }
                 try { await Task.Delay(LivePollInterval, timeoutCts.Token); } catch (OperationCanceledException) { break; }
@@ -599,7 +601,8 @@ public sealed class ActorRunner : IDisposable
                     foreach (var line in inbox.DrainNewLines())
                     {
                         if (!LiveChatProtocol.IsSendable(line)) continue;
-                        stdin.WriteLine(frame(WrapLiveIntervention(line)));
+                        var resolved = ResolveLiveAttachments(role, line);
+                        stdin.WriteLine(frame(WrapLiveIntervention(resolved)));
                         stdin.Flush();
                         sent++;
                         NotifyLiveDelivery(role, line);
@@ -662,6 +665,22 @@ public sealed class ActorRunner : IDisposable
     }
 
     private static string Truncate(string s, int max) => s.Length <= max ? s : s[..max] + "…";
+
+    // Pièces jointes (SERZENIA-144 Lot 3) : une ligne live-input peut porter le même
+    // marqueur qu'une directive déposée par fichier. Extraites et copiées ICI, dans
+    // le dossier du run de CET acteur (LiveInputDir == artifactsDir du run), avant
+    // d'habiller le message — l'acteur ne voit jamais le marqueur brut, seulement des
+    // chemins de fichiers réels.
+    private string ResolveLiveAttachments(ActorRole role, string line)
+    {
+        var (cleanText, sourcePaths) = DirectiveAttachments.Extract(line);
+        if (sourcePaths.Count == 0 || LiveInputDir is null) return line;
+
+        var attachDir = System.IO.Path.Combine(LiveInputDir, "attachments", role.ToString());
+        var copied = DirectiveAttachments.CopyToRunFolder(sourcePaths, attachDir);
+        var body = cleanText.Length == 0 ? DirectiveAttachments.EmptyTextPlaceholder : cleanText;
+        return body + DirectiveAttachments.FormatForPrompt(copied);
+    }
 
     // Habillage d'une intervention live : l'acteur doit ACCUSER RÉCEPTION dans sa
     // sortie — sans ça, impossible de savoir si le message a été pris en compte
