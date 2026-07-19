@@ -60,6 +60,11 @@ public sealed class PendingDirective
     // qui concerne l'écriture Jira : une directive peut être appliquée sans être
     // encore publiée, et le run peut mourir entre les deux.
     public bool Delivered { get; set; }
+
+    // Pièces jointes (SERZENIA-144 Lot 3) : chemins SOURCES (poste de Hajar), pas
+    // encore copiés. La copie vers le dossier du run se fait à la livraison
+    // (DirectivesForActor), une fois la cible réelle connue.
+    public List<string> AttachmentSourcePaths { get; set; } = [];
 }
 
 public static class SprintStateManager
