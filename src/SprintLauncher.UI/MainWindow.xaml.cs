@@ -77,6 +77,8 @@ public partial class MainWindow : Window
         ("CommitteeCodex",             "COMITE ARBITRAGE", "CommitteeArbitrage"),
         ("ClaudeQaVerdict",            "QA",               "Qa"),
         ("GptQaVerdict",               "QA",               "Qa"),
+        ("RetrospectiveClaude",        "RETROSPECTIVE",    "Retrospective"),
+        ("RetrospectiveGpt",           "RETROSPECTIVE",    "Retrospective"),
     ];
 
     public MainWindow()
@@ -89,6 +91,7 @@ public partial class MainWindow : Window
             TxtTimer.Text = _elapsed.Elapsed.ToString(@"mm\:ss");
             RefreshLiveOutput();
             RefreshDecisions();
+            RefreshRetro();
         };
         ActorList.ItemsSource = _actors;
         ShowPreRunPanel(); // directives déposables AVANT même le lancement
@@ -1109,6 +1112,44 @@ public partial class MainWindow : Window
     {
         if (!ReferenceEquals(e.OriginalSource, TabMain)) return;
         RefreshDecisions();
+        RefreshRetro();
+    }
+
+    // ─── Onglet RÉTROSPECTIVE : trace persistante append-only (SERZENIA-144 lot 4) ─
+    // Le fichier retrospective.md grandit par append côté CLI, un bloc "## RETRO —
+    // <acteur>" par contribution, dès la sortie de l'acteur (survit à un arrêt quota
+    // entre deux acteurs). Cet onglet le relit tel quel — pas de reconstruction.
+    private DateTime _retroLastWrite = DateTime.MinValue;
+
+    private void RefreshRetro()
+    {
+        if (TabMain.SelectedIndex != 5) return;
+        var path = _artifactsDir is null ? null : Path.Combine(_artifactsDir, "retrospective.md");
+        if (path is null || !File.Exists(path))
+        {
+            if (_retroLastWrite != DateTime.MinValue || RetroViewer.Document is null)
+            {
+                _retroLastWrite = DateTime.MinValue;
+                TxtRetroHeader.Text = "Aucune rétrospective pour l'instant — elle se remplit en fin de run, un bloc par acteur.";
+                RetroViewer.Document = new FlowDocument(new Paragraph(new Run(
+                    "Chaque acteur (Claude, GPT) y appende son bilan de sprint dès qu'il le produit : " +
+                    "ce qui a bien marché (à garder), ce qui a mal marché, un plan d'action. " +
+                    "L'écriture est immédiate sur disque — rien n'est perdu si un moteur s'arrête au quota.")));
+            }
+            return;
+        }
+        try
+        {
+            var ts = File.GetLastWriteTime(path);
+            if (ts == _retroLastWrite) return; // rien de nouveau
+            _retroLastWrite = ts;
+            TxtRetroHeader.Text = $"Rétrospective — dernière contribution appendée le {ts:dd/MM HH:mm}";
+            RetroViewer.Document = MarkdownToFlow(File.ReadAllText(path));
+        }
+        catch (IOException ex)
+        {
+            RetroViewer.Document = new FlowDocument(new Paragraph(new Run($"Lecture impossible : {ex.Message}")));
+        }
     }
 
     // ─── Actor selection ───────────────────────────────────────────────────────

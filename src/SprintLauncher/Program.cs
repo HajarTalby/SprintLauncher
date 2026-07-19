@@ -753,6 +753,13 @@ foreach (var group in sessionMode.GetGroupOrder())
             }
         }
     }
+    else if (group == ActorGroup.Retrospective)
+    {
+        // Rétrospective (SERZENIA-144 lot 4) : chaque acteur restitue son post-mortem,
+        // append IMMÉDIATEMENT sur disque dès sa sortie — pas de discussion multi-tours,
+        // pas de publication Jira automatique (mécanisme local, cf. mode opératoire).
+        await RunRetrospectivePhaseAsync(rolesInGroup, issues, artifactsDir, sprintState, stateFile, shutdownCts.Token);
+    }
     else
     {
         foreach (var role in rolesInGroup)
@@ -1026,6 +1033,115 @@ async Task RunSingleActorAsync(
     }
 
     await SprintStateManager.SaveAsync(stateFile, state);
+}
+
+// ─── RÉTROSPECTIVE (fin de run, SERZENIA-144 lot 4) : chaque acteur restitue ce qui
+// a bien marché (à garder), ce qui a mal marché, et un plan d'action. PAS de
+// discussion multi-tours (contributions indépendantes, pas de consensus recherché),
+// PAS de publication Jira automatique — mécanisme de trace locale du sprint-launcher.
+//
+// Persistance IMMÉDIATE : chaque contribution est append sur disque (retrospective.md,
+// bloc "## RETRO — <acteur>") dès la sortie de l'acteur, AVANT toute autre étape — pour
+// survivre à un arrêt quota entre deux acteurs (jamais seulement en mémoire, incident
+// déclencheur : run mort avant publication = rétro perdue).
+async Task RunRetrospectivePhaseAsync(
+    ActorRole[] roles,
+    IReadOnlyList<SprintLauncher.Jira.JiraIssue> issues,
+    string artifactsDir,
+    SprintState state,
+    string stateFile,
+    CancellationToken ct)
+{
+    var retroFile = Path.Combine(artifactsDir, "retrospective.md");
+
+    // Contexte factuel du run, injecté à chaque acteur pour ancrer sa rétro dans
+    // les faits (pas juste le contexte Jira brut des US) : verdict QA, écarts,
+    // cycles de remédiation, litige — tout ce qui caractérise comment le sprint s'est passé.
+    var qaVerdictPath = Path.Combine(artifactsDir, "output-Qa-collective.txt");
+    var qaVerdict = File.Exists(qaVerdictPath)
+        ? await File.ReadAllTextAsync(qaVerdictPath, ct)
+        : "(aucun verdict QA trouvé pour ce run)";
+    var retroContext =
+        "## Résumé factuel du run — base ta rétrospective là-dessus\n" +
+        $"- Cycles de remédiation post-QA : {state.RemediationCycles}\n" +
+        $"- Litige détecté en analyse : {(state.LitigeDetected ? "oui" : "non")}\n" +
+        $"- Verdict QA final :\n{Truncate(qaVerdict, 2000)}\n";
+
+    foreach (var role in roles)
+    {
+        if (ct.IsCancellationRequested) break;
+
+        if (state.CompletedRoles.Contains(role.ToString()) &&
+            !state.InterruptedRoles.Contains(role.ToString()))
+        {
+            Console.WriteLine($"  ○ {role,-28} [déjà complété — ignoré]");
+            continue;
+        }
+
+        var prompt = builder.Build(role, issues, pilotageKey, mode: sessionMode, frameworks: frameworks, memory: agentMemory);
+        prompt = prompt with { UserPrompt = prompt.UserPrompt + "\n\n---\n\n" + retroContext };
+
+        var promptFile = Path.Combine(artifactsDir, $"prompt-{role}.txt");
+        await File.WriteAllTextAsync(promptFile, $"=== SYSTEM ===\n{prompt.SystemPrompt}\n\n=== USER ===\n{prompt.UserPrompt}", ct);
+
+        EventEmitter.Emit("actor-start", new { role = role.ToString() });
+        var sw = Stopwatch.StartNew();
+        if (Console.IsOutputRedirected) Console.WriteLine($"  > {role}");
+        else Console.Write($"  > {role,-28}");
+
+        using var timerCts = new CancellationTokenSource();
+        var timerTask = StartTimerTask(role.ToString(), sw, timerCts.Token);
+        var runResult = await runner.RunAsync(prompt, ct);
+        timerCts.Cancel();
+        await timerTask;
+        sw.Stop();
+        PrintActorResult(role.ToString(), sw, runResult);
+
+        var outputFile = Path.Combine(artifactsDir, $"output-{role}.txt");
+        await File.WriteAllTextAsync(outputFile, runResult.Output, CancellationToken.None);
+
+        if (runResult.Success)
+        {
+            // Append IMMÉDIAT — avant tout autre traitement — c'est la trace persistante
+            // qui survit à un arrêt quota juste après ce point.
+            var separator = File.Exists(retroFile) ? "\n\n" : "";
+            var block =
+                $"{separator}## RETRO — {role} — {DateTimeOffset.UtcNow:yyyy-MM-dd HH:mm} UTC\n\n" +
+                runResult.Output.Trim() + "\n";
+            try
+            {
+                await File.AppendAllTextAsync(retroFile, block, new UTF8Encoding(false), CancellationToken.None);
+                Console.WriteLine($"  ✓ {role} — rétro appendée dans {Path.GetFileName(retroFile)}");
+                EventEmitter.Emit("retro-entry", new { role = role.ToString(), file = Path.GetFullPath(retroFile), content = runResult.Output.Trim() });
+            }
+            catch (IOException ex)
+            {
+                Console.Error.WriteLine($"  ✗ Échec append rétro {role} sur disque : {ex.Message} — sortie conservée dans {outputFile}");
+            }
+
+            state.CompletedRoles.Add(role.ToString());
+            state.InterruptedRoles.Remove(role.ToString());
+        }
+        else if (ct.IsCancellationRequested)
+        {
+            state.InterruptedRoles.Add(role.ToString());
+            Console.WriteLine($"  ⚠ {role} marqué interrupted dans state.json");
+        }
+
+        reportEntries.Add(new ActorReportEntry(
+            Role: role,
+            Success: runResult.Success,
+            IsSemiManual: false,
+            IsSkipped: false,
+            ExitCode: runResult.ExitCode,
+            ElapsedSeconds: (int)sw.Elapsed.TotalSeconds,
+            OutputChars: runResult.Output.Length,
+            ErrorSnippet: runResult.ErrorOutput?.Trim() is { Length: > 0 } err ? err[..Math.Min(300, err.Length)] : null,
+            OutputFilePath: outputFile,
+            SemiManualPromptPath: null));
+
+        await SprintStateManager.SaveAsync(stateFile, state);
+    }
 }
 
 // ─── QA outillée : exécution réelle de QA_COMMAND + audit automatique des preuves
