@@ -57,7 +57,7 @@ public sealed class ActorRunner : IDisposable
         _gptPilotageAuto = gptPilotageAuto;
         _claudeBin = claudeBin ?? BinaryLocator.FindClaude();
         _codexBin = codexBin ?? BinaryLocator.FindCodex();
-        _claudeModel = claudeModel ?? "claude-opus-4-8";
+        _claudeModel = claudeModel ?? "sonnet-5";
         _codexModel = codexModel ?? "gpt-5.5";
         _directiveInterpreterModel = directiveInterpreterModel ?? "gpt-5-mini";
         _actorTimeout = actorTimeout ?? TimeSpan.FromMinutes(10);
@@ -77,14 +77,18 @@ public sealed class ActorRunner : IDisposable
 
     public async Task<ActorRunResult> RunAsync(
         ActorPrompt prompt, CancellationToken ct = default)
+        => await RunAsync(prompt, modelOverride: null, ct);
+
+    public async Task<ActorRunResult> RunAsync(
+        ActorPrompt prompt, string? modelOverride, CancellationToken ct = default)
     {
         if (prompt.Role.IsSemiManual() && !_gptPilotageAuto)
             return RunSemiManual(prompt);
 
         if (prompt.Role.IsClaudeFamily())
-            return await RunClaudeAsync(prompt, ct);
+            return await RunClaudeAsync(prompt, modelOverride, ct);
 
-        return await RunCodexAsync(prompt, ct);
+        return await RunCodexAsync(prompt, modelOverride, ct);
     }
 
     public async Task<DirectiveInterpretation?> InterpretDirectiveAsync(
@@ -169,7 +173,7 @@ public sealed class ActorRunner : IDisposable
 
     // Claude actors: claude -p (reads prompt from stdin) — subscription, no ANTHROPIC_API_KEY
     // Prompt passed via stdin to avoid Windows 32767-char command-line limit.
-    private async Task<ActorRunResult> RunClaudeAsync(ActorPrompt prompt, CancellationToken ct)
+    private async Task<ActorRunResult> RunClaudeAsync(ActorPrompt prompt, string? modelOverride, CancellationToken ct)
     {
         if (_claudeBin is null)
             return Fail(prompt.Role, "claude.exe not found. Set CLAUDE_BIN env var or install Claude Desktop App.");
@@ -198,7 +202,7 @@ public sealed class ActorRunner : IDisposable
 
         psi.ArgumentList.Add("-p");
         psi.ArgumentList.Add("--model");
-        psi.ArgumentList.Add(_claudeModel);
+        psi.ArgumentList.Add(string.IsNullOrWhiteSpace(modelOverride) ? _claudeModel : modelOverride);
         // Flux événementiel : réflexion/outils/texte visibles EN TEMPS RÉEL dans
         // l'UI (demande Hajar), le résultat final est extrait de l'événement result.
         psi.ArgumentList.Add("--output-format");
@@ -253,7 +257,7 @@ public sealed class ActorRunner : IDisposable
 
     // GPT actors (Codex): codex exec (reads task from stdin) — subscription, no OPENAI_API_KEY
     // Prompt passed via stdin to avoid Windows 32767-char command-line limit.
-    private async Task<ActorRunResult> RunCodexAsync(ActorPrompt prompt, CancellationToken ct)
+    private async Task<ActorRunResult> RunCodexAsync(ActorPrompt prompt, string? modelOverride, CancellationToken ct)
     {
         if (_codexBin is null)
             return Fail(prompt.Role, "codex.exe not found. Set CODEX_BIN env var or install the Codex VS Code extension.");
@@ -262,7 +266,7 @@ public sealed class ActorRunner : IDisposable
         // cours (turn/steer) — le vrai chat live que Hajar a en VS Code. Le mode exec
         // one-shot reste le repli par défaut tant que LiveInputDir n'est pas positionné.
         if (LiveInputDir is not null)
-            return await RunCodexLiveAsync(prompt, ct);
+            return await RunCodexLiveAsync(prompt, modelOverride, ct);
 
         var fullPrompt = $"{prompt.SystemPrompt}\n\n---\n\n{prompt.UserPrompt}";
 
@@ -284,7 +288,7 @@ public sealed class ActorRunner : IDisposable
         };
         psi.ArgumentList.Add("exec");
         psi.ArgumentList.Add("--model");
-        psi.ArgumentList.Add(_codexModel);
+        psi.ArgumentList.Add(string.IsNullOrWhiteSpace(modelOverride) ? _codexModel : modelOverride);
         // Sans ce flag, codex exec refuse de démarrer hors d'un dépôt git « trusted »
         // ("Not inside a trusted directory") — constaté en test isolé.
         psi.ArgumentList.Add("--skip-git-repo-check");
@@ -328,7 +332,7 @@ public sealed class ActorRunner : IDisposable
     // runtime NON validé (quota épuisé à l'écriture, 2026-07-16). En cas d'échec du
     // handshake, on retombe proprement en échec d'acteur (pas de crash) ; le mode exec
     // one-shot reste disponible en retirant LiveInputDir.
-    private async Task<ActorRunResult> RunCodexLiveAsync(ActorPrompt prompt, CancellationToken ct)
+    private async Task<ActorRunResult> RunCodexLiveAsync(ActorPrompt prompt, string? modelOverride, CancellationToken ct)
     {
         var fullPrompt = $"{prompt.SystemPrompt}\n\n---\n\n{prompt.UserPrompt}";
         var readOnly = prompt.Role.NeedsReadOnlySandbox() || prompt.ForceReadOnly;
@@ -351,6 +355,10 @@ public sealed class ActorRunner : IDisposable
             StandardErrorEncoding = Encoding.UTF8,
         };
         psi.ArgumentList.Add("app-server");
+        if (!string.IsNullOrWhiteSpace(modelOverride))
+        {
+            psi.EnvironmentVariables["CODEX_MODEL"] = modelOverride;
+        }
         psi.EnvironmentVariables.Remove("OPENAI_API_KEY");
         psi.EnvironmentVariables.Remove("ANTHROPIC_API_KEY");
 

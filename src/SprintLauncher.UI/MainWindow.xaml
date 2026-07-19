@@ -443,12 +443,24 @@
           <ColumnDefinition Width="*"/>
           <ColumnDefinition Width="Auto"/>
           <ColumnDefinition Width="Auto"/>
+          <ColumnDefinition Width="Auto"/>
+          <ColumnDefinition Width="Auto"/>
         </Grid.ColumnDefinitions>
         <TextBlock x:Name="TxtStatus" Grid.Column="0" Foreground="#6c7086" FontSize="11.5"
                    Text="Pret — configurez les issues et cliquez Lancer."/>
-        <TextBlock x:Name="TxtProgress" Grid.Column="1" Foreground="#6c7086" FontSize="11.5"
+        <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,18,0">
+          <TextBlock Text="Modele" Foreground="#6c7086" FontSize="11.5" VerticalAlignment="Center" Margin="0,0,6,0"/>
+          <TextBox x:Name="TxtCurrentModel" Style="{StaticResource DarkInput}"
+                   Width="150" Height="24" FontSize="11.5"
+                   KeyDown="TxtCurrentModel_KeyDown"
+                   ToolTip="Modèle du moteur courant. Entrée ou Appliquer envoie !model au CLI."/>
+          <Button x:Name="BtnApplyModel" Style="{StaticResource BtnSoft}" Content="Appliquer"
+                  Padding="8,2" FontSize="11" Margin="5,0,0,0"
+                  Click="BtnApplyModel_Click"/>
+        </StackPanel>
+        <TextBlock x:Name="TxtProgress" Grid.Column="2" Foreground="#6c7086" FontSize="11.5"
                    Margin="0,0,20,0"/>
-        <TextBlock x:Name="TxtTimer" Grid.Column="2" Foreground="#6c7086" FontSize="11.5"
+        <TextBlock x:Name="TxtTimer" Grid.Column="3" Foreground="#6c7086" FontSize="11.5"
                    FontFamily="Consolas" Text="00:00"/>
       </Grid>
     </Border>

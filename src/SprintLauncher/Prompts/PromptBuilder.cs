@@ -83,6 +83,13 @@ public sealed class PromptBuilder
         "5 à 10 points maximum par section. " +
         "Chaque point tient en 1 à 2 lignes.";
 
+    private const string ModelChoiceDirective =
+        "\n\nCHOIX DU MODÈLE PAR COMPLEXITÉ : évalue la complexité du traitement suivant " +
+        "(simple / moyen / complexe / critique) et propose le modèle LLM à utiliser pour " +
+        "le prochain développement. Termine ta sortie par une ligne parsable : " +
+        "'Modèle dev recommandé : <claude|codex> <identifiant-du-modèle>'. " +
+        "Si aucun surclassement n'est utile, recommande le modèle par défaut sonnet-5.";
+
     private string GetSystemPrompt(ActorRole role, string issueKey, SessionMode mode = SessionMode.Execution)
         => GetBaseSystemPrompt(role, issueKey, mode) + FormatDirective;
 
@@ -630,6 +637,8 @@ public sealed class PromptBuilder
 
         var sb = new System.Text.StringBuilder();
         sb.AppendLine(instruction);
+        if (role.GetGroup() is ActorGroup.CommitteePilotage or ActorGroup.Analysis)
+            sb.AppendLine(ModelChoiceDirective);
 
         if (previousContributions is not null)
         {

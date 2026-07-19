@@ -387,6 +387,9 @@ using var runner = new ActorRunner(
     repoRoot: config.SerzeniaRepoRoot,
     implementationTimeout: TimeSpan.FromSeconds(config.ImplementationTimeoutSeconds),
     gptPilotageAuto: config.GptPilotageAuto);
+var modelLock = new object();
+var currentClaudeModel = config.ClaudeModel;
+var currentCodexModel = config.CodexModel;
 // Garde-fou de périmètre : toute écriture Jira hors des tickets du sprint est refusée
 // (incident sprint 6 : délibération publiée sur SERZENIA-98 au lieu de SERZENIA-111).
 var publisher = new JiraCommentPublisher(httpClient, config.JiraBaseUrl, config.JiraEmail, config.JiraApiToken, dryRun)
@@ -985,7 +988,8 @@ async Task RunSingleActorAsync(
     var promptFile = Path.Combine(artifactsDir, $"prompt-{role}.txt");
     await File.WriteAllTextAsync(promptFile, $"=== SYSTEM ===\n{prompt.SystemPrompt}\n\n=== USER ===\n{prompt.UserPrompt}");
 
-    EventEmitter.Emit("actor-start", new { role = role.ToString() });
+    var model = ModelForRole(role);
+    EventEmitter.Emit("actor-start", new { role = role.ToString(), engine = EngineForRole(role).ToString().ToLowerInvariant(), model });
     // Correction 1: live timer
     var sw = Stopwatch.StartNew();
     if (Console.IsOutputRedirected) Console.WriteLine($"  > {role}");
@@ -994,13 +998,14 @@ async Task RunSingleActorAsync(
     using var timerCts = new CancellationTokenSource();
     var timerTask = StartTimerTask(role.ToString(), sw, timerCts.Token);
 
-    var runResult = await runner.RunAsync(prompt, ct);
+    var runResult = await runner.RunAsync(prompt, model, ct);
 
     timerCts.Cancel();
     await timerTask;
     sw.Stop();
 
     PrintActorResult(role.ToString(), sw, runResult);
+    ApplyModelRecommendationsFromOutput(role, runResult.Output);
 
     var outputFile = Path.Combine(artifactsDir, $"output-{role}.txt");
     await File.WriteAllTextAsync(outputFile, runResult.Output);
@@ -1097,14 +1102,15 @@ async Task RunRetrospectivePhaseAsync(
         var promptFile = Path.Combine(artifactsDir, $"prompt-{role}.txt");
         await File.WriteAllTextAsync(promptFile, $"=== SYSTEM ===\n{prompt.SystemPrompt}\n\n=== USER ===\n{prompt.UserPrompt}", ct);
 
-        EventEmitter.Emit("actor-start", new { role = role.ToString() });
+        var model = ModelForRole(role);
+        EventEmitter.Emit("actor-start", new { role = role.ToString(), engine = EngineForRole(role).ToString().ToLowerInvariant(), model });
         var sw = Stopwatch.StartNew();
         if (Console.IsOutputRedirected) Console.WriteLine($"  > {role}");
         else Console.Write($"  > {role,-28}");
 
         using var timerCts = new CancellationTokenSource();
         var timerTask = StartTimerTask(role.ToString(), sw, timerCts.Token);
-        var runResult = await runner.RunAsync(prompt, ct);
+        var runResult = await runner.RunAsync(prompt, model, ct);
         timerCts.Cancel();
         await timerTask;
         sw.Stop();
@@ -1209,6 +1215,46 @@ async Task<bool> WaitForQuotaWindowAsync(SprintState state, string stateFile, Ca
 // un SAS, pas un stockage : il est vidé ici et son contenu part dans l'état persisté
 // (incident 2026-07-16 : run mort avant le point de lecture → directive jamais lue).
 // Une ligne = une directive (l'UI en ajoute une par intervention).
+ModelEngine EngineForRole(ActorRole role) =>
+    role.IsClaudeFamily() ? ModelEngine.Claude : ModelEngine.Codex;
+
+string ModelForRole(ActorRole role)
+{
+    lock (modelLock)
+        return role.IsClaudeFamily() ? currentClaudeModel : currentCodexModel;
+}
+
+void ApplyModelRecommendation(ModelRecommendation recommendation, string source)
+{
+    lock (modelLock)
+    {
+        if (recommendation.Engine == ModelEngine.Claude)
+        {
+            currentClaudeModel = recommendation.Model;
+            runner.ClaudeModel = recommendation.Model;
+        }
+        else
+        {
+            currentCodexModel = recommendation.Model;
+            runner.CodexModel = recommendation.Model;
+        }
+    }
+
+    var engine = recommendation.Engine.ToString().ToLowerInvariant();
+    Console.WriteLine($"  ⚡ Modèle {engine} changé → {recommendation.Model} ({source}, effectif dès le prochain tour {engine}).");
+    EventEmitter.Emit("model-changed", new { engine, model = recommendation.Model, source });
+}
+
+void ApplyModelRecommendationsFromOutput(ActorRole role, string output)
+{
+    if (role.GetGroup() is not (ActorGroup.CommitteePilotage or ActorGroup.Analysis))
+        return;
+
+    var recommendations = ModelRecommendationParser.ExtractRecommendations(output, EngineForRole(role));
+    foreach (var recommendation in recommendations)
+        ApplyModelRecommendation(recommendation, $"{role} / complexité");
+}
+
 async Task IngestPendingDirectivesAsync(string artifactsDir, CancellationToken ct)
 {
     var file = Path.Combine(artifactsDir, "pending-directive.txt");
@@ -1241,26 +1287,8 @@ async Task IngestPendingDirectivesAsync(string artifactsDir, CancellationToken c
             // de son processus ; le prochain tour du moteur utilise le nouveau modèle).
             if (line.StartsWith("!model ", StringComparison.OrdinalIgnoreCase))
             {
-                var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-                if (parts.Length >= 3)
-                {
-                    var engineToken = parts[1].ToLowerInvariant();
-                    var model = string.Join(' ', parts[2..]);
-                    if (engineToken is "claude" or "ccode" or "claudeimplementation")
-                    {
-                        runner.ClaudeModel = model;
-                        Console.WriteLine($"  ⚡ Modèle claude changé → {model} (effectif dès le prochain tour d'un acteur Claude).");
-                        EventEmitter.Emit("model-changed", new { engine = "claude", model });
-                    }
-                    else if (engineToken is "codex" or "gpt" or "gptimplementation")
-                    {
-                        runner.CodexModel = model;
-                        Console.WriteLine($"  ⚡ Modèle codex changé → {model} (effectif dès le prochain tour d'un acteur codex).");
-                        EventEmitter.Emit("model-changed", new { engine = "codex", model });
-                    }
-                    else
-                        Console.WriteLine($"  ⚠ !model : moteur inconnu « {parts[1]} » (attendu : claude|codex).");
-                }
+                if (ModelRecommendationParser.TryParseCommand(line, out var rec))
+                    ApplyModelRecommendation(rec, "directive Hajar");
                 else
                     Console.WriteLine("  ⚠ !model : syntaxe attendue « !model claude|codex <identifiant-du-modèle> ».");
                 continue;
@@ -2346,7 +2374,8 @@ async Task<ActorRunResult> RunDialogueTurnAsync(
     var promptFile = Path.Combine(artifactsDir, $"prompt-{role}.txt");
     await File.WriteAllTextAsync(promptFile, $"=== SYSTEM ===\n{prompt.SystemPrompt}\n\n=== USER ===\n{prompt.UserPrompt}");
 
-    EventEmitter.Emit("actor-start", new { role = role.ToString() });
+    var model = ModelForRole(role);
+    EventEmitter.Emit("actor-start", new { role = role.ToString(), engine = EngineForRole(role).ToString().ToLowerInvariant(), model });
     var sw = Stopwatch.StartNew();
     if (Console.IsOutputRedirected) Console.WriteLine($"  > {role}");
     else Console.Write($"  > {role,-28}");
@@ -2354,13 +2383,14 @@ async Task<ActorRunResult> RunDialogueTurnAsync(
     using var timerCts = new CancellationTokenSource();
     var timerTask = StartTimerTask(role.ToString(), sw, timerCts.Token);
 
-    var runResult = await runner.RunAsync(prompt, ct);
+    var runResult = await runner.RunAsync(prompt, model, ct);
 
     timerCts.Cancel();
     await timerTask;
     sw.Stop();
 
     PrintActorResult(role.ToString(), sw, runResult);
+    ApplyModelRecommendationsFromOutput(role, runResult.Output);
 
     // Dernier tour du rôle = fichier de sortie affiché par l'UI (écrasé à chaque tour).
     var outputFile = Path.Combine(artifactsDir, $"output-{role}.txt");
