@@ -29,6 +29,8 @@ public partial class MainWindow : Window
     private string _lastRunKeys = "";
     // Acteur en train de travailler : cible d'une intervention live (chat live).
     private string? _activeActor;
+    private string _activeModelEngine = "claude";
+    private string _currentModel = "sonnet-5";
     // TOUS les acteurs en cours (pipeline parallèle : deux moteurs peuvent tourner
     // en même temps). Le live ne route QUE vers un acteur réellement en cours —
     // sinon le message pourrit dans une inbox que personne ne lit (constat
@@ -94,6 +96,7 @@ public partial class MainWindow : Window
         InitializeComponent();
         _repoRoot = FindRepoRoot(AppContext.BaseDirectory) ?? Directory.GetCurrentDirectory();
         BuildActorList();
+        TxtCurrentModel.Text = _currentModel;
         _timer.Tick += (_, _) =>
         {
             TxtTimer.Text = _elapsed.Elapsed.ToString(@"mm\:ss");
@@ -401,7 +404,15 @@ public partial class MainWindow : Window
                 case "actor-start":
                 {
                     var role = data.GetProperty("role").GetString() ?? "";
+                    var model = data.TryGetProperty("model", out var m) ? m.GetString() ?? "" : "";
+                    var engine = data.TryGetProperty("engine", out var en) ? en.GetString() ?? "" : "";
                     _activeActor = role; // cible d'une intervention live non adressée
+                    if (!string.IsNullOrWhiteSpace(engine)) _activeModelEngine = engine;
+                    if (!string.IsNullOrWhiteSpace(model))
+                    {
+                        _currentModel = model;
+                        TxtCurrentModel.Text = model;
+                    }
                     _runningActors.Add(role);
                     SetStatus(role, "running");
                     TxtStatus.Text = $"En cours : {role}";
@@ -509,6 +520,20 @@ public partial class MainWindow : Window
                     var engine = data.GetProperty("engine").GetString() ?? "";
                     AppendChatTurn("Sprint Launcher", $"⚡ **{engine}** réactivé sur intervention de Hajar (quota signalé disponible) — il reprend au prochain tour.", isIntervention: true, round: 0, isFinal: false);
                     AppendLog($"⚡ {engine} réactivé (quota)");
+                    break;
+                }
+
+                case "model-changed":
+                {
+                    var engine = data.GetProperty("engine").GetString() ?? "";
+                    var model = data.GetProperty("model").GetString() ?? "";
+                    if (!string.IsNullOrWhiteSpace(engine)) _activeModelEngine = engine;
+                    if (!string.IsNullOrWhiteSpace(model))
+                    {
+                        _currentModel = model;
+                        TxtCurrentModel.Text = model;
+                    }
+                    AppendLog($"Modele {engine} -> {model}");
                     break;
                 }
 
@@ -1226,6 +1251,36 @@ public partial class MainWindow : Window
     }
 
     private void BtnSendIntervention_Click(object sender, RoutedEventArgs e) => SendInterventionText();
+
+    private void BtnApplyModel_Click(object sender, RoutedEventArgs e) => ApplyModelFromUi();
+
+    private void TxtCurrentModel_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Enter) return;
+        ApplyModelFromUi();
+        e.Handled = true;
+    }
+
+    private void ApplyModelFromUi()
+    {
+        var model = TxtCurrentModel.Text.Trim();
+        if (model.Length == 0) return;
+        _currentModel = model;
+        var line = $"!model {_activeModelEngine} {model}";
+        var targetDir = _process is { HasExited: false } && _artifactsDir is not null
+            ? _artifactsDir
+            : AppContext.BaseDirectory;
+        try
+        {
+            File.AppendAllText(Path.Combine(targetDir, "pending-directive.txt"), line + Environment.NewLine);
+            TxtStatus.Text = $"Modele {_activeModelEngine} demande : {model}";
+            AppendLog($">>> {line}");
+        }
+        catch (IOException ex)
+        {
+            AppendLog($"(modele non appliqué : {ex.Message})");
+        }
+    }
 
     private void TxtIntervention_KeyDown(object sender, KeyEventArgs e)
     {

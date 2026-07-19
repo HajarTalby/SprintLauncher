@@ -5,7 +5,7 @@ public sealed class SprintLauncherConfig
     public required string JiraBaseUrl { get; init; }
     public required string JiraEmail { get; init; }
     public required string JiraApiToken { get; init; }
-    public string ClaudeModel { get; init; } = "claude-opus-4-8";
+    public string ClaudeModel { get; init; } = "sonnet-5";
     public string CodexModel { get; init; } = "gpt-5.5";
     public int ActorTimeoutSeconds { get; init; } = 600;
     // Timeout dédié aux acteurs d'implémentation (un vrai dev prend 15-45 min).
@@ -69,7 +69,7 @@ public sealed class SprintLauncherConfig
         return new SprintLauncherConfig
         {
             JiraBaseUrl = "", JiraEmail = "", JiraApiToken = "",
-            ClaudeModel = Environment.GetEnvironmentVariable("CLAUDE_MODEL") ?? "claude-opus-4-8",
+            ClaudeModel = Environment.GetEnvironmentVariable("CLAUDE_MODEL") ?? "sonnet-5",
             CodexModel = Environment.GetEnvironmentVariable("CODEX_MODEL") ?? "gpt-5.5",
             SerzeniaRepoRoot = Environment.GetEnvironmentVariable("SERZENIA_REPO_ROOT"),
         };
@@ -88,7 +88,7 @@ public sealed class SprintLauncherConfig
             JiraBaseUrl = baseUrl,
             JiraEmail = email,
             JiraApiToken = token,
-            ClaudeModel = Environment.GetEnvironmentVariable("CLAUDE_MODEL") ?? "claude-opus-4-8",
+            ClaudeModel = Environment.GetEnvironmentVariable("CLAUDE_MODEL") ?? "sonnet-5",
             CodexModel = Environment.GetEnvironmentVariable("CODEX_MODEL") ?? "gpt-5.5",
             ActorTimeoutSeconds = ReadPositiveInt("ACTOR_TIMEOUT_SECONDS", 600),
             MaxDialogueRounds = ReadPositiveInt("MAX_DIALOGUE_ROUNDS", 3),
