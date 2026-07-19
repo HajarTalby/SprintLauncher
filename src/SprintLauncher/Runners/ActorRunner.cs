@@ -366,6 +366,7 @@ public sealed class ActorRunner : IDisposable
         var accumulated = new StringBuilder();
         var stderr = new StringBuilder();
         string? threadId = null, turnId = null, lastItemId = null;
+        var liveAtLineStart = true;
         var turnDone = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         int nextId = 1;
         var cwd = _repoRoot ?? Directory.GetCurrentDirectory();
@@ -420,12 +421,12 @@ public sealed class ActorRunner : IDisposable
                 if (itemId is not null && lastItemId is not null && itemId != lastItemId && accumulated.Length > 0)
                 {
                     accumulated.AppendLine().AppendLine();
-                    try { liveWriter?.WriteLine(); liveWriter?.WriteLine(); } catch (ObjectDisposedException) { }
+                    WriteLiveText(liveWriter, ref liveAtLineStart, Environment.NewLine + Environment.NewLine);
                 }
                 if (itemId is not null) lastItemId = itemId;
 
                 accumulated.Append(delta);
-                try { liveWriter?.Write(delta); } catch (ObjectDisposedException) { }
+                WriteLiveText(liveWriter, ref liveAtLineStart, delta);
             }
             else if (CodexAppServerProtocol.IsTurnCompleted(msg.Method))
             {
@@ -540,6 +541,7 @@ public sealed class ActorRunner : IDisposable
         using var process = new Process { StartInfo = psi };
         var stdout = new StringBuilder();
         var stderr = new StringBuilder();
+        var liveAtLineStart = true;
 
         string? liveFile = null;
         StreamWriter? liveWriter = null;
@@ -560,7 +562,7 @@ public sealed class ActorRunner : IDisposable
             stdout.AppendLine(e.Data);
             var liveLine = interpreter is not null ? interpreter.Interpret(e.Data) : e.Data;
             if (liveLine is not null)
-                try { liveWriter?.WriteLine(liveLine); } catch (ObjectDisposedException) { }
+                WriteLiveLine(liveWriter, ref liveAtLineStart, liveLine);
         };
         process.ErrorDataReceived += (_, e) => { if (e.Data is not null) stderr.AppendLine(e.Data); };
 
@@ -747,13 +749,40 @@ public sealed class ActorRunner : IDisposable
     private void AppendLiveNote(ActorRole role, string note)
     {
         if (LiveOutputDir is null) return;
+        var liveAtLineStart = true;
         try
         {
-            File.AppendAllText(
+            using var writer = new StreamWriter(
                 System.IO.Path.Combine(LiveOutputDir, $"live-{role}.txt"),
-                note + Environment.NewLine, new UTF8Encoding(false));
+                append: true, new UTF8Encoding(false));
+            WriteLiveLine(writer, ref liveAtLineStart, note);
         }
         catch (IOException) { }
+    }
+
+    private static void WriteLiveLine(StreamWriter? writer, ref bool atLineStart, string line)
+    {
+        WriteLiveText(writer, ref atLineStart, line);
+        WriteLiveText(writer, ref atLineStart, Environment.NewLine);
+    }
+
+    private static void WriteLiveText(StreamWriter? writer, ref bool atLineStart, string text)
+    {
+        if (writer is null || text.Length == 0) return;
+        try
+        {
+            foreach (var c in text)
+            {
+                if (atLineStart && c is not '\r' and not '\n')
+                {
+                    writer.Write($"[{DateTime.Now:HH:mm:ss}] ");
+                    atLineStart = false;
+                }
+                writer.Write(c);
+                if (c == '\n') atLineStart = true;
+            }
+        }
+        catch (ObjectDisposedException) { }
     }
 
     private static string Truncate(string s, int max) => s.Length <= max ? s : s[..max] + "…";

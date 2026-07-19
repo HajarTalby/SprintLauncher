@@ -104,6 +104,9 @@
                   ToolTip="Ouvre le rapport HTML du run"/>
           <Button x:Name="BtnOpenArtifacts" Style="{StaticResource BtnSoft}" Content="Artefacts" FontSize="11"
                   IsEnabled="False" Click="BtnOpenArtifacts_Click" Margin="0,0,10,0"/>
+          <Button x:Name="BtnPause" Style="{StaticResource BtnSoft}" Content="Pause"
+                  IsEnabled="False" Click="BtnPause_Click" Margin="0,0,6,0"
+                  ToolTip="Pause douce : l'acteur en cours termine, puis le run attend la reprise."/>
           <Button x:Name="BtnRun" Style="{StaticResource Btn}" Content="▶  Lancer" Click="BtnRun_Click" MinWidth="90"/>
         </StackPanel>
 

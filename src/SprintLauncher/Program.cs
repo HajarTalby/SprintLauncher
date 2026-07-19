@@ -131,6 +131,7 @@ if (issueKeys.Length == 0 && sprintArg is null && publishManualRole is null && c
     Console.Error.WriteLine("       sprint-launcher --list-roles");
     Console.Error.WriteLine();
     Console.Error.WriteLine("  --interactive   Checkpoints : GO/intervention/conclure entre rounds de discussion et groupes.");
+    Console.Error.WriteLine("  !pause / !resume dans pending-directive.txt : pause douce après l'acteur en cours, puis reprise.");
     Console.Error.WriteLine("  --mode cadrage  Comité Pilotage d'abord (discussion) → US proposées → Analyse → Implémentation → QA.");
     Console.Error.WriteLine("  --mode execution (défaut) Analyse → Implémentation (tour de rôle) → Pilotage → QA.");
     Console.Error.WriteLine("  --publish-from-artifacts  Publie les sorties dry-run validées, sans réexécuter les acteurs.");
@@ -981,6 +982,7 @@ async Task RunSingleActorAsync(
 
     // Directives déposées à tout moment + celles adressées nommément à CE rôle.
     await IngestPendingDirectivesAsync(artifactsDir, ct);
+    await WaitIfPausedAsync(artifactsDir, ct);
     var directives = Join(approverDirective, DirectivesForActor(role));
     if (!string.IsNullOrWhiteSpace(directives))
         prompt = prompt with { UserPrompt = prompt.UserPrompt + $"\n\n## Directive de {config.ApproverName} — à respecter\n{directives}" };
@@ -1086,6 +1088,8 @@ async Task RunRetrospectivePhaseAsync(
 
     foreach (var role in roles)
     {
+        if (ct.IsCancellationRequested) break;
+        await WaitIfPausedAsync(artifactsDir, ct);
         if (ct.IsCancellationRequested) break;
 
         if (state.CompletedRoles.Contains(role.ToString()) &&
@@ -1272,6 +1276,34 @@ async Task IngestPendingDirectivesAsync(string artifactsDir, CancellationToken c
 
         foreach (var line in raw.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
+            if (line.Equals("!pause", StringComparison.OrdinalIgnoreCase) ||
+                line.Equals("pause", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!sprintState.PauseRequested)
+                {
+                    sprintState.PauseRequested = true;
+                    sprintState.PauseRequestedAt = DateTimeOffset.UtcNow;
+                    await SprintStateManager.SaveAsync(stateFile, sprintState, CancellationToken.None);
+                    Console.WriteLine("  ⏸ Pause demandée — l'acteur en cours termine, puis le run attendra !resume.");
+                    EventEmitter.Emit("pause-requested", new { requestedAt = sprintState.PauseRequestedAt });
+                }
+                continue;
+            }
+
+            if (line.Equals("!resume", StringComparison.OrdinalIgnoreCase) ||
+                line.Equals("resume", StringComparison.OrdinalIgnoreCase))
+            {
+                if (sprintState.PauseRequested)
+                {
+                    sprintState.PauseRequested = false;
+                    sprintState.PauseRequestedAt = null;
+                    await SprintStateManager.SaveAsync(stateFile, sprintState, CancellationToken.None);
+                    Console.WriteLine("  ▶ Reprise demandée — lancement du prochain acteur.");
+                    EventEmitter.Emit("pause-resumed", new { });
+                }
+                continue;
+            }
+
             // « !cancel <ligne d'origine> » : correction d'un envoi (retour Hajar,
             // 2026-07-17) — retire la directive correspondante si elle n'a pas encore
             // été remise. Une directive déjà remise ne se rappelle pas : la version
@@ -1342,6 +1374,23 @@ void ClearCompletionForPhase(ActorGroup group)
         sprintState.CompletedUsImplementations.Clear();
         sprintState.PendingReviews.Clear();
         implementationPhaseDone = false;
+    }
+}
+
+async Task WaitIfPausedAsync(string artifactsDir, CancellationToken ct)
+{
+    await IngestPendingDirectivesAsync(artifactsDir, ct);
+    if (!sprintState.PauseRequested) return;
+
+    var since = sprintState.PauseRequestedAt ?? DateTimeOffset.UtcNow;
+    Console.WriteLine($"  ⏸ Run en pause depuis {since:HH:mm:ss} UTC — écrire !resume dans pending-directive.txt pour reprendre.");
+    EventEmitter.Emit("pause-waiting", new { requestedAt = since });
+
+    while (sprintState.PauseRequested && !ct.IsCancellationRequested)
+    {
+        try { await Task.Delay(TimeSpan.FromSeconds(2), ct); }
+        catch (OperationCanceledException) { break; }
+        await IngestPendingDirectivesAsync(artifactsDir, CancellationToken.None);
     }
 }
 
@@ -2372,6 +2421,7 @@ async Task<ActorRunResult> RunDialogueTurnAsync(
     await using var actorTurn = await actorTurnCoordinator.BeginAsync(role, ct);
 
     var promptFile = Path.Combine(artifactsDir, $"prompt-{role}.txt");
+    await WaitIfPausedAsync(artifactsDir, ct);
     await File.WriteAllTextAsync(promptFile, $"=== SYSTEM ===\n{prompt.SystemPrompt}\n\n=== USER ===\n{prompt.UserPrompt}");
 
     var model = ModelForRole(role);
