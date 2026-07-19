@@ -33,6 +33,9 @@ public sealed class SprintState
     // un acteur commente sur l'US liée au sujet (choix de Hajar, 2026-07). Persistées
     // pour survivre aux interruptions/--resume.
     public List<PendingDirective> PendingDirectives { get; set; } = [];
+    // Ordres de phases demandés par Hajar (rejouer/insérer/sauter) : appliqués
+    // uniquement aux frontières de phases, jamais pendant le tour d'un acteur.
+    public List<PendingPhaseOrder> PendingPhaseOrders { get; set; } = [];
     public DateTimeOffset? LastCompletedAt { get; set; }
 }
 
@@ -60,6 +63,7 @@ public sealed class PendingDirective
     // qui concerne l'écriture Jira : une directive peut être appliquée sans être
     // encore publiée, et le run peut mourir entre les deux.
     public bool Delivered { get; set; }
+    public string? Intent { get; set; }
 
     // Pièces jointes (SERZENIA-144 Lot 3) : chemins SOURCES (poste de Hajar), pas
     // encore copiés. La copie vers le dossier du run se fait à la livraison

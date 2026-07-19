@@ -13,9 +13,11 @@ public sealed class ActorRunner : IDisposable
     // (2026-07-17 : changer de modèle sur quota sans redémarrer le run).
     private string _claudeModel;
     private string _codexModel;
+    private string _directiveInterpreterModel;
 
     public string ClaudeModel { get => _claudeModel; set => _claudeModel = value; }
     public string CodexModel { get => _codexModel; set => _codexModel = value; }
+    public string DirectiveInterpreterModel { get => _directiveInterpreterModel; set => _directiveInterpreterModel = value; }
     private readonly TimeSpan _actorTimeout;
     private readonly TimeSpan _implementationTimeout;
     private readonly string? _repoRoot;
@@ -46,6 +48,7 @@ public sealed class ActorRunner : IDisposable
         string? codexBin = null,
         string? claudeModel = null,
         string? codexModel = null,
+        string? directiveInterpreterModel = null,
         TimeSpan? actorTimeout = null,
         string? repoRoot = null,
         TimeSpan? implementationTimeout = null,
@@ -56,6 +59,7 @@ public sealed class ActorRunner : IDisposable
         _codexBin = codexBin ?? BinaryLocator.FindCodex();
         _claudeModel = claudeModel ?? "claude-opus-4-8";
         _codexModel = codexModel ?? "gpt-5.5";
+        _directiveInterpreterModel = directiveInterpreterModel ?? "gpt-5-mini";
         _actorTimeout = actorTimeout ?? TimeSpan.FromMinutes(10);
         // Un vrai dev d'US prend 15-45 min — le timeout dialogue (10 min) tuait
         // les implémentations en plein travail (constaté au run sprint 6).
@@ -81,6 +85,86 @@ public sealed class ActorRunner : IDisposable
             return await RunClaudeAsync(prompt, ct);
 
         return await RunCodexAsync(prompt, ct);
+    }
+
+    public async Task<DirectiveInterpretation?> InterpretDirectiveAsync(
+        string directive,
+        IReadOnlyCollection<string> knownTargets,
+        IReadOnlyCollection<string> knownPhases,
+        CancellationToken ct = default)
+    {
+        if (_codexBin is null || string.IsNullOrWhiteSpace(directive))
+            return null;
+
+        var prompt =
+            "Tu interpretes une directive de Hajar pour Sprint Launcher. " +
+            "Reponds uniquement par un objet JSON, sans markdown. Schema attendu: " +
+            "{\"intent\":\"corriger|relancer|reorienter|question|directive\",\"targets\":{\"actors\":[],\"groups\":[]},\"phase_order\":{\"action\":\"replay|insert|skip_to\",\"phase\":\"Analysis|FamilyClaude|FamilyGpt|CommitteePilotage|CommitteeArbitrage|Qa|Retrospective\"}}. " +
+            "Omet phase_order s'il n'y a pas d'ordre de phase. Omet les cibles inconnues. " +
+            $"Cibles connues: {string.Join(", ", knownTargets)}. Phases connues: {string.Join(", ", knownPhases)}.\n\n" +
+            $"Directive: {directive}";
+
+        var lastMsgFile = Path.Combine(Path.GetTempPath(), $"codex-directive-interpretation-{Guid.NewGuid():N}.txt");
+        var psi = new ProcessStartInfo
+        {
+            FileName = _codexBin,
+            UseShellExecute = false,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+            WorkingDirectory = _repoRoot ?? Directory.GetCurrentDirectory(),
+            StandardInputEncoding = new UTF8Encoding(false),
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8,
+        };
+        psi.ArgumentList.Add("exec");
+        psi.ArgumentList.Add("--model");
+        psi.ArgumentList.Add(_directiveInterpreterModel);
+        psi.ArgumentList.Add("--skip-git-repo-check");
+        psi.ArgumentList.Add("--json");
+        psi.ArgumentList.Add("--sandbox");
+        psi.ArgumentList.Add("read-only");
+        psi.ArgumentList.Add("--output-last-message");
+        psi.ArgumentList.Add(lastMsgFile);
+        psi.EnvironmentVariables.Remove("OPENAI_API_KEY");
+        psi.EnvironmentVariables.Remove("ANTHROPIC_API_KEY");
+
+        using var process = new Process { StartInfo = psi };
+        var stdout = new StringBuilder();
+        var stderr = new StringBuilder();
+        process.OutputDataReceived += (_, e) => { if (e.Data is not null) stdout.AppendLine(e.Data); };
+        process.ErrorDataReceived += (_, e) => { if (e.Data is not null) stderr.AppendLine(e.Data); };
+
+        try
+        {
+            process.Start();
+            _job?.AssignProcess(process);
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
+            await process.StandardInput.WriteAsync(prompt);
+            process.StandardInput.Close();
+
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeoutCts.CancelAfter(TimeSpan.FromSeconds(60));
+            await process.WaitForExitAsync(timeoutCts.Token);
+
+            var output = File.Exists(lastMsgFile)
+                ? (await File.ReadAllTextAsync(lastMsgFile, CancellationToken.None)).Trim()
+                : stdout.ToString();
+            return process.ExitCode == 0
+                ? DirectiveInterpretationParser.TryParse(output, directive)
+                : null;
+        }
+        catch (Exception ex) when (ex is IOException or ObjectDisposedException or OperationCanceledException or InvalidOperationException)
+        {
+            try { if (!HasExitedSafe(process)) process.Kill(entireProcessTree: true); } catch (InvalidOperationException) { }
+            return null;
+        }
+        finally
+        {
+            try { File.Delete(lastMsgFile); } catch (IOException) { }
+        }
     }
 
     // Claude actors: claude -p (reads prompt from stdin) — subscription, no ANTHROPIC_API_KEY
