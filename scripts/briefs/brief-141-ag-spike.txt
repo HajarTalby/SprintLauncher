@@ -1,0 +1,25 @@
+Tu es un agent d'investigation (codex) sur le Sprint Launcher (SL), une app .NET : CLI `src/SprintLauncher`, UI WPF `src/SprintLauncher.UI`, tests `src/SprintLauncher.Tests`. Tu es DÉJÀ dans ton worktree git isolé, sur la branche `sl-141-ag-spike`. Travaille UNIQUEMENT ici. Aucun push. Réponds en français.
+
+CONTEXTE — SERZENIA-141 : intégrer **Antigravity (AG)** au Sprint Launcher, pour qu'AG devienne un moteur d'acteur au même titre que Claude (`claude.exe`) et Codex (`codex.exe`). C'est un gros chantier (~30-50h). Sa Definition of Ready impose une **analyse préalable avant toute ligne de code d'intégration**.
+
+TA TÂCHE = **Lot 0 uniquement : le SPIKE DE FAISABILITÉ**. Il conditionne tout le reste.
+**N'IMPLÉMENTE PAS l'intégration.** Tu produis une analyse et une recommandation argumentée.
+
+Questions auxquelles tu dois répondre :
+1. **AG est-il présent sur cette machine ?** Cherche méthodiquement : extensions VS Code (`%USERPROFILE%\.vscode\extensions`), `%LOCALAPPDATA%\Programs`, `Program Files`, le PATH, les applications installées. Note la version si trouvé.
+2. **AG peut-il être piloté en headless / programmatiquement ?** C'est LA question qui décide du GO/NO-GO. Existe-t-il un binaire CLI, une API locale, un mode « exec » comparable à `codex exec` ou `claude -p` ? Peut-on lui passer un prompt (idéalement sur stdin) et récupérer une sortie exploitable ? Y a-t-il un mode streaming/JSON ? Un mode abonnement (sans clé API) ?
+3. **Quelles contraintes ?** Sandbox/permissions, authentification, limites de concurrence (peut-on lancer plusieurs sessions ?), quotas.
+4. **Si c'est faisable**, esquisse l'intégration en suivant le patron DÉJÀ en place dans le SL — lis d'abord :
+   - `src/SprintLauncher/Runners/BinaryLocator.cs` (comment le SL localise claude.exe et codex.exe)
+   - `src/SprintLauncher/Runners/ActorRunner.cs` (comment il les invoque : stdin, `--json`, sandbox, retrait des clés API)
+   - `src/SprintLauncher/Runners/CodexJsonInterpreter.cs` (comment il interprète un flux d'événements)
+   Décris ce que serait un `AgRunner` équivalent, et ce qu'il faudrait toucher ailleurs (ActorRole, config, UI).
+
+MÉTHODE : investigue réellement (explore le disque, lis les docs/README d'AG si présents, teste une invocation minimale si un binaire existe). Ne SUPPOSE rien — si tu ne trouves pas, dis-le clairement, c'est une réponse valide et utile.
+
+LIVRABLE : un document `docs/141-ag-spike.md` contenant :
+- Ce que tu as cherché et trouvé (chemins exacts, versions), ou l'absence constatée.
+- Le mécanisme d'invocation headless trouvé, avec un exemple concret de commande — ou la conclusion qu'il n'y en a pas.
+- Une recommandation **GO / NO-GO / GO-CONDITIONNEL** argumentée, avec les risques.
+- Si GO : l'esquisse de l'`AgRunner` et la liste des fichiers à modifier, avec une estimation.
+Commit sur `sl-141-ag-spike`, message commençant par `SERZENIA-141 (Lot 0 spike)`. Pas de push. Termine par un résumé de ta conclusion en quelques lignes.

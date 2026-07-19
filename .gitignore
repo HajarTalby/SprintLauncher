@@ -6,3 +6,7 @@ release/
 *.user
 .vs/
 .test-ok
+
+# Artefacts de run codex (sorties de session, non reproductibles)
+codex-last.txt
+codex-run.log

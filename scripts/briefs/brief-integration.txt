@@ -1,0 +1,18 @@
+Tu es un agent d'intégration (codex) sur le Sprint Launcher, une app .NET : CLI `src/SprintLauncher`, UI WPF `src/SprintLauncher.UI`, tests `src/SprintLauncher.Tests`. Tu travailles dans le dépôt PRINCIPAL `C:\Users\najwa\OneDrive\Desktop\SprintLauncher`, sur la branche `sl-fixes-2026-07-16` qui contient DÉJÀ les Lots 3, 4 et 6 intégrés. Réponds en français. Ne fais AUCUN push.
+
+TÂCHE — intégrer les 3 lots restants de SERZENIA-144 dans `sl-fixes-2026-07-16`, un par un, en résolvant les conflits intelligemment. Ordre imposé :
+1. `git merge --no-ff sl-lot5-interpretation`   (interprétation IA + file de phases)
+2. `git merge --no-ff sl-lot1-modele-complexite` (modèle par appel + barre UI modèle)
+3. `git merge --no-ff sl-lot2-pause-horodatage`  (pause douce + horodatage live)
+
+Ce sont des fonctionnalités INDÉPENDANTES qui ont modifié les mêmes fichiers à des endroits différents (surtout `Program.cs`, et selon les lots `Runners/ActorRunner.cs`, `Runners/SprintStateManager.cs`, `Config/SprintLauncherConfig.cs`, `Prompts/PromptBuilder.cs`, `SprintLauncher.UI/MainWindow.xaml` et `.xaml.cs`). Règle de résolution : **CONSERVER les deux côtés** (combiner les ajouts des deux fonctionnalités), ne jamais écraser une fonctionnalité par l'autre. Pour comprendre ce que chaque lot a fait, lis son résumé dans le worktree voisin : `C:\Users\najwa\OneDrive\Desktop\SL-wt-lot5\codex-last.txt`, `...\SL-wt-lot1\codex-last.txt`, `...\SL-wt-lot2\codex-last.txt`. Après chaque merge, commite (le message de merge par défaut convient). Si un merge n'a pas de conflit, tant mieux, continue.
+
+APRÈS les 3 merges — VALIDATION OBLIGATOIRE (ne déclare pas « fini » sans ça) :
+- `dotnet build src\SprintLauncher`  → doit être vert
+- `dotnet build src\SprintLauncher.UI` → doit être vert
+- `dotnet test src\SprintLauncher.Tests` → tous les tests doivent passer
+Corrige toute erreur d'intégration (doublons, appels cassés, using manquants) issue de la fusion des 4 lots. Si un test échoue à cause d'une interaction entre lots, répare-la sans supprimer de fonctionnalité.
+
+CONTRAINTES : scripts `.ps1` strictement ASCII (PS 5.1 = Windows-1252). Aucun secret en clair. Aucun push.
+
+LIVRABLE : la branche `sl-fixes-2026-07-16` avec les 4 lots (3,4,6 déjà là + 5,1,2) intégrés et build+tests verts. Termine par un résumé : conflits rencontrés et comment résolus par fichier, résultat build+tests (chiffres), et tout point douteux à me signaler.

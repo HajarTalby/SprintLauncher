@@ -1,0 +1,12 @@
+Tu es un agent dev autonome (codex) sur le Sprint Launcher, une app .NET : CLI `src/SprintLauncher`, UI WPF `src/SprintLauncher.UI`, tests `src/SprintLauncher.Tests`. Tu es DÉJÀ dans ton worktree git isolé, sur ta branche dédiée `sl-lot5-interpretation` (basée sur l'intégration `sl-fixes-2026-07-16`, qui contient déjà les Lots 3 et 4). Travaille UNIQUEMENT ici, ne touche pas à d'autres dossiers/branches, ne fais AUCUN push. Réponds en français.
+
+TÂCHE — SERZENIA-144, Lot 5 « interprétation IA + file d'ordres de phases » (le plus gros lot).
+Objectif :
+1. INTERPRÉTATION IA des directives : aujourd'hui, une intervention de Hajar est routée par un simple préfixe `@cible`. Ajoute une couche d'interprétation par un LLM léger (un appel modèle rapide type « haiku ») qui prend la directive en langage libre de Hajar et renvoie du JSON structuré : intention (ex. corriger / relancer / réorienter / poser une question), acteur(s) ou groupe ciblé(s), et éventuel ordre de phase. Le routage `@` reste le repli si l'interprétation échoue.
+2. FILE D'ORDRES DE PHASES à la demande : Hajar peut demander de rejouer une phase, en insérer une, ou sauter à une phase ; ces ordres sont mis en file et appliqués au bon moment de l'orchestration (pas au milieu d'un acteur). Persiste la file pour survivre à `--resume`.
+
+Explore d'abord : l'orchestration des phases dans `Program.cs`, le routage dans `Dialogue/DirectiveAddressing.cs`, les appels d'acteurs dans `Runners/ActorRunner.cs` (réutilise le même mécanisme d'appel claude/codex pour l'appel d'interprétation), et la persistance d'état (`SprintStateManager`). Vérifie ce qui existe déjà avant de coder, reste chirurgical.
+
+CONTRAINTES : scripts `.ps1` strictement ASCII (PS 5.1 = Windows-1252). Compile les DEUX projets (`dotnet build src/SprintLauncher` ; `dotnet build src/SprintLauncher.UI`) et lance les tests (`dotnet test src/SprintLauncher.Tests`) — ne déclare pas « fini » sans build + tests verts, ajoute des tests pour ta logique d'interprétation/file. Aucun secret en clair.
+
+LIVRABLE : commit(s) sur `sl-lot5-interpretation`, message commençant par `SERZENIA-144 (Lot 5)`. Termine par un résumé : fichiers modifiés, ce qui est implémenté, résultat build+tests, points de décision/blocage.

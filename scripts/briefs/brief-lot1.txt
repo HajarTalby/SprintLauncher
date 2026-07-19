@@ -1,0 +1,13 @@
+Tu es un agent dev autonome (codex) sur le Sprint Launcher, une app .NET : CLI `src/SprintLauncher`, UI WPF `src/SprintLauncher.UI`, tests `src/SprintLauncher.Tests`. Tu es DÉJÀ dans ton worktree git isolé, sur ta branche dédiée `sl-lot1-modele-complexite` (basée sur l'intégration `sl-fixes-2026-07-16`). Travaille UNIQUEMENT ici, ne touche pas à d'autres dossiers/branches, ne fais AUCUN push. Réponds en français.
+
+TÂCHE — SERZENIA-144, Lot 1 « choix du modèle par complexité ». C'est un lot auquel Hajar tient (partie UI).
+Objectif : choisir le modèle LLM selon la complexité du traitement, à 3 endroits — au cadrage d'une US (par le pilotage), à l'analyse (par ccode/codex), et avant le dev — le modèle par défaut restant `sonnet-5`.
+1. `Runners/ActorRunner.cs` : permettre un modèle PAR APPEL (pas un modèle global figé) — regarde `_claudeModel` / `_codexModel` et rends le modèle paramétrable par acteur/phase.
+2. PARSING : quand le pilotage/l'acteur propose un modèle selon la complexité (dans sa sortie de cadrage/analyse), parser cette proposition et l'appliquer au dev suivant.
+3. UI : une barre affichant le modèle en cours À CÔTÉ de l'indicateur « en cours » quand un acteur avance, et MODIFIABLE par Hajar (si elle veut changer, elle le fait et ça s'applique).
+
+Explore : `Runners/ActorRunner.cs`, la config (`Config/SprintLauncherConfig.cs`, variable `CLAUDE_MODEL`), le routage des directives (il existe déjà un `!model` d'après l'historique — vérifie et réutilise), l'UI (`MainWindow.xaml` / `.xaml.cs`). Vérifie ce qui existe déjà, reste chirurgical.
+
+CONTRAINTES : scripts `.ps1` strictement ASCII (PS 5.1 = Windows-1252). Compile les DEUX projets (`dotnet build src/SprintLauncher` ; `dotnet build src/SprintLauncher.UI`) et lance les tests (`dotnet test src/SprintLauncher.Tests`) — pas de « fini » sans build + tests verts, ajoute des tests. Aucun secret en clair.
+
+LIVRABLE : commit(s) sur `sl-lot1-modele-complexite`, message commençant par `SERZENIA-144 (Lot 1)`. Termine par un résumé : fichiers modifiés, ce qui est implémenté, résultat build+tests, points de décision/blocage.

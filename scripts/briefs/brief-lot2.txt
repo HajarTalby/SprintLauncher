@@ -1,0 +1,13 @@
+Tu es un agent dev autonome (codex) sur le Sprint Launcher, une app .NET : CLI `src/SprintLauncher`, UI WPF `src/SprintLauncher.UI`, tests `src/SprintLauncher.Tests`. Tu es DÉJÀ dans ton worktree git isolé, sur ta branche dédiée `sl-lot2-pause-horodatage` (basée sur l'intégration `sl-fixes-2026-07-16`). Travaille UNIQUEMENT ici, ne touche pas à d'autres dossiers/branches, ne fais AUCUN push. Réponds en français.
+
+TÂCHE — SERZENIA-144, Lot 2 « pause douce + horodatage des sorties live ».
+1. PAUSE DOUCE : pouvoir mettre le run en pause proprement — à la fin de l'acteur en cours, PAS un kill brutal — puis le reprendre. Bouton/commande côté UI et côté CLI. L'état de pause doit survivre à `--resume`.
+2. HORODATAGE DES SORTIES LIVE : chaque ligne de sortie live d'un acteur est horodatée (HH:mm:ss) de façon lisible.
+
+IMPORTANT : le dernier commit de la branche de base mentionne DÉJÀ des « horodatages » et un « !model ». VÉRIFIE précisément ce qui est déjà fait (horodatage live peut être partiellement là) et ne développe QUE le manquant, sans casser l'existant. Reste chirurgical.
+
+Explore : le pompage des sorties live et l'affichage dans `Runners/ActorRunner.cs` et l'UI (`MainWindow.xaml.cs`), la boucle d'orchestration dans `Program.cs`, la persistance d'état (`SprintStateManager`).
+
+CONTRAINTES : scripts `.ps1` strictement ASCII (PS 5.1 = Windows-1252). Compile les DEUX projets (`dotnet build src/SprintLauncher` ; `dotnet build src/SprintLauncher.UI`) et lance les tests (`dotnet test src/SprintLauncher.Tests`) — pas de « fini » sans build + tests verts. Aucun secret en clair.
+
+LIVRABLE : commit(s) sur `sl-lot2-pause-horodatage`, message commençant par `SERZENIA-144 (Lot 2)`. Termine par un résumé : fichiers modifiés, ce qui est déjà présent vs ce que tu as ajouté, résultat build+tests, points de décision/blocage.
