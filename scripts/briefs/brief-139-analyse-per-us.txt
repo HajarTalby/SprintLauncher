@@ -1,0 +1,61 @@
+Tu travailles sur le repo SprintLauncher, dans le worktree courant, sur la branche
+sl-139-analyse-per-us. Tu implémentes SERZENIA-139 EN ENTIER, seul, jusqu'au commit.
+
+# SERZENIA-139 — Analyse d'implémentation per-US (déduplication ClaudeImplementation/GptImplementation)
+
+## Problème
+
+Les acteurs d'implémentation (ClaudeImplementation, GptImplementation) produisent UNE analyse
+sprint-level unique, publiée sur le seul ticket de référence. Découvert sur le smoke Sprint 6 :
+ClaudeImplementation générait l'analyse de SERZENIA-110 et la postait sur les 9 tickets (110→118).
+
+Un correctif intérimaire existe déjà : `ActorRole.PublishesToReferenceTicketOnly()`. Il supprime la
+duplication mais ne produit toujours PAS d'analyse par ticket. Cette US porte la vraie analyse per-US.
+
+## Périmètre à implémenter
+
+1. **Boucle per-US** pour les acteurs d'implémentation uniquement : pour chaque ticket du scope,
+   1 prompt + 1 analyse + 1 commentaire distinct.
+2. **Contexte Jira ciblé** : le prompt de chaque itération ne reçoit que le contexte du ticket
+   courant, pas le scope entier. C'est le point clé de la qualité — ne pas se contenter de boucler
+   en réinjectant tout.
+3. **Signature `us:`** référençant le ticket réellement traité dans chaque commentaire.
+
+## Hors périmètre — NE PAS TOUCHER
+
+Les acteurs de pilotage restent sprint-level. C'est un comportement voulu (correction C3 de
+SERZENIA-138). Ne change pas leur routage.
+
+## Critères d'acceptation
+
+- Run sur un sprint multi-tickets : chaque ticket reçoit une analyse d'implémentation DISTINCTE.
+- Aucune duplication de contenu entre tickets.
+- Le garde-fou anti-troncature et le comportement dry-run restent inchangés.
+- Des tests xUnit couvrent le routage per-US (cas 1 ticket, cas N tickets, cas acteur de pilotage
+  qui doit rester sprint-level).
+
+## Méthode imposée
+
+1. Commence par LIRE le code existant : `ActorRole`, `PublishesToReferenceTicketOnly`, le pipeline
+   qui exécute les acteurs, `PromptBuilder`, et les tests existants. Comprends le routage actuel
+   avant d'écrire une ligne.
+2. Implémente dans `src/SprintLauncher/`.
+3. `dotnet build` doit passer avec 0 erreur.
+4. `dotnet test` doit passer EN ENTIER — les 150 tests existants restent verts, plus les tiens.
+   Si un test existant casse, corrige la cause, ne supprime jamais le test.
+5. Committe sur la branche courante avec `--no-verify` (le hook pre-commit lance un vrai acteur IA,
+   très coûteux) et un message commençant par `SERZENIA-139`.
+6. NE POUSSE PAS. NE MERGE PAS dans main.
+
+## Contraintes projet
+
+- Les scripts .ps1 doivent rester strictement ASCII (PS 5.1 les lit en Windows-1252).
+- Ne touche pas au fichier .env, ne l'affiche jamais, ne le committe jamais.
+- Ne fais AUCUNE écriture Jira, aucune transition de ticket.
+- Lis le CLAUDE.md à la racine du repo avant de commencer.
+
+## Livrable
+
+À la fin, écris un résumé court et factuel : ce que tu as changé (fichiers), le résultat exact de
+`dotnet build` et `dotnet test` (nombre de tests verts), et les limites connues de ton implémentation.
+Sois honnête sur ce qui n'est pas couvert — un rapport qui cache un test rouge est pire qu'un échec.

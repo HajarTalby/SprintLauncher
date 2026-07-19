@@ -1,0 +1,66 @@
+Tu travailles sur le repo SprintLauncher, dans le worktree courant, sur la branche
+sl-142-memoire-agents. Tu finis SERZENIA-142, seul, jusqu'au commit.
+
+# SERZENIA-142 — Injection de la mémoire projet dans les prompts des agents du launcher
+
+## État réel — À VÉRIFIER AVANT DE CODER
+
+L'US décrit une implémentation déjà réalisée (v1.0.5+) : un module `MemorySync` qui lit les
+fichiers `memory/*.md`, filtre les entrées pertinentes et les injecte dans les prompts via
+`PromptBuilder`.
+
+ATTENTION : la description du ticket cite le chemin `tools/sprint-launcher/Memory/MemorySync.cs`.
+Ce chemin est OBSOLÈTE — le launcher a été extrait dans son propre repo, le code est maintenant
+sous `src/SprintLauncher/`. Ta PREMIÈRE tâche est de vérifier ce qui existe réellement :
+
+1. `MemorySync` existe-t-il ? Où exactement ?
+2. Est-il réellement appelé au démarrage, ou est-ce du code mort jamais branché ?
+3. `PromptBuilder` reçoit-il vraiment le paramètre `memory:` et l'injecte-t-il dans le user prompt ?
+4. Le filtrage fonctionne-t-il : `type: project` OU `inject_to_agents: true` injectés, le reste non ?
+5. Le chemin vers le dossier mémoire est-il correct depuis le nouveau repo ? Le dossier réel est :
+   `C:\Users\najwa\.claude\projects\c--Users-najwa-OneDrive-Desktop-SERZENIA\memory\`
+   Vérifie que le code pointe au bon endroit — c'est le piège le plus probable après l'extraction
+   du repo, et un chemin mort donne un run silencieusement sans mémoire.
+
+Rapporte ce que tu trouves. Si tout est déjà correct, ne réécris rien : passe aux tests.
+
+## Ce qui reste explicitement à faire (cases non cochées de l'US)
+
+- Au moins une mémoire `type: project` annotée et validée.
+- Vérifier que les agents utilisent réellement le contexte mémoire dans leurs sorties.
+
+## Critères d'acceptation
+
+- `MemorySync.Load()` lit et filtre correctement les entrées.
+- Le contenu est injecté dans les prompts via `PromptBuilder`.
+- Les entrées `type: feedback` propres à Claude Code (captures d'écran, confirmations) ne sont PAS
+  injectées par défaut.
+- Si le dossier mémoire est absent : aucune erreur, run normal (graceful skip). C'est le cas du
+  dossier de release.
+- Des tests xUnit couvrent : filtrage par type, dossier absent, frontmatter malformé, et le fait
+  que le contenu arrive bien dans le prompt final.
+
+## Méthode imposée
+
+1. Diagnostique d'abord (points 1 à 5 ci-dessus), code ensuite.
+2. `dotnet build` : 0 erreur.
+3. `dotnet test` : tout vert, les 150 tests existants inclus. Si un test casse, corrige la cause,
+   ne supprime jamais le test.
+4. Committe sur la branche courante avec `--no-verify` (le hook pre-commit lance un vrai acteur IA,
+   très coûteux), message commençant par `SERZENIA-142`.
+5. NE POUSSE PAS. NE MERGE PAS dans main.
+
+## Contraintes projet
+
+- Scripts .ps1 strictement ASCII (PS 5.1 les lit en Windows-1252).
+- Ne touche pas au .env, ne l'affiche jamais, ne le committe jamais.
+- Les fichiers mémoire peuvent contenir du contexte personnel : ne recopie JAMAIS leur contenu dans
+  un commit, un log ou ton rapport. Tu peux citer un nom de fichier, jamais le corps.
+- Aucune écriture Jira, aucune transition de ticket.
+- Lis le CLAUDE.md à la racine du repo avant de commencer.
+
+## Livrable
+
+Résumé court et factuel : ton diagnostic de l'existant (points 1 à 5), ce que tu as changé,
+le résultat exact de `dotnet build` et `dotnet test`, et les limites connues. Sois honnête sur ce
+qui n'est pas couvert.
