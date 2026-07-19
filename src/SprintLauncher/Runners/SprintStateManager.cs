@@ -28,6 +28,10 @@ public sealed class SprintState
     public List<PendingReview> PendingReviews { get; set; } = [];
     // Cycles de remédiation déjà joués (bornés par MAX_REMEDIATION_CYCLES).
     public int RemediationCycles { get; set; }
+    // Pause douce demandée : le run termine l'acteur en cours, puis attend une reprise
+    // avant de lancer le tour suivant. Persisté pour survivre à --resume.
+    public bool PauseRequested { get; set; }
+    public DateTimeOffset? PauseRequestedAt { get; set; }
     // Directives données par Hajar mais PAS encore publiées sur Jira : stockées
     // (onglet DÉCISIONS + registre injecté aux acteurs) et publiées uniquement quand
     // un acteur commente sur l'US liée au sujet (choix de Hajar, 2026-07). Persistées

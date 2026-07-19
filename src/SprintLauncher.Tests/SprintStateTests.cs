@@ -90,6 +90,27 @@ public class SprintStateTests : IDisposable
         Assert.Equal(["C:\\Users\\hajar\\Desktop\\bug.png"], directive.AttachmentSourcePaths);
     }
 
+    [Fact]
+    public async Task Pause_request_roundtrips_through_save_and_load()
+    {
+        var path = Path.Combine(_tempDir, "state.json");
+        var requestedAt = DateTimeOffset.Parse("2026-07-19T12:34:56+00:00");
+        var state = new SprintState
+        {
+            StartedAt = DateTimeOffset.UtcNow,
+            Keys = ["SERZ-1"],
+            PauseRequested = true,
+            PauseRequestedAt = requestedAt,
+        };
+
+        await SprintStateManager.SaveAsync(path, state);
+        var loaded = await SprintStateManager.TryLoadAsync(path);
+
+        Assert.NotNull(loaded);
+        Assert.True(loaded!.PauseRequested);
+        Assert.Equal(requestedAt, loaded.PauseRequestedAt);
+    }
+
     // state.json produit avant SERZENIA-144 Lot 3 (pas d'AttachmentSourcePaths) :
     // doit toujours charger, avec une liste vide plutôt qu'un null qui planterait
     // les appelants.

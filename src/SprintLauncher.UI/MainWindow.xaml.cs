@@ -43,6 +43,7 @@ public partial class MainWindow : Window
     private List<string> _lastAttachments = [];
     private bool _lastRunWasDryRun = true;
     private bool _publishMode; // run courant = --publish-from-artifacts / --create-us (pas de pipeline acteurs)
+    private bool _pauseRequested;
     private string? _usProposalsRefKey;
     private readonly List<UsProposalDialog.ProposalView> _usProposals = [];
     // true = le CLI attend une réponse (checkpoint) → le champ envoie sur stdin ;
@@ -237,6 +238,9 @@ public partial class MainWindow : Window
         TabMain.SelectedIndex = 0; // journal tab during run
         BtnOpenReport.IsEnabled = false;
         BtnOpenArtifacts.IsEnabled = false;
+        BtnPause.IsEnabled = false;
+        BtnPause.Content = "Pause";
+        _pauseRequested = false;
         BtnPublish.IsEnabled = false;
         ShowRunModePanel();
         _htmlReportPath = null;
@@ -391,6 +395,7 @@ public partial class MainWindow : Window
                     _lastRunWasDryRun = data.GetProperty("dryRun").GetBoolean();
                     RebuildActorsFromManifest(data.GetProperty("roles"));
                     BtnOpenArtifacts.IsEnabled = Directory.Exists(_artifactsDir);
+                    BtnPause.IsEnabled = _process is { HasExited: false } && Directory.Exists(_artifactsDir);
                     break;
 
                 case "group":
@@ -501,6 +506,33 @@ public partial class MainWindow : Window
                     var txt = data.GetProperty("text").GetString() ?? "";
                     AppendChatTurn("Sprint Launcher", $"⚑ Intervention transmise à **{target}** en cours de tour — il doit en accuser réception dans sa sortie.", isIntervention: true, round: 0, isFinal: false);
                     AppendLog($"⚑ live → {target} : {txt}");
+                    break;
+                }
+
+                case "pause-requested":
+                {
+                    _pauseRequested = true;
+                    BtnPause.Content = "Reprendre";
+                    TxtStatus.Text = "Pause demandée — l'acteur en cours termine";
+                    AppendLog("PAUSE demandée — arrêt au prochain point entre deux acteurs.");
+                    break;
+                }
+
+                case "pause-waiting":
+                {
+                    _pauseRequested = true;
+                    BtnPause.Content = "Reprendre";
+                    TxtStatus.Text = "En pause — cliquez Reprendre pour continuer";
+                    AppendLog("PAUSE active — aucun nouvel acteur ne sera lancé.");
+                    break;
+                }
+
+                case "pause-resumed":
+                {
+                    _pauseRequested = false;
+                    BtnPause.Content = "Pause";
+                    TxtStatus.Text = "Reprise demandée — le prochain acteur va démarrer";
+                    AppendLog("REPRISE demandée.");
                     break;
                 }
 
@@ -670,6 +702,9 @@ public partial class MainWindow : Window
         {
             _timer.Stop();
             BtnRun.Content = "  Lancer";
+            BtnPause.IsEnabled = false;
+            BtnPause.Content = "Pause";
+            _pauseRequested = false;
             HideCheckpoint();
             var code = _process?.ExitCode ?? -1;
 
@@ -1448,6 +1483,28 @@ public partial class MainWindow : Window
         TxtStatus.Text = "Clôture demandée — tour de synthèse finale en cours...";
         AppendLog(">>> Conclure maintenant");
         SendStdin("fin\n");
+    }
+
+    private void BtnPause_Click(object sender, RoutedEventArgs e)
+    {
+        if (_process is not { HasExited: false } || _artifactsDir is null) return;
+        var command = _pauseRequested ? "!resume" : "!pause";
+        try
+        {
+            File.AppendAllText(Path.Combine(_artifactsDir, "pending-directive.txt"), command + Environment.NewLine);
+            _pauseRequested = !_pauseRequested;
+            BtnPause.Content = _pauseRequested ? "Reprendre" : "Pause";
+            TxtStatus.Text = _pauseRequested
+                ? "Pause demandée — l'acteur en cours termine"
+                : "Reprise demandée";
+            AppendLog(_pauseRequested
+                ? ">>> Pause douce demandée"
+                : ">>> Reprise demandée");
+        }
+        catch (IOException ex)
+        {
+            AppendLog($"(commande pause non déposée : {ex.Message})");
+        }
     }
 
     private void HideCheckpoint()
