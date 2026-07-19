@@ -16,26 +16,54 @@ public sealed class MemorySyncTests : IDisposable
     }
 
     [Fact]
-    public void Load_includes_project_entries_and_explicit_agent_injection_only()
+    public void Load_treats_knowledge_memories_as_shared_capital()
     {
         var memoryDir = CreateMemoryDir();
-        File.WriteAllText(Path.Combine(memoryDir, "project-entry.md"), "---\ntype: project\n---\nProject guidance");
-        File.WriteAllText(Path.Combine(memoryDir, "agent-flag.md"), "---\ntype: feedback\ninject_to_agents: true\n---\nAgent guidance");
-        File.WriteAllText(Path.Combine(memoryDir, "feedback-only.md"), "---\ntype: feedback\n---\nClaude Code feedback");
-        File.WriteAllText(Path.Combine(memoryDir, "MEMORY.md"), "---\ntype: project\n---\nIndex content");
+        File.WriteAllText(Path.Combine(memoryDir, "practice.md"), "---\ntype: feedback\n---\nToujours creuser la cause racine");
+        File.WriteAllText(Path.Combine(memoryDir, "pointer.md"), "---\ntype: reference\n---\nTableau de bord");
+        File.WriteAllText(Path.Combine(memoryDir, "agent-flag.md"), "---\ntype: project\ninject_to_agents: true\n---\nA partager partout");
+        File.WriteAllText(Path.Combine(memoryDir, "MEMORY.md"), "---\ntype: feedback\n---\nIndex content");
 
-        var result = MemorySync.Load(_root);
+        var result = MemorySync.Load(_root, context: "serzenia");
 
-        Assert.True(result.HasEntries);
-        Assert.Equal(["agent-flag", "project-entry"], result.Entries.Select(e => e.Name).Order());
-        Assert.DoesNotContain(result.Entries, e => e.Name == "feedback-only");
+        // Le savoir suit tous les contextes : c'est ce qu'on capitalise.
+        Assert.Equal(["agent-flag", "pointer", "practice"], result.Entries.Select(e => e.Name).Order());
+        Assert.All(result.Entries, e => Assert.True(e.IsShared));
         Assert.DoesNotContain(result.Entries, e => e.Name == "MEMORY");
+    }
+
+    [Fact]
+    public void Load_keeps_dev_state_inside_its_own_context()
+    {
+        var memoryDir = CreateMemoryDir();
+        File.WriteAllText(Path.Combine(memoryDir, "sl-state.md"), "---\ntype: project\nscope: sprint-launcher\n---\nEtat du dev du launcher");
+        File.WriteAllText(Path.Combine(memoryDir, "product-state.md"), "---\ntype: project\nscope: serzenia\n---\nEtat du produit");
+
+        var serzenia = MemorySync.Load(_root, context: "serzenia");
+        var launcher = MemorySync.Load(_root, context: "sprint-launcher");
+
+        // Regression du run sprint 6 (2026-07-19) : l'etat du dev du launcher se
+        // retrouvait dans les prompts des acteurs qui analysaient des tickets produit.
+        Assert.Equal(["product-state"], serzenia.Entries.Select(e => e.Name));
+        Assert.Equal(["sl-state"], launcher.Entries.Select(e => e.Name));
+    }
+
+    [Fact]
+    public void Load_excludes_unscoped_dev_state_rather_than_leaking_it()
+    {
+        var memoryDir = CreateMemoryDir();
+        File.WriteAllText(Path.Combine(memoryDir, "orphan.md"), "---\ntype: project\n---\nEtat non rattache a un chantier");
+
+        var result = MemorySync.Load(_root, context: "serzenia");
+
+        // Defaut sur : mieux vaut manquer de contexte que le voir fuiter ailleurs.
+        Assert.False(result.HasEntries);
     }
 
     [Fact]
     public void Load_skips_gracefully_when_memory_directory_is_absent()
     {
-        var result = MemorySync.Load(_root);
+        var result = MemorySync.Load(_root, context: "serzenia");
 
         Assert.False(result.HasEntries);
         Assert.Empty(result.Entries);
@@ -45,10 +73,10 @@ public sealed class MemorySyncTests : IDisposable
     public void Load_skips_malformed_frontmatter_without_failing()
     {
         var memoryDir = CreateMemoryDir();
-        File.WriteAllText(Path.Combine(memoryDir, "bad.md"), "---\ntype: project\nMissing closing marker");
-        File.WriteAllText(Path.Combine(memoryDir, "good.md"), "---\ntype: project\n---\nUsable guidance");
+        File.WriteAllText(Path.Combine(memoryDir, "bad.md"), "---\ntype: feedback\nMissing closing marker");
+        File.WriteAllText(Path.Combine(memoryDir, "good.md"), "---\ntype: feedback\n---\nUsable guidance");
 
-        var result = MemorySync.Load(_root);
+        var result = MemorySync.Load(_root, context: "serzenia");
 
         Assert.Single(result.Entries);
         Assert.Equal("good", result.Entries[0].Name);
@@ -60,10 +88,29 @@ public sealed class MemorySyncTests : IDisposable
         var memoryDir = CreateMemoryDir();
         File.WriteAllText(Path.Combine(memoryDir, "agent-only.md"), "---\ninject_to_agents: true\n---\nAgent-only guidance");
 
-        var result = MemorySync.Load(_root);
+        var result = MemorySync.Load(_root, context: "serzenia");
 
         Assert.Single(result.Entries);
         Assert.Equal("agent-only", result.Entries[0].Name);
+    }
+
+    [Fact]
+    public void BuildPromptSection_separates_shared_knowledge_from_current_context()
+    {
+        var ctx = new AgentMemoryContext(
+            [
+                new AgentMemoryEntry("practice", "feedback", MemorySync.SharedScope, "Regle durable"),
+                new AgentMemoryEntry("state", "project", "serzenia", "Etat du chantier"),
+            ],
+            HasEntries: true);
+
+        var section = RemoveDiacritics(MemorySync.BuildPromptSection(ctx));
+
+        var sharedAt = section.IndexOf("Regles et pratiques acquises", StringComparison.Ordinal);
+        var scopedAt = section.IndexOf("Contexte du chantier en cours", StringComparison.Ordinal);
+        Assert.True(sharedAt >= 0 && scopedAt > sharedAt);
+        Assert.Contains("Regle durable", section);
+        Assert.Contains("Etat du chantier", section);
     }
 
     [Fact]
@@ -71,7 +118,7 @@ public sealed class MemorySyncTests : IDisposable
     {
         var issue = new JiraIssue("SERZENIA-142", "Memory", "Ticket body", []);
         var memory = new AgentMemoryContext(
-            [new AgentMemoryEntry("project-entry", "project", "Project memory line")],
+            [new AgentMemoryEntry("project-entry", "project", "serzenia", "Project memory line")],
             HasEntries: true);
         var builder = new PromptBuilder("SERZENIA", "Hajar");
 
@@ -81,7 +128,7 @@ public sealed class MemorySyncTests : IDisposable
             issue.Key,
             memory: memory);
 
-        Assert.Contains("## Memoire projet SERZENIA", RemoveDiacritics(prompt.UserPrompt));
+        Assert.Contains("## Contexte du chantier en cours", RemoveDiacritics(prompt.UserPrompt));
         Assert.Contains("### project-entry", prompt.UserPrompt);
         Assert.Contains("Project memory line", prompt.UserPrompt);
     }

@@ -371,10 +371,14 @@ var frameworks = await frameworkSync.SyncAsync(ct: shutdownCts.Token);
 if (frameworks.HasChanges)
     Console.WriteLine($"  Frameworks mis à jour — {frameworks.Content.Count} ticket(s) rechargé(s).");
 
-// Step 1c: Load Claude Code session memory (memory/*.md, type=project or inject_to_agents=true)
-var agentMemory = MemorySync.Load();
+// Step 1c: Load Claude Code session memory (memory/*.md).
+// Le savoir transverse suit partout ; l'état de dev ne suit que son propre contexte.
+// Contexte par défaut = le projet piloté (SERZENIA), surchargeable par SPRINTLAUNCHER_CONTEXT
+// pour un run qui porterait sur un autre chantier (ex. le dev du launcher lui-même).
+var agentMemory = MemorySync.Load(context: config.ProjectName.ToLowerInvariant());
 if (agentMemory.HasEntries)
-    Console.WriteLine($"  Mémoire projet — {agentMemory.Entries.Count} entrée(s) injectée(s) dans les prompts.");
+    Console.WriteLine($"  Mémoire — {agentMemory.Shared.Count} règle(s) commune(s), " +
+                      $"{agentMemory.Scoped.Count} entrée(s) de contexte injectée(s) dans les prompts.");
 
 // Step 2: Build prompts and run actors
 var builder = new PromptBuilder(config.ProjectName, config.ApproverName, config.FrameworkKeys);
