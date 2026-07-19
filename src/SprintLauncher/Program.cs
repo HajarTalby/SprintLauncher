@@ -399,6 +399,7 @@ var artifactsDir = Path.Combine("artifacts", sprintTag, string.Join("-", issueKe
 Directory.CreateDirectory(artifactsDir);
 Console.WriteLine($"Artefacts dans : {Path.GetFullPath(artifactsDir)}");
 runner.LiveOutputDir = Path.GetFullPath(artifactsDir); // sorties acteurs visibles au fil de l'eau dans l'UI
+var actorTurnCoordinator = new ActorTurnCoordinator(config.SerzeniaRepoRoot ?? Directory.GetCurrentDirectory());
 // Chat live : n'active l'injection en cours de tour que si LIVE_CHAT=true (protocole
 // streaming/app-server à valider). Sinon, mode one-shot inchangé (release stable).
 if (config.LiveChatEnabled)
@@ -409,7 +410,7 @@ if (config.LiveChatEnabled)
 
 // Sorties périmées : les live-* d'un run précédent ne doivent jamais passer
 // pour l'activité du run courant (constat Hajar : anciennes sorties affichées).
-foreach (var stale in Directory.GetFiles(artifactsDir, "live-*.txt"))
+foreach (var stale in Directory.GetFiles(artifactsDir, "live-*.txt").OrderBy(p => p, StringComparer.OrdinalIgnoreCase))
     try { File.Delete(stale); } catch (IOException) { }
 
 // Archivage des sorties d'AFFICHAGE du run précédent : la vue UI ne montre que
@@ -422,10 +423,11 @@ var displayFiles = Enum.GetValues<ActorRole>()
         Path.Combine(artifactsDir, $"prompt-{r}.txt"),
     })
     .Where(File.Exists)
+    .OrderBy(p => p, StringComparer.OrdinalIgnoreCase)
     .ToList();
 if (displayFiles.Count > 0)
 {
-    var archiveDir = Path.Combine(artifactsDir, "archive", DateTime.Now.ToString("yyyyMMdd-HHmmss"));
+    var archiveDir = Path.Combine(artifactsDir, "archive", "previous-display");
     Directory.CreateDirectory(archiveDir);
     foreach (var f in displayFiles)
         try { File.Move(f, Path.Combine(archiveDir, Path.GetFileName(f)), overwrite: true); } catch (IOException) { }
@@ -963,6 +965,8 @@ async Task RunSingleActorAsync(
     string? approverDirective,
     CancellationToken ct)
 {
+    await using var actorTurn = await actorTurnCoordinator.BeginAsync(role, ct);
+
     var prompt = builder.Build(role, issues, primaryKey, mode: sessionMode, frameworks: frameworks, memory: agentMemory);
 
     // Directives déposées à tout moment + celles adressées nommément à CE rôle.
@@ -1033,6 +1037,7 @@ async Task RunSingleActorAsync(
     }
 
     await SprintStateManager.SaveAsync(stateFile, state);
+    await actorTurn.CompleteAsync(CancellationToken.None);
 }
 
 // ─── RÉTROSPECTIVE (fin de run, SERZENIA-144 lot 4) : chaque acteur restitue ce qui
@@ -1080,6 +1085,7 @@ async Task RunRetrospectivePhaseAsync(
 
         var prompt = builder.Build(role, issues, pilotageKey, mode: sessionMode, frameworks: frameworks, memory: agentMemory);
         prompt = prompt with { UserPrompt = prompt.UserPrompt + "\n\n---\n\n" + retroContext };
+        await using var actorTurn = await actorTurnCoordinator.BeginAsync(role, ct);
 
         var promptFile = Path.Combine(artifactsDir, $"prompt-{role}.txt");
         await File.WriteAllTextAsync(promptFile, $"=== SYSTEM ===\n{prompt.SystemPrompt}\n\n=== USER ===\n{prompt.UserPrompt}", ct);
@@ -1141,6 +1147,7 @@ async Task RunRetrospectivePhaseAsync(
             SemiManualPromptPath: null));
 
         await SprintStateManager.SaveAsync(stateFile, state);
+        await actorTurn.CompleteAsync(CancellationToken.None);
     }
 }
 
@@ -2249,6 +2256,8 @@ async Task RunDialogueGroupAsync(
 async Task<ActorRunResult> RunDialogueTurnAsync(
     ActorRole role, ActorPrompt prompt, string artifactsDir, ActorRunner runner, CancellationToken ct)
 {
+    await using var actorTurn = await actorTurnCoordinator.BeginAsync(role, ct);
+
     var promptFile = Path.Combine(artifactsDir, $"prompt-{role}.txt");
     await File.WriteAllTextAsync(promptFile, $"=== SYSTEM ===\n{prompt.SystemPrompt}\n\n=== USER ===\n{prompt.UserPrompt}");
 
@@ -2288,6 +2297,7 @@ async Task<ActorRunResult> RunDialogueTurnAsync(
             SemiManualPromptPath: null));
     }
 
+    await actorTurn.CompleteAsync(CancellationToken.None);
     return runResult;
 }
 
