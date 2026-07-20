@@ -152,17 +152,26 @@ public sealed class AgyRunnerTests
     }
 
     [Fact]
-    public void Long_prompt_cuts_off_until_agy_file_prompt_syntax_is_validated()
+    public void Long_prompt_goes_through_a_file_pointed_at_by_a_short_instruction()
     {
+        // agy n'a pas de stdin et Windows plafonne la ligne de commande a 32767
+        // caracteres : au-dela, seule une consigne courte passe en argument et le vrai
+        // prompt est lu depuis un fichier. Mecanisme valide en smoke reel avec 75 Ko
+        // (docs/141-ag-smoke.md) — l'echec explicite d'avant bloquait tout gros prompt.
         var longPrompt = new string('x', ActorRunner.AgyPromptArgumentSafetyLimit + 100);
         var invocation = Prepare("systeme", longPrompt);
 
         try
         {
-            Assert.NotNull(invocation.Error);
-            Assert.Contains("file-prompt syntax is not validated", invocation.Error);
-            Assert.True(File.Exists(invocation.PromptFile));
-            Assert.DoesNotContain(longPrompt, invocation.StartInfo.ArgumentList);
+            var args = invocation.StartInfo.ArgumentList.ToArray();
+
+            Assert.Null(invocation.Error);
+            Assert.DoesNotContain(longPrompt, args);
+            Assert.Contains(ActorRunner.BuildAgyPromptFileInstruction(invocation.PromptFile), args);
+            // Le prompt complet est bien sur le disque, non tronque.
+            Assert.Contains(longPrompt, File.ReadAllText(invocation.PromptFile, Encoding.UTF8));
+            // Sans son dossier dans le workspace, agy ne pourrait pas lire le fichier.
+            Assert.Contains(Path.GetDirectoryName(invocation.PromptFile), args);
         }
         finally
         {

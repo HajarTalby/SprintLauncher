@@ -198,6 +198,16 @@ public sealed class ActorRunner : IDisposable
 
     internal sealed record PreparedAgyInvocation(ProcessStartInfo StartInfo, string PromptFile, string? Error);
 
+    /// <summary>
+    /// Consigne courte passée à `agy -p` quand le prompt est trop long pour la ligne de
+    /// commande : elle ne fait que renvoyer vers le fichier qui porte le vrai prompt.
+    /// Formulation validée en smoke réel (docs/141-ag-smoke.md).
+    /// </summary>
+    internal static string BuildAgyPromptFileInstruction(string promptFile) =>
+        $"Lis integralement le fichier {promptFile} et execute la consigne qu'il contient. " +
+        "Ce fichier porte ton prompt complet : ne demande aucune clarification, " +
+        "ne resume pas le fichier, execute-le.";
+
     internal static PreparedAgyInvocation PrepareAgyInvocation(
         ActorPrompt prompt,
         string agyBin,
@@ -225,13 +235,19 @@ public sealed class ActorRunner : IDisposable
         MarkAsActor(psi);
         psi.ArgumentList.Add("-p");
 
-        // AGY only documents -p "<prompt>". Stdin is not documented, and Windows has a
-        // 32767-character command-line ceiling. The prompt file is ready for the real
-        // smoke once a supported file syntax is confirmed (for example a future @file
-        // or --prompt-file contract), but until then long prompts fail explicitly.
+        // agy n'accepte le prompt QUE sur la ligne de commande : `-p` exige son argument
+        // ("flag needs an argument: -p" sinon), il n'y a pas de stdin. Or Windows plafonne
+        // une ligne de commande à 32767 caractères, et les prompts du SL montent bien
+        // au-delà (534 Ko pour le pilotage du run sprint 6).
+        //
+        // Contournement validé en smoke réel le 2026-07-19 (docs/141-ag-smoke.md) : le
+        // prompt est écrit dans un fichier, son dossier est ajouté au workspace, et seule
+        // une consigne courte qui pointe dessus passe en argument. Teste avec 75 Ko :
+        // exit 0, consigne finale exécutée, aucune troncature.
         var promptFileArgumentTemplate = Environment.GetEnvironmentVariable("AGY_PROMPT_FILE_ARGUMENT");
         if (!string.IsNullOrWhiteSpace(promptFileArgumentTemplate))
         {
+            // Échappatoire si Google publie un contrat natif (@file, --prompt-file…).
             psi.ArgumentList.Add(string.Format(
                 System.Globalization.CultureInfo.InvariantCulture,
                 promptFileArgumentTemplate,
@@ -243,11 +259,7 @@ public sealed class ActorRunner : IDisposable
         }
         else
         {
-            return new PreparedAgyInvocation(
-                psi,
-                promptFile,
-                $"agy prompt length {fullPrompt.Length} exceeds safe Windows command-line limit. " +
-                $"Prompt was written to {promptFile}, but agy file-prompt syntax is not validated yet.");
+            psi.ArgumentList.Add(BuildAgyPromptFileInstruction(promptFile));
         }
 
         psi.ArgumentList.Add("--model");
@@ -256,6 +268,14 @@ public sealed class ActorRunner : IDisposable
         {
             psi.ArgumentList.Add("--add-dir");
             psi.ArgumentList.Add(repoRoot);
+        }
+        // Le dossier du prompt doit être dans le workspace, sinon agy ne peut pas le lire.
+        // Il vit hors du repo pour ne pas polluer l'arbre git de l'acteur.
+        var promptDir = Path.GetDirectoryName(promptFile);
+        if (promptDir is not null)
+        {
+            psi.ArgumentList.Add("--add-dir");
+            psi.ArgumentList.Add(promptDir);
         }
         if (prompt.Role.IsExecutionRole() && !prompt.ForceReadOnly)
             psi.ArgumentList.Add("--dangerously-skip-permissions");
