@@ -1,0 +1,29 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/notify/ag-stop.ps1"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/notify/ag-pretooluse.ps1"
+          }
+        ]
+      }
+    ]
+  },
+  "validation": {
+    "agyVersionObserved": "1.1.4",
+    "status": "debt",
+    "note": "agy 1.1.4 is installed, but the CLI help exposes no hook validation command. Stop and PreToolUse must be validated by a real Antigravity hook run before relying on production signals."
+  }
+}
