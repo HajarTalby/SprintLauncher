@@ -1627,6 +1627,7 @@ async Task RemediateEcartsAsync(
         foreach (var (issue, descs) in workItems)
         {
             if (ct.IsCancellationRequested) break;
+            await WaitIfPausedAsync(artifactsDir, ct);
             Console.WriteLine($"  ▶ Remédiation {issue.Key} → {engine}");
             EventEmitter.Emit("implementation-us", new { key = issue.Key, engine = engine.ToString(), relief = false, remediation = true });
 
@@ -1763,6 +1764,7 @@ async Task RunImplementationPhaseAsync(
         var engine = Enum.Parse<ActorRole>(engineName);
         ActorRole? reliefFrom = null; // renseigné si l'US est reprise par l'autre moteur en cours de route
         var typeLabel = usType switch { UsType.Front => " [front]", UsType.Backend => " [backend]", _ => "" };
+        await WaitIfPausedAsync(artifactsDir, ct);
         Console.WriteLine($"  ▶ {issue.Key}{typeLabel} → {engine}");
         EventEmitter.Emit("implementation-us", new { key = issue.Key, engine = engine.ToString(), relief = false, usType = usType.ToString() });
 
@@ -1790,6 +1792,7 @@ async Task RunImplementationPhaseAsync(
             var reliefBase = builder.Build(relief, [issue], issue.Key, mode: sessionMode, frameworks: frameworks, memory: agentMemory);
             var handoffPrompt = BuildHandoffPrompt(reliefBase, engine, result.Output);
 
+            await WaitIfPausedAsync(artifactsDir, ct);
             Console.WriteLine($"  ▶ {issue.Key} → relève par {relief}");
             EventEmitter.Emit("implementation-us", new { key = issue.Key, engine = relief.ToString(), relief = true });
             result = await RunDialogueTurnAsync(relief, handoffPrompt, artifactsDir, runner, ct);
@@ -2104,6 +2107,7 @@ async Task RunImplementationParallelAsync(
                 return;
             }
 
+            await WaitIfPausedAsync(artifactsDir, ct);
             Console.WriteLine($"  ▶ {issue.Key} → {engine} (parallèle)");
             EventEmitter.Emit("implementation-us", new { key = issue.Key, engine = engine.ToString(), relief = false, parallel = true });
 
@@ -2177,6 +2181,7 @@ async Task RunImplementationParallelAsync(
             }
         }
         var relief = Enum.Parse<ActorRole>(reliefName);
+        await WaitIfPausedAsync(artifactsDir, ct);
         Console.WriteLine($"  ▶ {issue.Key} → {relief} (reprise de file)");
         EventEmitter.Emit("implementation-us", new { key = issue.Key, engine = relief.ToString(), relief = true });
         var prompt = builder.Build(relief, [issue], issue.Key, mode: sessionMode, frameworks: frameworks, memory: agentMemory);
