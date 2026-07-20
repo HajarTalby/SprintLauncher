@@ -11,4 +11,5 @@ public sealed record ActorRunResult(
     bool IsSemiManual,
     // Échec par épuisement de quota (SERZENIA-143 lot 5) — déclenche la relève
     // par l'autre moteur au lieu d'un abandon.
-    bool IsQuotaExhausted = false);
+    bool IsQuotaExhausted = false,
+    DateTimeOffset? QuotaResetAt = null);

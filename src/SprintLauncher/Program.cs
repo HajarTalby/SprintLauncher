@@ -55,10 +55,12 @@ bool noCache = args.Contains("--no-cache");
 bool resume = args.Contains("--resume");
 bool interactive = args.Contains("--interactive");
 bool publishFromArtifacts = args.Contains("--publish-from-artifacts");
+bool autoResumeQuota = args.Contains("--auto-resume-quota");
 string? publishRolesFilter = GetArg(args, "--roles");
 string? createUsFile = GetArg(args, "--create-us");
 string? publishManualRole = GetArg(args, "--publish-manual");
 string? publishManualFile = GetArg(args, "--from-file");
+var quotaResumeMaxHoursArg = GetArg(args, "--quota-resume-max-hours");
 
 var modeArg = GetArg(args, "--mode");
 var sessionMode = modeArg?.ToLowerInvariant() switch
@@ -70,7 +72,7 @@ var sessionMode = modeArg?.ToLowerInvariant() switch
 };
 
 var optionValues = new HashSet<int>();
-foreach (var flag in new[] { "--publish-manual", "--from-file", "--mode", "--sprint", "--roles", "--create-us", "--pilotage-us" })
+foreach (var flag in new[] { "--publish-manual", "--from-file", "--mode", "--sprint", "--roles", "--create-us", "--pilotage-us", "--quota-resume-max-hours" })
 {
     var index = Array.IndexOf(args, flag);
     if (index >= 0 && index + 1 < args.Length)
@@ -123,7 +125,7 @@ if (args.Contains("--smoke-live"))
 // ─── Usage guard — before config load so no .env required just to show help ───
 if (issueKeys.Length == 0 && sprintArg is null && publishManualRole is null && createUsFile is null)
 {
-    Console.Error.WriteLine("Usage: sprint-launcher <ISSUE-KEY> [<ISSUE-KEY> ...] [--write] [--no-cache] [--resume] [--interactive]");
+    Console.Error.WriteLine("Usage: sprint-launcher <ISSUE-KEY> [<ISSUE-KEY> ...] [--write] [--no-cache] [--resume] [--interactive] [--auto-resume-quota]");
     Console.Error.WriteLine("       sprint-launcher --sprint <id> [--pilotage-us <CLE>] [options]");
     Console.Error.WriteLine("       sprint-launcher <ISSUE-KEY> --publish-from-artifacts [--roles <csv>] [--write]");
     Console.Error.WriteLine("       sprint-launcher <REF-KEY> --create-us <fichier.json> [--write]");
@@ -135,12 +137,15 @@ if (issueKeys.Length == 0 && sprintArg is null && publishManualRole is null && c
     Console.Error.WriteLine("  --mode cadrage  Comité Pilotage d'abord (discussion) → US proposées → Analyse → Implémentation → QA.");
     Console.Error.WriteLine("  --mode execution (défaut) Analyse → Implémentation (tour de rôle) → Pilotage → QA.");
     Console.Error.WriteLine("  --publish-from-artifacts  Publie les sorties dry-run validées, sans réexécuter les acteurs.");
+    Console.Error.WriteLine("  --auto-resume-quota  Si tous les moteurs d'implémentation sont à quota et qu'une heure de reset est connue, attend puis reprend.");
+    Console.Error.WriteLine("  --quota-resume-max-hours <n>  Plafond d'attente pour --auto-resume-quota (défaut : 8h).");
     PauseIfInteractive();
     return 1;
 }
 
 // Configuration is required only for commands that access Jira or launch actors.
 var config = SprintLauncherConfig.Load();
+var quotaResumeMaxWait = TimeSpan.FromHours(ReadQuotaResumeMaxHours(quotaResumeMaxHoursArg));
 if (config.SerzeniaRepoRoot is not null)
     Console.WriteLine($"  Dépôt SERZENIA : {config.SerzeniaRepoRoot}");
 else
@@ -547,6 +552,7 @@ if (resume)
     {
         Console.WriteLine($"  Quota : {string.Join(", ", sprintState.QuotaExhaustedEngines)} réactivé(s) pour ce run (épuisement précédent effacé).");
         sprintState.QuotaExhaustedEngines.Clear();
+        sprintState.QuotaResetTimesByEngine.Clear();
     }
     if (sprintState.CompletedRoles.Count > 0)
         Console.WriteLine($"  Reprise — acteurs déjà faits : {string.Join(", ", sprintState.CompletedRoles)}");
@@ -1218,22 +1224,61 @@ async Task<string> BuildQaContextAsync(CancellationToken ct)
 }
 
 // ─── Attente de fenêtre de quota : quand les deux moteurs sont épuisés, l'outil
-// reste ouvert et retente après un délai — les fenêtres d'abonnement se rouvrent
-// d'elles-mêmes ; le run n'exige plus de relance manuelle (demande Hajar).
+// reste ouvert uniquement si Hajar l'a demandé explicitement et si les CLIs ont
+// fourni une heure de reset exploitable.
 async Task<bool> WaitForQuotaWindowAsync(SprintState state, string stateFile, CancellationToken ct)
 {
-    if (!config.QuotaWaitEnabled || ct.IsCancellationRequested) return false;
-    var minutes = config.QuotaWaitMinutes;
-    Console.WriteLine($"  ⏳ Les deux moteurs sont à quota épuisé — nouvelle tentative dans {minutes} min (l'outil reste ouvert ; ARRET/Ctrl+C pour interrompre, reprise via --resume).");
-    EventEmitter.Emit("quota-wait", new { minutes });
-    try { await Task.Delay(TimeSpan.FromMinutes(minutes), ct); }
-    catch (TaskCanceledException) { return false; }
-    if (ct.IsCancellationRequested) return false;
+    if (!autoResumeQuota || ct.IsCancellationRequested) return false;
+
+    var scheduler = new QuotaResumeScheduler();
+    var plan = scheduler.Plan(state.QuotaResetTimesByEngine, state.QuotaExhaustedEngines, quotaResumeMaxWait);
+    if (plan is null)
+    {
+        Console.WriteLine("  ⚠ Les deux moteurs sont à quota épuisé, mais aucune reprise automatique n'est planifiée (heure de reset absente ou attente au-delà du plafond).");
+        return false;
+    }
+
+    Console.WriteLine($"  ⏳ Tous les moteurs nécessaires sont à quota épuisé — reprise prévue à {plan.ResumeAt:yyyy-MM-dd HH:mm zzz} (attente {FormatWait(plan.Wait)}, plafond {FormatWait(quotaResumeMaxWait)} ; ARRET/Ctrl+C annule).");
+    EventEmitter.Emit("quota-wait", new { resumeAt = plan.ResumeAt, waitSeconds = (int)plan.Wait.TotalSeconds });
+
+    if (!await scheduler.WaitAsync(plan, ct)) return false;
+
     state.QuotaExhaustedEngines.Clear();
+    state.QuotaResetTimesByEngine.Clear();
     await SprintStateManager.SaveAsync(stateFile, state);
-    Console.WriteLine("  ⏳ Fenêtre de quota retentée — moteurs réactivés.");
-    EventEmitter.Emit("quota-retry", new { });
+    Console.WriteLine("  ⏳ Heure de reset atteinte — reprise effective via l'état --resume existant ; moteurs réactivés.");
+    EventEmitter.Emit("quota-retry", new { resumeAt = plan.ResumeAt });
     return true;
+}
+
+static string FormatWait(TimeSpan wait)
+{
+    if (wait.TotalHours >= 1)
+        return $"{(int)wait.TotalHours}h{wait.Minutes:00}";
+    return $"{Math.Max(0, (int)Math.Ceiling(wait.TotalMinutes))} min";
+}
+
+static int ReadQuotaResumeMaxHours(string? arg)
+{
+    var value = arg ?? Environment.GetEnvironmentVariable("QUOTA_RESUME_MAX_HOURS");
+    if (string.IsNullOrWhiteSpace(value)) return 8;
+    return int.TryParse(value, out var parsed) && parsed > 0
+        ? parsed
+        : throw new ArgumentException("--quota-resume-max-hours doit être un entier positif.");
+}
+
+async Task RecordQuotaAsync(SprintState state, string stateFile, ActorRole engine, ActorRunResult result, CancellationToken ct = default)
+{
+    state.QuotaExhaustedEngines.Add(engine.ToString());
+    if (result.QuotaResetAt is { } resetAt)
+        state.QuotaResetTimesByEngine[engine.ToString()] = resetAt;
+
+    await SprintStateManager.SaveAsync(stateFile, state, ct);
+
+    var resetText = result.QuotaResetAt is { } r
+        ? $" reset prévu : {r:yyyy-MM-dd HH:mm zzz}."
+        : " aucune heure de reset exploitable.";
+    Console.WriteLine($"  ⚠ Quota {engine} épuisé —{resetText}");
 }
 
 // ─── Directives déposées par Hajar EN COURS DE RUN (fichier pending-directive.txt
@@ -1589,6 +1634,7 @@ async Task AddDirectiveAsync(string subjectKey, string text)
     {
         if (address.Actor is { } engine && sprintState.QuotaExhaustedEngines.Remove(engine.ToString()))
         {
+            sprintState.QuotaResetTimesByEngine.Remove(engine.ToString());
             Console.WriteLine($"  ⚡ {engine} réactivé sur intervention de {config.ApproverName} (quota signalé disponible) — il reprend au prochain tour.");
             EventEmitter.Emit("engine-reactivated", new { engine = engine.ToString() });
         }
@@ -1665,12 +1711,11 @@ async Task RemediateEcartsAsync(
                 await remLock.WaitAsync(CancellationToken.None);
                 try
                 {
-                    sprintState.QuotaExhaustedEngines.Add(engine.ToString());
-                    await SprintStateManager.SaveAsync(stateFile, sprintState);
+                    await RecordQuotaAsync(sprintState, stateFile, engine, remResult, CancellationToken.None);
                 }
                 finally { remLock.Release(); }
                 EventEmitter.Emit("quota", new { engine = engine.ToString(), key = issue.Key });
-                Console.WriteLine($"  ⚠ Quota {engine} épuisé — ses US restantes passeront au prochain cycle.");
+                Console.WriteLine($"  ⚠ Ses US restantes passeront au prochain cycle.");
                 break;
             }
             if (remResult.Success && !ImplementationOutputGuard.IsAwaitingGo(remResult.Output))
@@ -1796,8 +1841,7 @@ async Task RunImplementationPhaseAsync(
         // ── Relève : quota épuisé → l'autre moteur reprend avec le handoff ────
         if (result.IsQuotaExhausted)
         {
-            state.QuotaExhaustedEngines.Add(engine.ToString());
-            await SprintStateManager.SaveAsync(stateFile, state);
+            await RecordQuotaAsync(state, stateFile, engine, result, ct);
             Console.WriteLine($"  ⚠ {engine} à quota épuisé — relève par l'autre moteur...");
             EventEmitter.Emit("quota", new { engine = engine.ToString(), key = issue.Key });
 
@@ -1818,8 +1862,7 @@ async Task RunImplementationPhaseAsync(
 
             if (result.IsQuotaExhausted)
             {
-                state.QuotaExhaustedEngines.Add(relief.ToString());
-                await SprintStateManager.SaveAsync(stateFile, state);
+                await RecordQuotaAsync(state, stateFile, relief, result, ct);
                 Console.WriteLine("  ⚠ Moteur de relève également à quota épuisé — arrêt de la phase.");
                 EventEmitter.Emit("quota", new { engine = relief.ToString(), key = issue.Key });
                 break;
@@ -1917,10 +1960,10 @@ async Task ProcessPendingReviewsAsync(
         finally { reviewStateLock.Release(); }
     }
 
-    async Task MarkQuotaAsync(ActorRole engine)
+    async Task MarkQuotaAsync(ActorRole engine, ActorRunResult result)
     {
         await reviewStateLock.WaitAsync(CancellationToken.None);
-        try { state.QuotaExhaustedEngines.Add(engine.ToString()); await SprintStateManager.SaveAsync(stateFile, state); }
+        try { await RecordQuotaAsync(state, stateFile, engine, result, CancellationToken.None); }
         finally { reviewStateLock.Release(); }
     }
 
@@ -1965,7 +2008,7 @@ async Task ProcessPendingReviewsAsync(
 
             if (!review.Success)
             {
-                if (review.IsQuotaExhausted) await MarkQuotaAsync(reviewer);
+                if (review.IsQuotaExhausted) await MarkQuotaAsync(reviewer, review);
                 Console.WriteLine($"  ○ {pending.Key} — revue croisée reportée (échec {reviewer}) — reste en attente pour --resume.");
                 return;
             }
@@ -1988,7 +2031,7 @@ async Task ProcessPendingReviewsAsync(
 
             if (!corrections.Success)
             {
-                if (corrections.IsQuotaExhausted) await MarkQuotaAsync(implementer);
+                if (corrections.IsQuotaExhausted) await MarkQuotaAsync(implementer, corrections);
                 // On ne publie PAS une revue sans ses correctifs : l'US reste en attente
                 // et --resume rejouera le flux complet (l'ancien code publiait puis
                 // retirait l'US de la file — le « à rejouer » était donc impossible).
@@ -2055,7 +2098,7 @@ async Task ProcessPendingReviewsAsync(
                     Console.WriteLine($"  ▶ {engine} — tour de travail immédiat sur directive de {config.ApproverName} (en parallèle des revues)");
                     var prompt = builder.BuildDirectiveTurn(engine, issues, directive);
                     var result = await RunDialogueTurnAsync(engine, prompt, artifactsDir, runner, ct);
-                    if (result.IsQuotaExhausted) { await MarkQuotaAsync(engine); return; }
+                    if (result.IsQuotaExhausted) { await MarkQuotaAsync(engine, result); return; }
                 }
                 finally { engineLocks[engine].Release(); }
             }
@@ -2072,6 +2115,14 @@ async Task ProcessPendingReviewsAsync(
     await Task.WhenAll(state.PendingReviews.ToList().Select(FlowAsync));
     pipelineDone.Cancel();
     await Task.WhenAll(idleWorkers);
+
+    if (state.PendingReviews.Count > 0 &&
+        ImplementationRotation.PickEngine(state.LastImplementer, state.QuotaExhaustedEngines) is null &&
+        await WaitForQuotaWindowAsync(state, stateFile, ct))
+    {
+        Console.WriteLine("  ⏳ Reprise des revues croisées après reset quota.");
+        await ProcessPendingReviewsAsync(issues, artifactsDir, state, stateFile, builder, runner, publisher, ct);
+    }
 }
 
 // ─── Implémentation PARALLÈLE : moteur front et moteur back en même temps ──────
@@ -2137,7 +2188,7 @@ async Task RunImplementationParallelAsync(
             if (result.IsQuotaExhausted)
             {
                 await stateLock.WaitAsync(CancellationToken.None);
-                try { state.QuotaExhaustedEngines.Add(engine.ToString()); await SprintStateManager.SaveAsync(stateFile, state); }
+                try { await RecordQuotaAsync(state, stateFile, engine, result, CancellationToken.None); }
                 finally { stateLock.Release(); }
                 Console.WriteLine($"  ⚠ {engine} à quota épuisé — sa file sera reprise en séquentiel par l'autre moteur.");
                 EventEmitter.Emit("quota", new { engine = engine.ToString(), key = issue.Key });
@@ -2217,8 +2268,7 @@ async Task RunImplementationParallelAsync(
         }
         else if (result.IsQuotaExhausted)
         {
-            state.QuotaExhaustedEngines.Add(relief.ToString());
-            await SprintStateManager.SaveAsync(stateFile, state);
+            await RecordQuotaAsync(state, stateFile, relief, result, ct);
         }
     }
 

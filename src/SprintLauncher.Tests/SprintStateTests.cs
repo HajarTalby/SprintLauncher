@@ -39,6 +39,8 @@ public class SprintStateTests : IDisposable
         Assert.Contains("ClaudePilotage", state!.CompletedRoles);
         Assert.NotNull(state.CompletedGroups);
         Assert.Empty(state.CompletedGroups);
+        Assert.NotNull(state.QuotaResetTimesByEngine);
+        Assert.Empty(state.QuotaResetTimesByEngine);
     }
 
     [Fact]

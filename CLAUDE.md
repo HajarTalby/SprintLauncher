@@ -14,6 +14,14 @@ Repo autonome, extrait de SERZENIA le 2026-07-02. Les règles générales du pro
 
 L'UI lance le CLI en sous-processus. **Les deux doivent être buildés et packagés à chaque release.**
 
+## Reprise quota automatique
+
+Par défaut, si `ccode` et `codex` sont tous les deux à quota, le run s'arrête proprement et reste reprenable avec `--resume`.
+
+Pour autoriser l'attente automatique, lancer le CLI avec `--auto-resume-quota`. Le launcher parse l'heure locale de reset imprimée par le moteur (ex. `resets 9:50pm`), attend jusqu'à l'heure la plus tardive des moteurs épuisés, puis reprend depuis `state.json`. Sans heure exploitable, aucune heure n'est devinée.
+
+Garde-fou : l'attente est plafonnée à 8h par défaut. Ajuster avec `--quota-resume-max-hours <n>` ou `QUOTA_RESUME_MAX_HOURS=<n>`. `ARRET` dans l'UI et Ctrl+C annulent l'attente.
+
 ## Creuser jusqu'à la cause racine — toujours
 
 Devant un échec : reproduire, lire l'erreur **en entier**, identifier la cause exacte, corriger

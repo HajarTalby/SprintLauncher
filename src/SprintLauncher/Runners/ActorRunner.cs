@@ -506,14 +506,15 @@ public sealed class ActorRunner : IDisposable
         var output = accumulated.ToString().Trim();
         var errorText = stderr.ToString();
         bool quota = QuotaDetector.IsQuotaExhausted(output, errorText) || QuotaDetector.IsQuotaExhaustedOutput(output);
+        var reset = quota ? QuotaResetParser.TryParse(output, errorText, DateTimeOffset.Now)?.ResetAt : null;
 
         if (output.Length == 0 && !turnDone.Task.IsCompleted)
             return new ActorRunResult(prompt.Role, Success: false, Output: output,
                 ErrorOutput: $"codex app-server : aucune sortie ({exitReason}). Handshake/protocole à valider (smoke live requis).\n{errorText}",
-                ExitCode: -1, IsSemiManual: false, IsQuotaExhausted: quota);
+                ExitCode: -1, IsSemiManual: false, IsQuotaExhausted: quota, QuotaResetAt: reset);
 
         return new ActorRunResult(prompt.Role, Success: !quota && output.Length > 0, Output: output,
-            ErrorOutput: errorText, ExitCode: 0, IsSemiManual: false, IsQuotaExhausted: quota);
+            ErrorOutput: errorText, ExitCode: 0, IsSemiManual: false, IsQuotaExhausted: quota, QuotaResetAt: reset);
     }
 
     // Semi-manual: generates prompt, writes to file, returns immediately
@@ -667,6 +668,7 @@ public sealed class ActorRunner : IDisposable
         // de limite (claude.exe imprime "You've hit your session limit…" et sort en 0).
         bool quotaExhausted = (!success && QuotaDetector.IsQuotaExhausted(outputText, errorText))
             || QuotaDetector.IsQuotaExhaustedOutput(outputText);
+        var reset = quotaExhausted ? QuotaResetParser.TryParse(outputText, errorText, DateTimeOffset.Now)?.ResetAt : null;
 
         return new ActorRunResult(
             Role: role,
@@ -675,7 +677,8 @@ public sealed class ActorRunner : IDisposable
             ErrorOutput: errorText,
             ExitCode: process.ExitCode,
             IsSemiManual: false,
-            IsQuotaExhausted: quotaExhausted);
+            IsQuotaExhausted: quotaExhausted,
+            QuotaResetAt: reset);
     }
 
     // ─── Pompe stdin du chat live ────────────────────────────────────────────────

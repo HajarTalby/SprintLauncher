@@ -22,6 +22,7 @@ public sealed class SprintState
     // (alternance), moteurs à quota épuisé, US déjà implémentées (reprise per-US).
     public string? LastImplementer { get; set; }
     public HashSet<string> QuotaExhaustedEngines { get; set; } = [];
+    public Dictionary<string, DateTimeOffset> QuotaResetTimesByEngine { get; set; } = [];
     public HashSet<string> CompletedUsImplementations { get; set; } = [];
     // Revues croisées dues — PERSISTÉES : elles survivent aux interruptions/relances
     // (constat sprint 6 : file en mémoire → 1 seule revue faite sur 9 US).
