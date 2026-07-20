@@ -42,4 +42,29 @@ public class DirectiveInterpretationTests
 
         Assert.Null(interpretation);
     }
+
+    [Fact]
+    public void Parses_case_variants_and_flat_targets_from_llm_json()
+    {
+        var json = """
+        {
+          "Intent": "relancer",
+          "Targets": ["codex", "pilotage"],
+          "PhaseOrder": {
+            "Kind": "skip_to",
+            "TargetGroup": "QA"
+          }
+        }
+        """;
+
+        var interpretation = DirectiveInterpretationParser.TryParse(json, "va a la QA apres avoir relance codex et pilotage");
+
+        Assert.NotNull(interpretation);
+        Assert.Equal("relancer", interpretation!.Intent);
+        Assert.Contains(ActorRole.GptImplementation, interpretation.TargetActors);
+        Assert.Contains(ActorGroup.CommitteePilotage, interpretation.TargetGroups);
+        Assert.NotNull(interpretation.PhaseOrder);
+        Assert.Equal(PhaseOrderKind.SkipTo, interpretation.PhaseOrder!.Kind);
+        Assert.Equal(ActorGroup.Qa.ToString(), interpretation.PhaseOrder.TargetGroup);
+    }
 }

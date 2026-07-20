@@ -80,6 +80,7 @@ public static class PhaseOrderQueue
                 var existing = -1;
                 for (var i = currentIndex + 1; i < phaseOrder.Count; i++)
                     if (phaseOrder[i] == target) { existing = i; break; }
+                clearCompletion(target);
                 if (existing < 0)
                 {
                     phaseOrder.Insert(Math.Min(currentIndex + 1, phaseOrder.Count), target);
