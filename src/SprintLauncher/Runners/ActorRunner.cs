@@ -9,14 +9,17 @@ public sealed class ActorRunner : IDisposable
 {
     private readonly string? _claudeBin;
     private readonly string? _codexBin;
+    private readonly string? _agyBin;
     // Mutables : commutables EN COURS DE RUN via la commande « !model » de Hajar
     // (2026-07-17 : changer de modèle sur quota sans redémarrer le run).
     private string _claudeModel;
     private string _codexModel;
+    private string _agyModel;
     private string _directiveInterpreterModel;
 
     public string ClaudeModel { get => _claudeModel; set => _claudeModel = value; }
     public string CodexModel { get => _codexModel; set => _codexModel = value; }
+    public string AgyModel { get => _agyModel; set => _agyModel = value; }
     public string DirectiveInterpreterModel { get => _directiveInterpreterModel; set => _directiveInterpreterModel = value; }
     private readonly TimeSpan _actorTimeout;
     private readonly TimeSpan _implementationTimeout;
@@ -46,8 +49,10 @@ public sealed class ActorRunner : IDisposable
     public ActorRunner(
         string? claudeBin = null,
         string? codexBin = null,
+        string? agyBin = null,
         string? claudeModel = null,
         string? codexModel = null,
+        string? agyModel = null,
         string? directiveInterpreterModel = null,
         TimeSpan? actorTimeout = null,
         string? repoRoot = null,
@@ -57,8 +62,10 @@ public sealed class ActorRunner : IDisposable
         _gptPilotageAuto = gptPilotageAuto;
         _claudeBin = claudeBin ?? BinaryLocator.FindClaude();
         _codexBin = codexBin ?? BinaryLocator.FindCodex();
+        _agyBin = agyBin ?? BinaryLocator.FindAgy();
         _claudeModel = claudeModel ?? "sonnet-5";
         _codexModel = codexModel ?? "gpt-5.5";
+        _agyModel = agyModel ?? "gemini-3-pro";
         _directiveInterpreterModel = directiveInterpreterModel ?? "gpt-5-mini";
         _actorTimeout = actorTimeout ?? TimeSpan.FromMinutes(10);
         // Un vrai dev d'US prend 15-45 min — le timeout dialogue (10 min) tuait
@@ -68,7 +75,7 @@ public sealed class ActorRunner : IDisposable
     }
 
     private static bool IsImplementationRole(ActorRole role) =>
-        role is ActorRole.ClaudeImplementation or ActorRole.GptImplementation;
+        role is ActorRole.ClaudeImplementation or ActorRole.GptImplementation or ActorRole.AgImplementation;
 
     private TimeSpan TimeoutFor(ActorRole role) =>
         IsImplementationRole(role) ? _implementationTimeout : _actorTimeout;
@@ -87,6 +94,9 @@ public sealed class ActorRunner : IDisposable
 
         if (prompt.Role.IsClaudeFamily())
             return await RunClaudeAsync(prompt, modelOverride, ct);
+
+        if (prompt.Role.IsAgFamily())
+            return await RunAgyAsync(prompt, modelOverride, ct);
 
         return await RunCodexAsync(prompt, modelOverride, ct);
     }
@@ -182,6 +192,83 @@ public sealed class ActorRunner : IDisposable
     // launcher dans l'acteur de pilotage : il a exécuté cette to-do (merges, push) au lieu
     // de piloter le sprint. Le marqueur ci-dessous laisse les hooks se désactiver eux-mêmes.
     private static void MarkAsActor(ProcessStartInfo psi) => psi.EnvironmentVariables[ActorEnvVar] = "1";
+
+    internal const int WindowsCommandLineLimit = 32767;
+    internal const int AgyPromptArgumentSafetyLimit = 30000;
+
+    internal sealed record PreparedAgyInvocation(ProcessStartInfo StartInfo, string PromptFile, string? Error);
+
+    internal static PreparedAgyInvocation PrepareAgyInvocation(
+        ActorPrompt prompt,
+        string agyBin,
+        string model,
+        string? modelOverride,
+        string? repoRoot)
+    {
+        var fullPrompt = $"{prompt.SystemPrompt}\n\n---\n\n{prompt.UserPrompt}";
+        var promptFile = Path.Combine(Path.GetTempPath(), $"agy-prompt-{prompt.Role}-{Guid.NewGuid():N}.txt");
+        File.WriteAllText(promptFile, fullPrompt, new UTF8Encoding(false));
+
+        var psi = new ProcessStartInfo
+        {
+            FileName = agyBin,
+            UseShellExecute = false,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+            WorkingDirectory = repoRoot ?? Directory.GetCurrentDirectory(),
+            StandardInputEncoding = new UTF8Encoding(false),
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8,
+        };
+        MarkAsActor(psi);
+        psi.ArgumentList.Add("-p");
+
+        // AGY only documents -p "<prompt>". Stdin is not documented, and Windows has a
+        // 32767-character command-line ceiling. The prompt file is ready for the real
+        // smoke once a supported file syntax is confirmed (for example a future @file
+        // or --prompt-file contract), but until then long prompts fail explicitly.
+        var promptFileArgumentTemplate = Environment.GetEnvironmentVariable("AGY_PROMPT_FILE_ARGUMENT");
+        if (!string.IsNullOrWhiteSpace(promptFileArgumentTemplate))
+        {
+            psi.ArgumentList.Add(string.Format(
+                System.Globalization.CultureInfo.InvariantCulture,
+                promptFileArgumentTemplate,
+                promptFile));
+        }
+        else if (fullPrompt.Length <= AgyPromptArgumentSafetyLimit)
+        {
+            psi.ArgumentList.Add(fullPrompt);
+        }
+        else
+        {
+            return new PreparedAgyInvocation(
+                psi,
+                promptFile,
+                $"agy prompt length {fullPrompt.Length} exceeds safe Windows command-line limit. " +
+                $"Prompt was written to {promptFile}, but agy file-prompt syntax is not validated yet.");
+        }
+
+        psi.ArgumentList.Add("--model");
+        psi.ArgumentList.Add(string.IsNullOrWhiteSpace(modelOverride) ? model : modelOverride);
+        if (repoRoot is not null)
+        {
+            psi.ArgumentList.Add("--add-dir");
+            psi.ArgumentList.Add(repoRoot);
+        }
+        if (prompt.Role.IsExecutionRole() && !prompt.ForceReadOnly)
+            psi.ArgumentList.Add("--dangerously-skip-permissions");
+        if (prompt.Role.NeedsReadOnlySandbox() || prompt.ForceReadOnly)
+            psi.ArgumentList.Add("--sandbox");
+        psi.ArgumentList.Add("--print-timeout");
+        psi.ArgumentList.Add("60m");
+
+        psi.EnvironmentVariables.Remove("OPENAI_API_KEY");
+        psi.EnvironmentVariables.Remove("ANTHROPIC_API_KEY");
+
+        return new PreparedAgyInvocation(psi, promptFile, null);
+    }
 
     // Claude actors: claude -p (reads prompt from stdin) — subscription, no ANTHROPIC_API_KEY
     // Prompt passed via stdin to avoid Windows 32767-char command-line limit.
@@ -335,6 +422,32 @@ public sealed class ActorRunner : IDisposable
         return await RunProcessWithStdinAsync(
             prompt.Role, psi, fullPrompt, ct,
             interpreter: new CodexJsonInterpreter(), finalOutputFile: lastMsgFile);
+    }
+
+    // AG actors: agy -p "<prompt>" prints plain text. No JSON/streaming contract is documented.
+    private async Task<ActorRunResult> RunAgyAsync(ActorPrompt prompt, string? modelOverride, CancellationToken ct)
+    {
+        if (_agyBin is null)
+            return Fail(prompt.Role, "agy.exe not found. Set AGY_BIN env var or install Google Antigravity CLI.");
+
+        var invocation = PrepareAgyInvocation(
+            prompt,
+            _agyBin,
+            _agyModel,
+            modelOverride,
+            _repoRoot);
+
+        try
+        {
+            if (invocation.Error is not null)
+                return Fail(prompt.Role, invocation.Error);
+
+            return await RunProcessNoStdinAsync(prompt.Role, invocation.StartInfo, ct);
+        }
+        finally
+        {
+            try { File.Delete(invocation.PromptFile); } catch (IOException) { }
+        }
     }
 
     // ─── Codex en chat live via app-server (JSON-RPC stdio) ──────────────────────
@@ -545,6 +658,83 @@ public sealed class ActorRunner : IDisposable
             ErrorOutput: null,
             ExitCode: 0,
             IsSemiManual: true);
+    }
+
+    private async Task<ActorRunResult> RunProcessNoStdinAsync(
+        ActorRole role, ProcessStartInfo psi, CancellationToken ct)
+    {
+        using var process = new Process { StartInfo = psi };
+        var stdout = new StringBuilder();
+        var stderr = new StringBuilder();
+        var liveAtLineStart = true;
+
+        StreamWriter? liveWriter = null;
+        if (LiveOutputDir is not null)
+        {
+            try
+            {
+                liveWriter = new StreamWriter(
+                    Path.Combine(LiveOutputDir, $"live-{role}.txt"),
+                    append: false,
+                    new UTF8Encoding(false))
+                { AutoFlush = true };
+            }
+            catch (IOException) { liveWriter = null; }
+        }
+
+        process.OutputDataReceived += (_, e) =>
+        {
+            if (e.Data is null) return;
+            stdout.AppendLine(e.Data);
+            WriteLiveLine(liveWriter, ref liveAtLineStart, e.Data);
+        };
+        process.ErrorDataReceived += (_, e) => { if (e.Data is not null) stderr.AppendLine(e.Data); };
+
+        process.Start();
+        _job?.AssignProcess(process);
+        process.BeginOutputReadLine();
+        process.BeginErrorReadLine();
+        try { process.StandardInput.Close(); } catch (IOException) { } catch (ObjectDisposedException) { }
+
+        var timeout = TimeoutFor(role);
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(timeout);
+
+        try
+        {
+            await process.WaitForExitAsync(timeoutCts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            try
+            {
+                process.Kill(entireProcessTree: true);
+                await process.WaitForExitAsync(CancellationToken.None);
+            }
+            catch (InvalidOperationException) { }
+            liveWriter?.Dispose();
+
+            var reason = ct.IsCancellationRequested
+                ? "Actor execution cancelled."
+                : $"Actor execution timed out after {timeout.TotalSeconds:0} seconds.";
+            return Fail(role, reason);
+        }
+
+        liveWriter?.Dispose();
+        var outputText = stdout.ToString();
+        var errorText = stderr.ToString();
+        var success = process.ExitCode == 0;
+        var quotaExhausted = (!success && QuotaDetector.IsQuotaExhausted(outputText, errorText))
+            || QuotaDetector.IsQuotaExhaustedOutput(outputText);
+
+        return new ActorRunResult(
+            Role: role,
+            Success: success && !quotaExhausted,
+            Output: outputText,
+            ErrorOutput: errorText,
+            ExitCode: process.ExitCode,
+            IsSemiManual: false,
+            IsQuotaExhausted: quotaExhausted);
     }
 
     private async Task<ActorRunResult> RunProcessWithStdinAsync(

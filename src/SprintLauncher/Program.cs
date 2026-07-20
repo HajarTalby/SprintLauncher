@@ -117,6 +117,7 @@ if (args.Contains("--smoke-live"))
     using var smokeRunner = new ActorRunner(
         claudeModel: smokeModels.ClaudeModel,
         codexModel: smokeModels.CodexModel,
+        agyModel: smokeModels.AgyModel,
         actorTimeout: TimeSpan.FromMinutes(5),
         repoRoot: smokeModels.SerzeniaRepoRoot);
     return await LiveChatSmoke.RunAsync(engineArg, smokeRunner, shutdownCts.Token);
@@ -410,6 +411,7 @@ if (decisionEntries.Count > 0)
 using var runner = new ActorRunner(
     claudeModel: config.ClaudeModel,
     codexModel: config.CodexModel,
+    agyModel: config.AgyModel,
     directiveInterpreterModel: config.DirectiveInterpreterModel,
     actorTimeout: TimeSpan.FromSeconds(config.ActorTimeoutSeconds),
     repoRoot: config.SerzeniaRepoRoot,
@@ -418,6 +420,7 @@ using var runner = new ActorRunner(
 var modelLock = new object();
 var currentClaudeModel = config.ClaudeModel;
 var currentCodexModel = config.CodexModel;
+var currentAgyModel = config.AgyModel;
 // Garde-fou de périmètre : toute écriture Jira hors des tickets du sprint est refusée
 // (incident sprint 6 : délibération publiée sur SERZENIA-98 au lieu de SERZENIA-111).
 var publisher = new JiraCommentPublisher(httpClient, config.JiraBaseUrl, config.JiraEmail, config.JiraApiToken, dryRun)
@@ -1287,12 +1290,12 @@ async Task RecordQuotaAsync(SprintState state, string stateFile, ActorRole engin
 // (incident 2026-07-16 : run mort avant le point de lecture → directive jamais lue).
 // Une ligne = une directive (l'UI en ajoute une par intervention).
 ModelEngine EngineForRole(ActorRole role) =>
-    role.IsClaudeFamily() ? ModelEngine.Claude : ModelEngine.Codex;
+    role.IsClaudeFamily() ? ModelEngine.Claude : role.IsAgFamily() ? ModelEngine.Agy : ModelEngine.Codex;
 
 string ModelForRole(ActorRole role)
 {
     lock (modelLock)
-        return role.IsClaudeFamily() ? currentClaudeModel : currentCodexModel;
+        return role.IsClaudeFamily() ? currentClaudeModel : role.IsAgFamily() ? currentAgyModel : currentCodexModel;
 }
 
 void ApplyModelRecommendation(ModelRecommendation recommendation, string source)
@@ -1304,10 +1307,15 @@ void ApplyModelRecommendation(ModelRecommendation recommendation, string source)
             currentClaudeModel = recommendation.Model;
             runner.ClaudeModel = recommendation.Model;
         }
-        else
+        else if (recommendation.Engine == ModelEngine.Codex)
         {
             currentCodexModel = recommendation.Model;
             runner.CodexModel = recommendation.Model;
+        }
+        else
+        {
+            currentAgyModel = recommendation.Model;
+            runner.AgyModel = recommendation.Model;
         }
     }
 
@@ -1951,6 +1959,7 @@ async Task ProcessPendingReviewsAsync(
     {
         [ActorRole.ClaudeImplementation] = new(1, 1),
         [ActorRole.GptImplementation] = new(1, 1),
+        [ActorRole.AgImplementation] = new(1, 1),
     };
 
     async Task RemovePendingAsync(PendingReview p)

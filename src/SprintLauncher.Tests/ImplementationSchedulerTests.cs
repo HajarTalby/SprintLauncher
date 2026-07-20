@@ -46,21 +46,21 @@ public class ImplementationRotationTests
     public void Engines_alternate_between_us()
     {
         Assert.Equal("GptImplementation", ImplementationRotation.PickEngine("ClaudeImplementation", None));
-        Assert.Equal("ClaudeImplementation", ImplementationRotation.PickEngine("GptImplementation", None));
+        Assert.Equal("AgImplementation", ImplementationRotation.PickEngine("GptImplementation", None));
+        Assert.Equal("ClaudeImplementation", ImplementationRotation.PickEngine("AgImplementation", None));
     }
 
     [Fact]
     public void Exhausted_engine_is_skipped()
     {
         var exhausted = new HashSet<string> { "GptImplementation" };
-        // Le tour de rôle voudrait codex mais il est épuisé → claude continue seul
-        Assert.Equal("ClaudeImplementation", ImplementationRotation.PickEngine("ClaudeImplementation", exhausted));
+        Assert.Equal("AgImplementation", ImplementationRotation.PickEngine("ClaudeImplementation", exhausted));
     }
 
     [Fact]
     public void Both_exhausted_returns_null()
     {
-        var exhausted = new HashSet<string> { "ClaudeImplementation", "GptImplementation" };
+        var exhausted = new HashSet<string> { "ClaudeImplementation", "GptImplementation", "AgImplementation" };
         Assert.Null(ImplementationRotation.PickEngine(null, exhausted));
     }
 
@@ -74,8 +74,17 @@ public class ImplementationRotationTests
     [Fact]
     public void No_relief_when_other_engine_also_exhausted()
     {
-        var exhausted = new HashSet<string> { "ClaudeImplementation", "GptImplementation" };
+        var exhausted = new HashSet<string> { "ClaudeImplementation", "GptImplementation", "AgImplementation" };
         Assert.Null(ImplementationRotation.PickRelief("ClaudeImplementation", exhausted));
+    }
+
+    [Fact]
+    public void Agy_participates_in_rotation_and_relief()
+    {
+        Assert.Equal("AgImplementation", ImplementationRotation.PickEngine("GptImplementation", None));
+        Assert.Equal("AgImplementation", ImplementationRotation.PickRelief(
+            "ClaudeImplementation",
+            new HashSet<string> { "GptImplementation" }));
     }
 }
 
@@ -118,8 +127,9 @@ public class UsTypeSpecializationTests
     [Fact]
     public void Unknown_us_falls_back_to_alternation()
     {
-        Assert.Equal(Back, ImplementationRotation.PickEngineForUs(UsType.Unknown, Front, None, Front, Back));
+        Assert.Equal("AgImplementation", ImplementationRotation.PickEngineForUs(UsType.Unknown, Front, None, Front, Back));
         Assert.Equal(Front, ImplementationRotation.PickEngineForUs(UsType.Unknown, Back, None, Front, Back));
+        Assert.Equal(Back, ImplementationRotation.PickEngineForUs(UsType.Unknown, "AgImplementation", None, Front, Back));
     }
 
     [Fact]

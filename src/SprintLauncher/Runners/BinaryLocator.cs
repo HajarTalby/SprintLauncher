@@ -63,11 +63,50 @@ public static class BinaryLocator
         return FindOnPath("codex");
     }
 
-    private static string? FindOnPath(string name)
+    /// <summary>
+    /// Finds agy.exe — prefers AGY_BIN, then PATH, then known Antigravity install roots.
+    /// </summary>
+    public static string? FindAgy()
     {
-        var pathExt = Environment.GetEnvironmentVariable("PATHEXT") ?? ".exe";
+        return FindAgy(
+            Environment.GetEnvironmentVariable("AGY_BIN"),
+            Environment.GetEnvironmentVariable("PATH") ?? "",
+            Environment.GetEnvironmentVariable("PATHEXT") ?? ".exe",
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData));
+    }
+
+    internal static string? FindAgy(
+        string? envOverride,
+        string pathValue,
+        string pathExt,
+        string localAppData)
+    {
+        if (!string.IsNullOrWhiteSpace(envOverride) && File.Exists(envOverride))
+            return envOverride;
+
+        var path = FindOnPath("agy", pathValue, pathExt);
+        if (path is not null) return path;
+
+        var candidates = new[]
+        {
+            Path.Combine(localAppData, "Programs", "Antigravity", "agy.exe"),
+            Path.Combine(localAppData, "Programs", "Antigravity", "bin", "agy.exe"),
+            Path.Combine(localAppData, "agy", "bin", "agy.exe"),
+        };
+
+        return candidates.FirstOrDefault(File.Exists);
+    }
+
+    private static string? FindOnPath(string name)
+        => FindOnPath(
+            name,
+            Environment.GetEnvironmentVariable("PATH") ?? "",
+            Environment.GetEnvironmentVariable("PATHEXT") ?? ".exe");
+
+    private static string? FindOnPath(string name, string pathValue, string pathExt)
+    {
         var extensions = pathExt.Split(';', StringSplitOptions.RemoveEmptyEntries);
-        foreach (var dir in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(';', StringSplitOptions.RemoveEmptyEntries))
+        foreach (var dir in pathValue.Split(';', StringSplitOptions.RemoveEmptyEntries))
         {
             foreach (var ext in extensions)
             {
