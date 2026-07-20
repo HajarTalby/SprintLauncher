@@ -1,0 +1,54 @@
+Reprise automatique apres epuisement de quota.
+
+PROBLEME REEL
+Aujourd'hui le SL gere le quota par releve croisee : si ccode tombe sur quota, codex
+reprend l'US, et inversement (ImplementationRotation.PickRelief dans
+src/SprintLauncher/Runners/QuotaDetector.cs). Mais quand les DEUX moteurs sont epuises,
+ImplementationRotation.PickEngine renvoie null et le run s'arrete la. Personne n'attend la
+reinitialisation, et Hajar doit relancer a la main.
+
+Le plus frustrant : claude.exe imprime l'heure de reset dans son message
+    "You've hit your session limit - resets 9:50pm"
+Cette heure est citee en commentaire ligne 15 de QuotaDetector.cs mais n'est JAMAIS parsee.
+L'information necessaire a la reprise arrive et on la jette.
+
+PERIMETRE
+1. Parser l'heure de reinitialisation depuis la sortie d'un moteur epuise. Nouveau type
+   dedie et testable (ne surcharge pas QuotaDetector d'etat). Cas a couvrir :
+   - formats 12h avec am/pm ("9:50pm", "9:50 PM", "10am"), et format 24h ("21:50") ;
+   - heure deja passee dans la journee -> c'est le lendemain ;
+   - message sans heure exploitable -> pas de reprise programmee, on retombe sur le
+     comportement actuel (arret propre). Ne devine pas une heure par defaut.
+   - fuseau : heure locale de la machine.
+2. Propager l'heure jusqu'a l'etat de run (SprintState / QuotaExhaustedEngines est deja
+   persiste dans state.json — ajoute ce qu'il faut sans casser la deserialisation des
+   fichiers d'etat existants, c'est important : des runs en cours ont deja un state.json).
+3. Quand TOUS les moteurs necessaires sont epuises et qu'une heure de reprise est connue :
+   attendre puis reprendre automatiquement la ou le run s'est arrete. Le mecanisme de
+   reprise existe deja (--resume) : reutilise-le, ne le reecris pas.
+4. Garde-fous obligatoires :
+   - attente plafonnee (defaut raisonnable, ex. 8h) et configurable ;
+   - l'attente doit etre annulable par le CancellationToken d'arret existant (le bouton
+     ARRET de l'UI et Ctrl+C doivent rester reactifs — teste ce point) ;
+   - trace claire dans la sortie console : moteur epuise, heure de reprise prevue, temps
+     d'attente, puis reprise effective. Hajar doit comprendre en lisant le log.
+   - l'attente ne doit rien ecrire sur Jira.
+5. Rendre le comportement optionnel via une option de ligne de commande explicite, et
+   documenter cette option dans le CLAUDE.md du repo SprintLauncher.
+
+TESTS (obligatoires)
+xUnit dans src/SprintLauncher.Tests : le parseur d'heure (tous les cas ci-dessus, y
+compris le message reel complet cite plus haut), le passage a J+1, l'absence d'heure, le
+plafonnement de l'attente, l'annulation par CancellationToken, et la retro-compatibilite
+de deserialisation d'un state.json ecrit avant ton changement. Aucun test ne doit
+reellement dormir plusieurs heures : injecte l'horloge et le delai.
+
+CONTRAINTES
+- Branche courante deja creee, tu es dans ton propre worktree. Committe dessus.
+- NE POUSSE PAS. NE MERGE PAS. AUCUNE ECRITURE JIRA.
+- `dotnet build` et `dotnet test` verts a la racine avant ton dernier commit.
+- Ne prefixe jamais une commande par `cd` : utilise `git -C <repo>` / `--project <path>`.
+
+LIVRABLE
+Un commit sur ta branche, et un dernier message qui liste : ce que tu as implemente, le
+resultat exact de build et test, et les cas que tu n'as pas pu couvrir.

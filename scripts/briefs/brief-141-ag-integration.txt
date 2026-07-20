@@ -1,0 +1,76 @@
+SERZENIA-141 — Integrer Antigravity (agy) comme moteur d'acteur du Sprint Launcher.
+
+CONTEXTE
+Le spike est fait (docs/141-ag-spike.md sur la branche sl-141-ag-spike, lis-le en premier :
+`git show sl-141-ag-spike:docs/141-ag-spike.md`). Conclusion GO-CONDITIONNEL.
+
+ATTENTION — le spike a ete fait sans pouvoir installer AG, deux de ses affirmations sont
+FAUSSES et corrigees ici par constat direct sur la machine (2026-07-19) :
+- il annoncait "aucune entree winget exploitable" : le paquet existe,
+  c'est Google.AntigravityCLI (installe, version 1.1.4) ;
+- il annoncait l'option `--cwd` : elle N'EXISTE PAS. Le repertoire de travail se passe
+  par `--add-dir <dir>` (repetable).
+
+Aide reelle de `agy` (options utiles) :
+    -p / --print                     prompt unique non interactif, imprime la reponse
+    --add-dir <dir>                  ajoute un repertoire au workspace (repetable)
+    --model <m>                      modele de la session
+    --dangerously-skip-permissions   auto-approbation des outils (equivalent bypass)
+    --print-timeout <d>              timeout du mode print (defaut 5m)
+    --sandbox                        restrictions terminal
+Sous-commandes : agent(s), models, plugin(s), install, update, changelog, help.
+
+L'installation est faite. L'authentification (OAuth Google, navigateur) est prise en
+charge par Claude avec Hajar — NE T'EN OCCUPE PAS. Tant qu'elle n'est pas faite, `agy`
+sort en code 1 avec "Authentication required" : ne considere donc jamais un appel reel a
+`agy` comme un test valide, et ne fais dependre aucun test de sa presence.
+
+PERIMETRE
+Ajouter un troisieme moteur d'acteur a cote de claude.exe et codex.exe, dans
+src/SprintLauncher/Runners/ActorRunner.cs (voir RunClaudeAsync et RunCodexAsync comme
+modeles). Points a respecter :
+
+1. Localisation du binaire : etendre BinaryLocator (Runners/BinaryLocator.cs) avec une
+   recherche de `agy` — variable d'environnement AGY_BIN en priorite, puis PATH, puis
+   %LOCALAPPDATA%\Programs\Antigravity et %LOCALAPPDATA%\agy\bin. Absence de binaire =
+   echec propre et explicite, jamais un crash.
+
+1bis. Repertoire de travail : `--add-dir <repoRoot>` (PAS `--cwd`), plus
+   ProcessStartInfo.WorkingDirectory comme pour les autres moteurs.
+
+2. Passage du prompt : l'aide ne documente que `-p "<prompt>"`, PAS stdin. Or les prompts
+   du SL depassent regulierement la limite Windows de 32767 caracteres de ligne de
+   commande. Implemente donc l'ecriture du prompt dans un fichier temporaire UTF-8 sans
+   BOM et passe-le par `-p` en lisant le fichier si `agy` le permet ; sinon, coupe court :
+   ne devine pas, laisse un point d'extension clairement commente et un test qui
+   documente la limite. Ce point sera tranche par un smoke reel.
+
+3. Isolation : comme les autres moteurs, retirer les clefs API de l'environnement du
+   process, et poser le marqueur SPRINTLAUNCHER_ACTOR via MarkAsActor(psi) — un acteur ne
+   doit jamais heriter du contexte de session (regression du 2026-07-19, voir le commit
+   d9f577a).
+
+4. Encodage : stdin/stdout/stderr en UTF-8, stdin SANS BOM (new UTF8Encoding(false)).
+   Le BOM casse les parseurs — deja constate deux fois sur ce repo.
+
+5. Quota : renseigner IsQuotaExhausted via QuotaDetector comme les autres moteurs.
+
+6. Sortie : la doc ne documente ni JSON ni streaming pour `agy`. Traite la sortie comme
+   du texte brut (equivalent du mode one-shot), sans inventer de protocole evenementiel.
+
+TESTS (obligatoires, sans dependre d'une installation d'AG)
+Ajoute des tests xUnit dans src/SprintLauncher.Tests : localisation du binaire (present /
+absent / via AGY_BIN), construction des arguments, encodage du prompt, marqueur
+SPRINTLAUNCHER_ACTOR pose, detection de quota. Aucun test ne doit lancer `agy`.
+
+CONTRAINTES
+- Branche courante deja creee, tu es dans ton propre worktree. Committe dessus.
+- NE POUSSE PAS. NE MERGE PAS. AUCUNE ECRITURE JIRA. AUCUNE RELEASE.
+- `dotnet build` et `dotnet test` doivent etre verts a la racine avant ton dernier commit.
+- Les scripts .ps1 du repo sont strictement ASCII (PS 5.1 les lit en Windows-1252).
+- Ne prefixe jamais une commande par `cd` : utilise `git -C <repo>` / `--project <path>`.
+
+LIVRABLE
+Un commit sur ta branche, et un dernier message qui liste : ce que tu as implemente, le
+resultat exact de build et test (nombre de tests passes), les points laisses ouverts pour
+le smoke reel, et toute hypothese que tu n'as pas pu verifier.
