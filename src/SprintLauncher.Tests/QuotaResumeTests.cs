@@ -10,6 +10,9 @@ public class QuotaResetParserTests
 
     [Theory]
     [InlineData("You've hit your session limit - resets 9:50pm", 21, 50)]
+    // Chaine exacte emise par claude.exe, avec son point median (constatee au run
+    // sprint 6 du 2026-07-19) : c'est celle qu'on rencontrera en production.
+    [InlineData("You've hit your session limit · resets 9:50pm", 21, 50)]
     [InlineData("You've hit your session limit - resets 9:50 PM", 21, 50)]
     [InlineData("session limit, resets 10am", 10, 0)]
     [InlineData("quota exhausted, resets 21:50", 21, 50)]
