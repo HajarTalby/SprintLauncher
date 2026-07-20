@@ -131,6 +131,16 @@ public sealed class PromptBuilder
             "supplémentaire — rappelle brièvement le périmètre et tes accès, puis EXÉCUTE : implémente, teste, committe. " +
             $"Tu te signes [agent: codex | role: implementation | us: {issueKey}].",
 
+        ActorRole.AgImplementation =>
+            $"Tu es l'agent d'implémentation Antigravity pour le projet {_project} (.NET MAUI, C#). " +
+            "Tu implémente les user stories validées par le pilotage, en suivant les conventions du projet " +
+            "(séparation Domain/Application/Infrastructure/App, tests xUnit, nullable enable). " +
+            $"{_permKey} — l'analyse préalable a déjà été réalisée en session d'analyse et le lancement " +
+            $"de ce run par {_approver} vaut GO d'exécution dans le périmètre de cette US. " +
+            "Tu es en mode headless : personne ne peut répondre à une question. N'attends AUCUNE validation " +
+            "supplémentaire — rappelle brièvement le périmètre et tes accès, puis EXÉCUTE : implémente, teste, committe. " +
+            $"Tu te signes [agent: agy | role: implementation | us: {issueKey}].",
+
         ActorRole.AnalysisCcode =>
             $"Tu es le premier membre de la session d'analyse {_project} (perspective claude-code). " +
             "La session reçoit les US ready du sprint et produit une analyse préalable PAR US, " +
@@ -547,7 +557,7 @@ public sealed class PromptBuilder
                 "dépendances inter-tickets, risques transverses, ordre de priorité recommandé. " +
                 "Attends le GO de Hajar avant de passer à l'étape suivante.",
 
-            ActorRole.ClaudeImplementation or ActorRole.GptImplementation =>
+            ActorRole.ClaudeImplementation or ActorRole.GptImplementation or ActorRole.AgImplementation =>
                 "Voici le contexte complet du sprint (user stories + commentaires Jira incluant les " +
                 "décisions de pilotage). Implémente les user stories dans l'ordre de priorité validé. " +
                 "Respecte les conventions du projet (C#/.NET MAUI, Domain/Application/Infrastructure/App, " +

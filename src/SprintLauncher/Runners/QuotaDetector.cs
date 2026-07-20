@@ -93,6 +93,8 @@ public static class ImplementationRotation
 {
     public static readonly string ClaudeEngine = "ClaudeImplementation";
     public static readonly string CodexEngine = "GptImplementation";
+    public static readonly string AgyEngine = "AgImplementation";
+    private static readonly string[] Engines = [ClaudeEngine, CodexEngine, AgyEngine];
 
     /// <summary>
     /// Choisit le moteur pour la prochaine US : alternance stricte avec le dernier
@@ -100,9 +102,11 @@ public static class ImplementationRotation
     /// </summary>
     public static string? PickEngine(string? lastImplementer, IReadOnlySet<string> exhausted)
     {
-        var order = lastImplementer == ClaudeEngine
-            ? new[] { CodexEngine, ClaudeEngine }
-            : new[] { ClaudeEngine, CodexEngine };
+        var start = lastImplementer is null
+            ? 0
+            : (Array.IndexOf(Engines, lastImplementer) + 1 + Engines.Length) % Engines.Length;
+        var order = Enumerable.Range(0, Engines.Length)
+            .Select(offset => Engines[(start + offset) % Engines.Length]);
 
         foreach (var engine in order)
             if (!exhausted.Contains(engine))
@@ -140,7 +144,6 @@ public static class ImplementationRotation
     /// <summary>Le moteur de relève quand <paramref name="failedEngine"/> tombe sur quota.</summary>
     public static string? PickRelief(string failedEngine, IReadOnlySet<string> exhausted)
     {
-        var other = failedEngine == ClaudeEngine ? CodexEngine : ClaudeEngine;
-        return exhausted.Contains(other) ? null : other;
+        return Engines.FirstOrDefault(engine => engine != failedEngine && !exhausted.Contains(engine));
     }
 }

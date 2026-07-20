@@ -6,22 +6,26 @@ public enum ModelEngine
 {
     Claude,
     Codex,
+    Agy,
 }
 
 public sealed record ModelRecommendation(ModelEngine Engine, string Model, string Source);
 
 public static class ModelRecommendationParser
 {
+    private const string EnginePattern =
+        "claude|ccode|claudeimplementation|codex|gpt|gptimplementation|agy|ag|agimplementation|antigravity";
+
     private static readonly Regex CommandRegex = new(
-        @"^\s*!model\s+(?<engine>claude|ccode|claudeimplementation|codex|gpt|gptimplementation)\s+(?<model>\S.*?)\s*$",
+        @"^\s*!model\s+(?<engine>" + EnginePattern + @")\s+(?<model>\S.*?)\s*$",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static readonly Regex ExplicitRecommendationRegex = new(
-        @"(?im)^\s*(?:[-*]\s*)?(?:modele|modèle|model)\b[^:=\r\n]{0,80}(?:\((?<engine>claude|ccode|codex|gpt)\))?\s*[:=]\s*(?:(?<engine2>claude|ccode|codex|gpt)\s+)?(?<model>[A-Za-z0-9][A-Za-z0-9_.:/+\-]{1,80})",
+        @"(?im)^\s*(?:[-*]\s*)?(?:mod.{0,3}le|model)\b[^:=\r\n]{0,80}(?:\((?<engine>" + EnginePattern + @")\))?\s*[:=]\s*(?:(?<engine2>" + EnginePattern + @")\s+)?(?<model>[A-Za-z0-9][A-Za-z0-9_.:/+\-]{1,80})",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static readonly Regex BracketRecommendationRegex = new(
-        @"(?im)^\s*\[(?:model|modele|modèle)\s*(?:dev)?\s*(?::|\|)?\s*(?:(?<engine>claude|ccode|codex|gpt)\s+)?(?<model>[A-Za-z0-9][A-Za-z0-9_.:/+\-]{1,80})\s*\]",
+        @"(?im)^\s*\[(?:model|mod.{0,3}le)\s*(?:dev)?\s*(?::|\|)?\s*(?:(?<engine>" + EnginePattern + @")\s+)?(?<model>[A-Za-z0-9][A-Za-z0-9_.:/+\-]{1,80})\s*\]",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     public static bool TryParseCommand(string line, out ModelRecommendation recommendation)
@@ -81,6 +85,12 @@ public static class ModelRecommendationParser
             case "gpt":
             case "gptimplementation":
                 engine = ModelEngine.Codex;
+                return true;
+            case "agy":
+            case "ag":
+            case "agimplementation":
+            case "antigravity":
+                engine = ModelEngine.Agy;
                 return true;
             default:
                 engine = ModelEngine.Claude;

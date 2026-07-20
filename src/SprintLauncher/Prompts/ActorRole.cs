@@ -51,6 +51,9 @@ public enum ActorRole
     GptImplementation,
     GptPilotage, // semi-manual: prompt generated, Hajar runs in ChatGPT web
 
+    // ── FAMILLE AG ──
+    AgImplementation,
+
     // ── ANALYSE (discussion claude-code + codex, per-US) ──
     AnalysisCcode,
     AnalysisCodex,
@@ -93,6 +96,8 @@ public static class ActorRoleExtensions
             => ActorGroup.FamilyClaude,
         ActorRole.GptImplementation or ActorRole.GptPilotage
             => ActorGroup.FamilyGpt,
+        ActorRole.AgImplementation
+            => ActorGroup.FamilyGpt,
         ActorRole.AnalysisCcode or ActorRole.AnalysisCodex
             => ActorGroup.Analysis,
         ActorRole.CommitteePilotageClaudeChat or ActorRole.CommitteePilotageGptChat
@@ -131,11 +136,13 @@ public static class ActorRoleExtensions
 
     public static bool IsSemiManual(this ActorRole role) => role is ActorRole.GptPilotage;
 
+    public static bool IsAgFamily(this ActorRole role) => role is ActorRole.AgImplementation;
+
     public static bool IsPilotageActor(this ActorRole role) => role is
         ActorRole.ClaudePilotage or ActorRole.GptPilotage;
 
     public static bool UsesPerUsImplementationRouting(this ActorRole role) =>
-        role is ActorRole.ClaudeImplementation or ActorRole.GptImplementation;
+        role is ActorRole.ClaudeImplementation or ActorRole.GptImplementation or ActorRole.AgImplementation;
 
     // Pilotage actors publish their sprint-level analysis to the reference ticket only.
     // Implementation actors are routed per-US by the implementation scheduler.
@@ -163,7 +170,7 @@ public static class ActorRoleExtensions
     /// elle-même sur la release réelle (demande de Hajar).
     /// </summary>
     public static bool IsExecutionRole(this ActorRole role) => role is
-        ActorRole.ClaudeImplementation or ActorRole.GptImplementation or
+        ActorRole.ClaudeImplementation or ActorRole.GptImplementation or ActorRole.AgImplementation or
         ActorRole.ClaudeQaVerdict or ActorRole.GptQaVerdict;
 
     public static string ToSignatureTag(this ActorRole role) => role switch
@@ -172,6 +179,7 @@ public static class ActorRoleExtensions
         ActorRole.ClaudeImplementation       => "claude-code | role: implementation",
         ActorRole.GptPilotage                => "gpt-chat | role: pilotage-cadrage",
         ActorRole.GptImplementation          => "codex | role: implementation",
+        ActorRole.AgImplementation           => "agy | role: implementation",
         ActorRole.AnalysisCcode              => "claude-code | role: analyse",
         ActorRole.AnalysisCodex              => "codex | role: analyse",
         ActorRole.CommitteePilotageClaudeChat => "claude-chat | role: comite-pilotage",
