@@ -30,6 +30,7 @@ public partial class MainWindow : Window
     // Acteur en train de travailler : cible d'une intervention live (chat live).
     private string? _activeActor;
     private string _activeModelEngine = "claude";
+    private string _activeModelTarget = "claude";
     private string _currentModel = "sonnet-5";
     // TOUS les acteurs en cours (pipeline parallèle : deux moteurs peuvent tourner
     // en même temps). Le live ne route QUE vers un acteur réellement en cours —
@@ -413,6 +414,7 @@ public partial class MainWindow : Window
                     var engine = data.TryGetProperty("engine", out var en) ? en.GetString() ?? "" : "";
                     _activeActor = role; // cible d'une intervention live non adressée
                     if (!string.IsNullOrWhiteSpace(engine)) _activeModelEngine = engine;
+                    _activeModelTarget = ModelTargetFor(role, _activeModelEngine);
                     if (!string.IsNullOrWhiteSpace(model))
                     {
                         _currentModel = model;
@@ -558,8 +560,10 @@ public partial class MainWindow : Window
                 case "model-changed":
                 {
                     var engine = data.GetProperty("engine").GetString() ?? "";
+                    var role = data.TryGetProperty("role", out var r) ? r.GetString() ?? "" : "";
                     var model = data.GetProperty("model").GetString() ?? "";
                     if (!string.IsNullOrWhiteSpace(engine)) _activeModelEngine = engine;
+                    if (!string.IsNullOrWhiteSpace(role)) _activeModelTarget = ModelTargetFor(role, _activeModelEngine);
                     if (!string.IsNullOrWhiteSpace(model))
                     {
                         _currentModel = model;
@@ -1301,14 +1305,14 @@ public partial class MainWindow : Window
         var model = TxtCurrentModel.Text.Trim();
         if (model.Length == 0) return;
         _currentModel = model;
-        var line = $"!model {_activeModelEngine} {model}";
+        var line = $"!model {_activeModelTarget} {model}";
         var targetDir = _process is { HasExited: false } && _artifactsDir is not null
             ? _artifactsDir
             : AppContext.BaseDirectory;
         try
         {
             File.AppendAllText(Path.Combine(targetDir, "pending-directive.txt"), line + Environment.NewLine);
-            TxtStatus.Text = $"Modele {_activeModelEngine} demande : {model}";
+            TxtStatus.Text = $"Modele {_activeModelTarget} demande : {model}";
             AppendLog($">>> {line}");
         }
         catch (IOException ex)
@@ -1316,6 +1320,13 @@ public partial class MainWindow : Window
             AppendLog($"(modele non appliqué : {ex.Message})");
         }
     }
+
+    private static string ModelTargetFor(string role, string engine) => role switch
+    {
+        "ClaudeImplementation" => "ccode",
+        "GptImplementation" => "gptimplementation",
+        _ => string.IsNullOrWhiteSpace(engine) ? "claude" : engine,
+    };
 
     private void TxtIntervention_KeyDown(object sender, KeyEventArgs e)
     {

@@ -1,0 +1,34 @@
+using SprintLauncher.Prompts;
+using SprintLauncher.Runners;
+using Xunit;
+
+namespace SprintLauncher.Tests;
+
+public class ModelSelectionStateTests
+{
+    [Fact]
+    public void Complexity_recommendation_without_role_targets_next_development_role_only()
+    {
+        var state = new ModelSelectionState("sonnet-5", "gpt-5.5");
+
+        var target = state.Apply(new ModelRecommendation(ModelEngine.Claude, "claude-opus-4-8", "analyse"), nextDevelopmentOnly: true);
+
+        Assert.Equal(ActorRole.ClaudeImplementation, target);
+        Assert.Equal("claude-opus-4-8", state.ModelFor(ActorRole.ClaudeImplementation));
+        Assert.Equal("sonnet-5", state.ModelFor(ActorRole.CommitteePilotageClaudeChat));
+    }
+
+    [Fact]
+    public void Explicit_role_recommendation_targets_that_actor()
+    {
+        var state = new ModelSelectionState("sonnet-5", "gpt-5.5");
+
+        var target = state.Apply(
+            new ModelRecommendation(ModelEngine.Codex, "gpt-5.5-high", "hajar", ActorRole.GptImplementation),
+            nextDevelopmentOnly: false);
+
+        Assert.Equal(ActorRole.GptImplementation, target);
+        Assert.Equal("gpt-5.5-high", state.ModelFor(ActorRole.GptImplementation));
+        Assert.Equal("gpt-5.5", state.ModelFor(ActorRole.AnalysisCodex));
+    }
+}

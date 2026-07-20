@@ -388,9 +388,7 @@ using var runner = new ActorRunner(
     repoRoot: config.SerzeniaRepoRoot,
     implementationTimeout: TimeSpan.FromSeconds(config.ImplementationTimeoutSeconds),
     gptPilotageAuto: config.GptPilotageAuto);
-var modelLock = new object();
-var currentClaudeModel = config.ClaudeModel;
-var currentCodexModel = config.CodexModel;
+var modelSelection = new ModelSelectionState(config.ClaudeModel, config.CodexModel);
 // Garde-fou de périmètre : toute écriture Jira hors des tickets du sprint est refusée
 // (incident sprint 6 : délibération publiée sur SERZENIA-98 au lieu de SERZENIA-111).
 var publisher = new JiraCommentPublisher(httpClient, config.JiraBaseUrl, config.JiraEmail, config.JiraApiToken, dryRun)
@@ -1223,30 +1221,21 @@ ModelEngine EngineForRole(ActorRole role) =>
     role.IsClaudeFamily() ? ModelEngine.Claude : ModelEngine.Codex;
 
 string ModelForRole(ActorRole role)
-{
-    lock (modelLock)
-        return role.IsClaudeFamily() ? currentClaudeModel : currentCodexModel;
-}
+    => modelSelection.ModelFor(role);
 
-void ApplyModelRecommendation(ModelRecommendation recommendation, string source)
+void ApplyModelRecommendation(ModelRecommendation recommendation, string source, bool nextDevelopmentOnly = false)
 {
-    lock (modelLock)
-    {
+    var targetRole = modelSelection.Apply(recommendation, nextDevelopmentOnly);
+    if (targetRole is null)
         if (recommendation.Engine == ModelEngine.Claude)
-        {
-            currentClaudeModel = recommendation.Model;
             runner.ClaudeModel = recommendation.Model;
-        }
         else
-        {
-            currentCodexModel = recommendation.Model;
             runner.CodexModel = recommendation.Model;
-        }
-    }
 
     var engine = recommendation.Engine.ToString().ToLowerInvariant();
-    Console.WriteLine($"  ⚡ Modèle {engine} changé → {recommendation.Model} ({source}, effectif dès le prochain tour {engine}).");
-    EventEmitter.Emit("model-changed", new { engine, model = recommendation.Model, source });
+    var target = targetRole?.ToString() ?? engine;
+    Console.WriteLine($"  ⚡ Modèle {target} changé → {recommendation.Model} ({source}, effectif dès le prochain tour concerné).");
+    EventEmitter.Emit("model-changed", new { engine, role = targetRole?.ToString(), model = recommendation.Model, source });
 }
 
 void ApplyModelRecommendationsFromOutput(ActorRole role, string output)
@@ -1256,7 +1245,7 @@ void ApplyModelRecommendationsFromOutput(ActorRole role, string output)
 
     var recommendations = ModelRecommendationParser.ExtractRecommendations(output, EngineForRole(role));
     foreach (var recommendation in recommendations)
-        ApplyModelRecommendation(recommendation, $"{role} / complexité");
+        ApplyModelRecommendation(recommendation, $"{role} / complexité", nextDevelopmentOnly: true);
 }
 
 async Task IngestPendingDirectivesAsync(string artifactsDir, CancellationToken ct)
