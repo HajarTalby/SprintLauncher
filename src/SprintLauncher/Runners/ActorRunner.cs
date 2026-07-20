@@ -506,7 +506,7 @@ public sealed class ActorRunner : IDisposable
     {
         var outputDir = Path.Combine(Directory.GetCurrentDirectory(), "artifacts", "prompts");
         Directory.CreateDirectory(outputDir);
-        var fileName = $"{prompt.Role}-{DateTime.UtcNow:yyyyMMddHHmmss}.txt";
+        var fileName = ArtifactNaming.Prompt(prompt.Role);
         var filePath = Path.Combine(outputDir, fileName);
 
         var content = new StringBuilder();

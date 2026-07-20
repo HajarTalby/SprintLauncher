@@ -1,5 +1,6 @@
 ﻿using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using SprintLauncher.Prompts;
 
 namespace SprintLauncher.Runners;
@@ -77,7 +78,14 @@ public sealed class PendingDirective
 
 public static class SprintStateManager
 {
-    private static readonly JsonSerializerOptions _json = new() { WriteIndented = true };
+    private static readonly JsonSerializerOptions _json = CreateJsonOptions();
+
+    private static JsonSerializerOptions CreateJsonOptions()
+    {
+        var options = new JsonSerializerOptions { WriteIndented = true };
+        options.Converters.Add(new SortedStringHashSetJsonConverter());
+        return options;
+    }
 
     public static async Task SaveAsync(string stateFile, SprintState state, CancellationToken ct = default)
     {
@@ -121,5 +129,20 @@ public static class SprintStateManager
         sb.AppendLine("```");
 
         await File.WriteAllTextAsync(handoffFile, sb.ToString(), ct);
+    }
+}
+
+internal sealed class SortedStringHashSetJsonConverter : JsonConverter<HashSet<string>>
+{
+    public override HashSet<string>? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
+        JsonSerializer.Deserialize<string[]>(ref reader, options)?
+            .ToHashSet(StringComparer.OrdinalIgnoreCase) ?? [];
+
+    public override void Write(Utf8JsonWriter writer, HashSet<string> value, JsonSerializerOptions options)
+    {
+        writer.WriteStartArray();
+        foreach (var item in value.OrderBy(x => x, StringComparer.OrdinalIgnoreCase))
+            writer.WriteStringValue(item);
+        writer.WriteEndArray();
     }
 }

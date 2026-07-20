@@ -272,7 +272,7 @@ if (publishFromArtifacts)
         if (role.IsCollective() || role.IsSemiManual()) continue;
         if (rolesFilter is not null && !rolesFilter.Contains(role.ToString())) continue;
 
-        var outputPath = Path.Combine(publishDir, $"output-{role}.txt");
+        var outputPath = Path.Combine(publishDir, ArtifactNaming.Output(role));
         if (!File.Exists(outputPath)) continue;
 
         var content = await File.ReadAllTextAsync(outputPath);
@@ -288,7 +288,7 @@ if (publishFromArtifacts)
     }
 
     // Groupes collectifs — commentaire de synthèse de la discussion
-    foreach (ActorGroup group in Enum.GetValues<ActorGroup>())
+    foreach (var group in ArtifactNaming.OrderedByStableKey(Enum.GetValues<ActorGroup>(), g => g.ToString()))
     {
         if (rolesFilter is not null && !rolesFilter.Contains(group.ToString())) continue;
 
@@ -424,8 +424,8 @@ foreach (var stale in Directory.GetFiles(artifactsDir, "live-*.txt").OrderBy(p =
 var displayFiles = Enum.GetValues<ActorRole>()
     .SelectMany(r => new[]
     {
-        Path.Combine(artifactsDir, $"output-{r}.txt"),
-        Path.Combine(artifactsDir, $"prompt-{r}.txt"),
+        Path.Combine(artifactsDir, ArtifactNaming.Output(r)),
+        Path.Combine(artifactsDir, ArtifactNaming.Prompt(r)),
     })
     .Where(File.Exists)
     .OrderBy(p => p, StringComparer.OrdinalIgnoreCase)
@@ -987,7 +987,7 @@ async Task RunSingleActorAsync(
     if (!string.IsNullOrWhiteSpace(directives))
         prompt = prompt with { UserPrompt = prompt.UserPrompt + $"\n\n## Directive de {config.ApproverName} — à respecter\n{directives}" };
 
-    var promptFile = Path.Combine(artifactsDir, $"prompt-{role}.txt");
+    var promptFile = Path.Combine(artifactsDir, ArtifactNaming.Prompt(role));
     await File.WriteAllTextAsync(promptFile, $"=== SYSTEM ===\n{prompt.SystemPrompt}\n\n=== USER ===\n{prompt.UserPrompt}");
 
     var model = ModelForRole(role);
@@ -1009,7 +1009,7 @@ async Task RunSingleActorAsync(
     PrintActorResult(role.ToString(), sw, runResult);
     ApplyModelRecommendationsFromOutput(role, runResult.Output);
 
-    var outputFile = Path.Combine(artifactsDir, $"output-{role}.txt");
+    var outputFile = Path.Combine(artifactsDir, ArtifactNaming.Output(role));
     await File.WriteAllTextAsync(outputFile, runResult.Output);
 
     string? semiManualPromptPath = null;
@@ -1103,7 +1103,7 @@ async Task RunRetrospectivePhaseAsync(
         prompt = prompt with { UserPrompt = prompt.UserPrompt + "\n\n---\n\n" + retroContext };
         await using var actorTurn = await actorTurnCoordinator.BeginAsync(role, ct);
 
-        var promptFile = Path.Combine(artifactsDir, $"prompt-{role}.txt");
+        var promptFile = Path.Combine(artifactsDir, ArtifactNaming.Prompt(role));
         await File.WriteAllTextAsync(promptFile, $"=== SYSTEM ===\n{prompt.SystemPrompt}\n\n=== USER ===\n{prompt.UserPrompt}", ct);
 
         var model = ModelForRole(role);
@@ -1120,7 +1120,7 @@ async Task RunRetrospectivePhaseAsync(
         sw.Stop();
         PrintActorResult(role.ToString(), sw, runResult);
 
-        var outputFile = Path.Combine(artifactsDir, $"output-{role}.txt");
+        var outputFile = Path.Combine(artifactsDir, ArtifactNaming.Output(role));
         await File.WriteAllTextAsync(outputFile, runResult.Output, CancellationToken.None);
 
         if (runResult.Success)
@@ -1596,7 +1596,10 @@ async Task RemediateEcartsAsync(
     var remLock = new SemaphoreSlim(1, 1);
     var perEngine = new Dictionary<ActorRole, List<(SprintLauncher.Jira.JiraIssue Issue, List<string> Descs)>>();
 
-    foreach (var byUs in ecartList.GroupBy(e => e.Key))
+    foreach (var byUs in ecartList
+        .OrderBy(e => e.Key, StringComparer.OrdinalIgnoreCase)
+        .ThenBy(e => e.Description, StringComparer.OrdinalIgnoreCase)
+        .GroupBy(e => e.Key))
     {
         var targetKey = byUs.Key is "GLOBAL" or "TRANSVERSE" ? pilotageKey : byUs.Key;
         var issue = issues.FirstOrDefault(i => i.Key == targetKey) ?? issues[0];
@@ -1615,13 +1618,15 @@ async Task RemediateEcartsAsync(
         }
         var engine = Enum.Parse<ActorRole>(engineName);
         if (!perEngine.TryGetValue(engine, out var list)) perEngine[engine] = list = [];
-        list.Add((issue, byUs.Select(e => e.Description).ToList()));
+        list.Add((issue, byUs.Select(e => e.Description).OrderBy(d => d, StringComparer.OrdinalIgnoreCase).ToList()));
     }
 
     if (perEngine.Count > 1)
         Console.WriteLine($"  ⇉ Remédiation en parallèle : {string.Join(" + ", perEngine.Select(kv => $"{kv.Key} ({kv.Value.Count} US)"))}");
 
-    await Task.WhenAll(perEngine.Select(kv => Task.Run(async () =>
+    await Task.WhenAll(perEngine
+        .OrderBy(kv => kv.Key.ToString(), StringComparer.OrdinalIgnoreCase)
+        .Select(kv => Task.Run(async () =>
     {
         var (engine, workItems) = (kv.Key, kv.Value);
         foreach (var (issue, descs) in workItems)
@@ -1730,7 +1735,7 @@ async Task RunImplementationPhaseAsync(
 
     Console.WriteLine("  [implémentation per-US — tour de rôle ccode/codex, relève sur quota]");
 
-    foreach (var issue in issues)
+    foreach (var issue in ArtifactNaming.OrderedByStableKey(issues, i => i.Key))
     {
         if (ct.IsCancellationRequested) break;
 
@@ -1818,7 +1823,7 @@ async Task RunImplementationPhaseAsync(
         if (result.Success)
         {
             // Trace per-US en plus du fichier par rôle (écrasé à chaque US)
-            await File.WriteAllTextAsync(Path.Combine(artifactsDir, $"output-{engine}-{issue.Key}.txt"), result.Output);
+            await File.WriteAllTextAsync(Path.Combine(artifactsDir, ArtifactNaming.PerUsOutput(engine, issue.Key)), result.Output);
             var pub = await publisher.PublishAsync(issue.Key, result, ct);
             PrintPublishResult(issue.Key, engine, pub);
             await FlushDirectivesForAsync(issue.Key, ct);
@@ -1871,7 +1876,11 @@ async Task ProcessPendingReviewsAsync(
     // toutes les US en attente ont le MÊME implémenteur, l'autre moteur porte toutes
     // les revues et l'implémenteur attend la première livraison — c'est structurel
     // (on ne se relit pas soi-même), pas une panne. Le dire évite de le chercher.
-    var byImplementer = state.PendingReviews.GroupBy(p => p.Implementer).ToList();
+    var byImplementer = state.PendingReviews
+        .OrderBy(p => p.Implementer, StringComparer.OrdinalIgnoreCase)
+        .ThenBy(p => p.Key, StringComparer.OrdinalIgnoreCase)
+        .GroupBy(p => p.Implementer)
+        .ToList();
     if (byImplementer.Count == 1)
     {
         var impl = byImplementer[0].Key;
@@ -1920,7 +1929,7 @@ async Task ProcessPendingReviewsAsync(
             }
             var reviewer = Enum.Parse<ActorRole>(reviewerName);
 
-            var outputFile = Path.Combine(artifactsDir, $"output-{pending.Implementer}-{pending.Key}.txt");
+            var outputFile = Path.Combine(artifactsDir, ArtifactNaming.PerUsOutput(implementer, pending.Key));
             var implOutput = File.Exists(outputFile)
                 ? await File.ReadAllTextAsync(outputFile, ct)
                 : "(sortie d'implémentation indisponible — revue basée sur l'état réel du dépôt : git log/diff)";
@@ -1948,7 +1957,7 @@ async Task ProcessPendingReviewsAsync(
                 return;
             }
 
-            await File.WriteAllTextAsync(Path.Combine(artifactsDir, $"output-Review-{pending.Key}.txt"), review.Output);
+            await File.WriteAllTextAsync(Path.Combine(artifactsDir, ArtifactNaming.ReviewOutput(pending.Key)), review.Output);
             EventEmitter.Emit("turn", new { group = $"RevueCroisee-{pending.Key}", speaker = reviewer.ToString(), round = 1, isIntervention = false, content = review.Output.Trim() });
 
             // ── Correctifs (sérialisés par moteur implémenteur) — SANS attente ──
@@ -1974,7 +1983,7 @@ async Task ProcessPendingReviewsAsync(
                 return;
             }
 
-            await File.WriteAllTextAsync(Path.Combine(artifactsDir, $"output-{implementer}-{pending.Key}-corrections.txt"), corrections.Output);
+            await File.WriteAllTextAsync(Path.Combine(artifactsDir, ArtifactNaming.ReviewCorrectionsOutput(implementer, pending.Key)), corrections.Output);
             EventEmitter.Emit("turn", new { group = $"RevueCroisee-{pending.Key}", speaker = implementer.ToString(), round = 2, isIntervention = false, content = corrections.Output.Trim() });
 
             var body = new StringBuilder();
@@ -2047,7 +2056,11 @@ async Task ProcessPendingReviewsAsync(
         .Select(IdleDirectiveWorkerAsync)
         .ToList();
 
-    await Task.WhenAll(state.PendingReviews.ToList().Select(FlowAsync));
+    await Task.WhenAll(state.PendingReviews
+        .OrderBy(p => p.Key, StringComparer.OrdinalIgnoreCase)
+        .ThenBy(p => p.Implementer, StringComparer.OrdinalIgnoreCase)
+        .ToList()
+        .Select(FlowAsync));
     pipelineDone.Cancel();
     await Task.WhenAll(idleWorkers);
 }
@@ -2071,7 +2084,7 @@ async Task RunImplementationParallelAsync(
     var frontQueue = new Queue<SprintLauncher.Jira.JiraIssue>();
     var backQueue = new Queue<SprintLauncher.Jira.JiraIssue>();
     bool toggle = false;
-    foreach (var issue in issues)
+    foreach (var issue in ArtifactNaming.OrderedByStableKey(issues, i => i.Key))
     {
         if (state.CompletedUsImplementations.Contains(issue.Key))
         {
@@ -2136,7 +2149,7 @@ async Task RunImplementationParallelAsync(
                 continue;
             }
 
-            await File.WriteAllTextAsync(Path.Combine(artifactsDir, $"output-{engine}-{issue.Key}.txt"), result.Output);
+            await File.WriteAllTextAsync(Path.Combine(artifactsDir, ArtifactNaming.PerUsOutput(engine, issue.Key)), result.Output);
             var pub = await publisher.PublishAsync(issue.Key, result, ct);
             PrintPublishResult(issue.Key, engine, pub);
             await FlushDirectivesForAsync(issue.Key, ct);
@@ -2161,6 +2174,7 @@ async Task RunImplementationParallelAsync(
     // File(s) restante(s) après épuisement d'un moteur → reprise séquentielle avec relève
     var leftovers = frontQueue.Concat(backQueue)
         .Where(i => !state.CompletedUsImplementations.Contains(i.Key))
+        .OrderBy(i => i.Key, StringComparer.OrdinalIgnoreCase)
         .ToList();
     foreach (var issue in leftovers)
     {
@@ -2183,7 +2197,7 @@ async Task RunImplementationParallelAsync(
         var result = await RunDialogueTurnAsync(relief, prompt, artifactsDir, runner, ct);
         if (result.Success && !ImplementationOutputGuard.IsAwaitingGo(result.Output))
         {
-            await File.WriteAllTextAsync(Path.Combine(artifactsDir, $"output-{relief}-{issue.Key}.txt"), result.Output);
+            await File.WriteAllTextAsync(Path.Combine(artifactsDir, ArtifactNaming.PerUsOutput(relief, issue.Key)), result.Output);
             var pub = await publisher.PublishAsync(issue.Key, result, ct);
             PrintPublishResult(issue.Key, relief, pub);
             await FlushDirectivesForAsync(issue.Key, ct);
@@ -2346,7 +2360,7 @@ async Task RunDialogueGroupAsync(
         {
             if (usKey == publishKey) continue; // la synthèse complète part déjà sur le ticket pilotage
             var perUsBody = $"## Analyse {usKey}\n\n{section}";
-            await File.WriteAllTextAsync(Path.Combine(artifactsDir, $"output-Analysis-{usKey}.txt"), perUsBody);
+            await File.WriteAllTextAsync(Path.Combine(artifactsDir, ArtifactNaming.AnalysisOutput(usKey)), perUsBody);
             var perUsResult = await publisher.PublishCollectiveAsync(usKey, group, perUsBody);
             Console.WriteLine($"  {(perUsResult.Status == PublishStatus.Posted ? "✓" : "~")} [{usKey}] {perUsResult.Status} (analyse per-US)");
             EventEmitter.Emit("publish", new { key = usKey, actor = "Analysis", status = perUsResult.Status.ToString() });
@@ -2420,7 +2434,7 @@ async Task<ActorRunResult> RunDialogueTurnAsync(
 {
     await using var actorTurn = await actorTurnCoordinator.BeginAsync(role, ct);
 
-    var promptFile = Path.Combine(artifactsDir, $"prompt-{role}.txt");
+    var promptFile = Path.Combine(artifactsDir, ArtifactNaming.Prompt(role));
     await WaitIfPausedAsync(artifactsDir, ct);
     await File.WriteAllTextAsync(promptFile, $"=== SYSTEM ===\n{prompt.SystemPrompt}\n\n=== USER ===\n{prompt.UserPrompt}");
 
@@ -2443,7 +2457,7 @@ async Task<ActorRunResult> RunDialogueTurnAsync(
     ApplyModelRecommendationsFromOutput(role, runResult.Output);
 
     // Dernier tour du rôle = fichier de sortie affiché par l'UI (écrasé à chaque tour).
-    var outputFile = Path.Combine(artifactsDir, $"output-{role}.txt");
+    var outputFile = Path.Combine(artifactsDir, ArtifactNaming.Output(role));
     await File.WriteAllTextAsync(outputFile, runResult.Output);
 
     // Verrouillé : en implémentation parallèle, deux moteurs ajoutent en concurrence.
