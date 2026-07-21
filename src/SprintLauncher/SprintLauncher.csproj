@@ -7,10 +7,10 @@
     <Nullable>enable</Nullable>
     <RootNamespace>SprintLauncher</RootNamespace>
     <AssemblyName>sprint-launcher</AssemblyName>
-    <Version>1.1.2</Version>
-    <AssemblyVersion>1.1.2.0</AssemblyVersion>
-    <FileVersion>1.1.2.0</FileVersion>
-    <InformationalVersion>1.1.2</InformationalVersion>
+    <Version>1.2.1</Version>
+    <AssemblyVersion>1.2.1.0</AssemblyVersion>
+    <FileVersion>1.2.1.0</FileVersion>
+    <InformationalVersion>1.2.1</InformationalVersion>
     <Description>Sprint Launcher — orchestrateur IA multi-acteurs pour la planification de sprint</Description>
   </PropertyGroup>
 
