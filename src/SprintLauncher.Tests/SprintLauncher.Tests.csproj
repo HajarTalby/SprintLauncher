@@ -16,6 +16,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\SprintLauncher\SprintLauncher.csproj" />
+    <ProjectReference Include="..\..\tools\notify\notify.csproj" />
   </ItemGroup>
 
 </Project>
