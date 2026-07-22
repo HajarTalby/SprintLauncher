@@ -3,9 +3,13 @@
 # stdin en UTF-8 sans BOM, clefs API retirees (mode abonnement), sandbox bypass pour dev.
 # Demande de Hajar (2026-07-18) : deleguer les lots a codex, hors quota Claude, survivant.
 # NB : script strictement ASCII (PS 5.1 lit les .ps1 en Windows-1252).
+# Effort de raisonnement : le config.toml global est en "low" (rapide/economique). Un lot
+# de dev merite le maximum -> defaut "xhigh" ici, surchargeable par lot (Hajar, 2026-07-22).
 param(
     [Parameter(Mandatory=$true)][string]$Worktree,
-    [Parameter(Mandatory=$true)][string]$BriefFile
+    [Parameter(Mandatory=$true)][string]$BriefFile,
+    [ValidateSet('low','medium','high','xhigh')][string]$Effort = 'xhigh',
+    [string]$Model
 )
 $ErrorActionPreference = "Continue"
 $log = Join-Path $Worktree "codex-run.log"
@@ -34,7 +38,10 @@ Set-Location $Worktree
 $brief = Get-Content $BriefFile -Raw -Encoding UTF8
 # codex exec : tache lue sur stdin ; --json = evenements au fil de l'eau ; bypass sandbox
 # pour permettre dev + build + git commit (l'acteur committe lui-meme sur sa branche).
+$extra = @('-c', "model_reasoning_effort=""$Effort""")
+if ($Model) { $extra += @('--model', $Model) }
+Log "moteur: effort=$Effort modele=$(if ($Model) { $Model } else { 'defaut config.toml' })"
 $brief | & $codex exec --skip-git-repo-check --json --output-last-message $last `
-    --dangerously-bypass-approvals-and-sandbox 2>&1 |
+    @extra --dangerously-bypass-approvals-and-sandbox 2>&1 |
     ForEach-Object { Add-Content -Path $log -Value ([string]$_) -Encoding UTF8 }
 Log "codex termine (exit $LASTEXITCODE). Dernier message: $last"
