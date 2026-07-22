@@ -1,4 +1,4 @@
-# Mode opératoire — Sprint Launcher
+﻿# Mode opératoire — Sprint Launcher
 
 Version : v1.1.0 (2026-07-06, SERZENIA-143) | Repo : `SprintLauncher/` (branche de référence : `main`)
 
@@ -40,7 +40,7 @@ JIRA_API_TOKEN=<token Jira>
 
 # Optionnels — valeurs par défaut si absents
 CLAUDE_MODEL=claude-opus-4-8
-CODEX_MODEL=gpt-5.5
+CODEX_MODEL=gpt-5.6-sol
 ACTOR_TIMEOUT_SECONDS=600
 MAX_DIALOGUE_ROUNDS=3
 

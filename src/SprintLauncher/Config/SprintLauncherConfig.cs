@@ -6,7 +6,9 @@ public sealed class SprintLauncherConfig
     public required string JiraEmail { get; init; }
     public required string JiraApiToken { get; init; }
     public string ClaudeModel { get; init; } = "sonnet-5";
-    public string CodexModel { get; init; } = "gpt-5.5";
+    // Moteur codex courant de l abonnement (cf. ~/.codex/config.toml). Verifie le
+    // 2026-07-22 : `codex exec --model gpt-5.6-sol` repond bien.
+    public string CodexModel { get; init; } = "gpt-5.6-sol";
     public string AgyModel { get; init; } = "gemini-3-pro";
     public string DirectiveInterpreterModel { get; init; } = "gpt-5-mini";
     public int ActorTimeoutSeconds { get; init; } = 600;
@@ -68,7 +70,7 @@ public sealed class SprintLauncherConfig
         {
             JiraBaseUrl = "", JiraEmail = "", JiraApiToken = "",
             ClaudeModel = Environment.GetEnvironmentVariable("CLAUDE_MODEL") ?? "sonnet-5",
-            CodexModel = Environment.GetEnvironmentVariable("CODEX_MODEL") ?? "gpt-5.5",
+            CodexModel = Environment.GetEnvironmentVariable("CODEX_MODEL") ?? "gpt-5.6-sol",
             AgyModel = Environment.GetEnvironmentVariable("AGY_MODEL") ?? "gemini-3-pro",
             DirectiveInterpreterModel = Environment.GetEnvironmentVariable("DIRECTIVE_INTERPRETER_MODEL") ?? "gpt-5-mini",
             SerzeniaRepoRoot = Environment.GetEnvironmentVariable("SERZENIA_REPO_ROOT"),
@@ -89,7 +91,7 @@ public sealed class SprintLauncherConfig
             JiraEmail = email,
             JiraApiToken = token,
             ClaudeModel = Environment.GetEnvironmentVariable("CLAUDE_MODEL") ?? "sonnet-5",
-            CodexModel = Environment.GetEnvironmentVariable("CODEX_MODEL") ?? "gpt-5.5",
+            CodexModel = Environment.GetEnvironmentVariable("CODEX_MODEL") ?? "gpt-5.6-sol",
             AgyModel = Environment.GetEnvironmentVariable("AGY_MODEL") ?? "gemini-3-pro",
             DirectiveInterpreterModel = Environment.GetEnvironmentVariable("DIRECTIVE_INTERPRETER_MODEL") ?? "gpt-5-mini",
             ActorTimeoutSeconds = ReadPositiveInt("ACTOR_TIMEOUT_SECONDS", 600),

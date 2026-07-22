@@ -13,7 +13,7 @@ public sealed class ModelSelectionState
     public ModelSelectionState(string claudeModel, string codexModel, string agyModel)
     {
         _claudeModel = string.IsNullOrWhiteSpace(claudeModel) ? "sonnet-5" : claudeModel;
-        _codexModel = string.IsNullOrWhiteSpace(codexModel) ? "gpt-5.5" : codexModel;
+        _codexModel = string.IsNullOrWhiteSpace(codexModel) ? "gpt-5.6-sol" : codexModel;
         _agyModel = string.IsNullOrWhiteSpace(agyModel) ? "agy" : agyModel;
     }
 

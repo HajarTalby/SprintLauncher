@@ -64,7 +64,7 @@ public sealed class ActorRunner : IDisposable
         _codexBin = codexBin ?? BinaryLocator.FindCodex();
         _agyBin = agyBin ?? BinaryLocator.FindAgy();
         _claudeModel = claudeModel ?? "sonnet-5";
-        _codexModel = codexModel ?? "gpt-5.5";
+        _codexModel = codexModel ?? "gpt-5.6-sol";
         _agyModel = agyModel ?? "gemini-3-pro";
         _directiveInterpreterModel = directiveInterpreterModel ?? "gpt-5-mini";
         _actorTimeout = actorTimeout ?? TimeSpan.FromMinutes(10);
