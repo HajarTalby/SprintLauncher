@@ -168,4 +168,25 @@ public class SprintStateTests : IDisposable
         Assert.Equal("Qa", order.TargetGroup);
         Assert.False(order.Applied);
     }
+
+    [Fact]
+    public async Task Hash_set_fields_are_saved_in_stable_order()
+    {
+        var path = Path.Combine(_tempDir, "state.json");
+        var state = new SprintState
+        {
+            StartedAt = DateTimeOffset.Parse("2026-07-19T12:00:00+00:00"),
+            Keys = ["SERZ-1"],
+            CompletedRoles = ["GptImplementation", "ClaudeImplementation"],
+            CompletedGroups = ["Qa", "Analysis"],
+        };
+
+        await SprintStateManager.SaveAsync(path, state);
+        var json = await File.ReadAllTextAsync(path);
+
+        Assert.True(json.IndexOf("ClaudeImplementation", StringComparison.Ordinal) <
+                    json.IndexOf("GptImplementation", StringComparison.Ordinal));
+        Assert.True(json.IndexOf("Analysis", StringComparison.Ordinal) <
+                    json.IndexOf("Qa", StringComparison.Ordinal));
+    }
 }
