@@ -83,6 +83,13 @@ public sealed class PromptBuilder
         "5 à 10 points maximum par section. " +
         "Chaque point tient en 1 à 2 lignes.";
 
+    private const string RetrospectiveCaptureDirective =
+        "\n\nCAPTURE RÉTROSPECTIVE AU FIL DU SPRINT (OPTIONNELLE) : " +
+        "si ce tour révèle un apprentissage concret à conserver (réussite, difficulté, incident ou amélioration), " +
+        "ajoute tout à la fin de ta réponse un bloc dont la ligne d'ouverture est EXACTEMENT '##RETRO', " +
+        "puis une liste à puces factuelle. Le Sprint Launcher persiste ce bloc immédiatement. " +
+        "N'ajoute pas ce bloc si tu n'as aucun point utile ; n'invente jamais un point pour remplir.";
+
     private const string ModelChoiceDirective =
         "\n\nCHOIX DU MODÈLE PAR COMPLEXITÉ : évalue la complexité du traitement suivant " +
         "(simple / moyen / complexe / critique) et propose le modèle LLM à utiliser pour " +
@@ -91,7 +98,7 @@ public sealed class PromptBuilder
         "Si aucun surclassement n'est utile, recommande le modèle par défaut sonnet-5.";
 
     private string GetSystemPrompt(ActorRole role, string issueKey, SessionMode mode = SessionMode.Execution)
-        => GetBaseSystemPrompt(role, issueKey, mode) + FormatDirective;
+        => GetBaseSystemPrompt(role, issueKey, mode) + FormatDirective + RetrospectiveCaptureDirective;
 
     private string GetBaseSystemPrompt(ActorRole role, string issueKey, SessionMode mode = SessionMode.Execution) => role switch
     {
@@ -461,7 +468,8 @@ public sealed class PromptBuilder
             $"de {implementer} sur l'US {issue.Key}.{reliefNote} Tu ne modifies RIEN — OBSERVATIONS uniquement : " +
             "anomalies, risques, écarts de périmètre, tests manquants, points forts. " +
             $"Les correctifs restent chez {implementer}. Vérifie l'état réel du dépôt (git diff / git log) si accessible. " +
-            $"Tu te signes [agent: {reviewerTag} | role: revue-croisee | us: {issue.Key}]." + FormatDirective;
+            $"Tu te signes [agent: {reviewerTag} | role: revue-croisee | us: {issue.Key}]." +
+            FormatDirective + RetrospectiveCaptureDirective;
 
         var sb = new System.Text.StringBuilder();
         sb.AppendLine($"Revue croisée de l'implémentation de {issue.Key}.");

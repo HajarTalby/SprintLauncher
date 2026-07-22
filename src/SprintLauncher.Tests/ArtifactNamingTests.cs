@@ -23,4 +23,12 @@ public class ArtifactNamingTests
 
         Assert.Equal(["SERZ-1", "SERZ-10", "serz-2"], ordered);
     }
+
+    [Fact]
+    public void Retrospective_actor_name_is_sanitized()
+    {
+        var name = ArtifactNaming.Retrospective("Claude:../qa\\review");
+
+        Assert.Equal("retro-Claude_.._qa_review.md", name);
+    }
 }

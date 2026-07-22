@@ -433,6 +433,7 @@ var reportEntries = new List<ActorReportEntry>();
 var sprintTag = sprintArg is not null ? $"sprint{sprintArg}" : "run";
 var artifactsDir = Path.Combine("artifacts", sprintTag, string.Join("-", issueKeys));
 Directory.CreateDirectory(artifactsDir);
+var retrospectiveJournal = new RetrospectiveJournal("artifacts", sprintTag);
 Console.WriteLine($"Artefacts dans : {Path.GetFullPath(artifactsDir)}");
 runner.LiveOutputDir = Path.GetFullPath(artifactsDir); // sorties acteurs visibles au fil de l'eau dans l'UI
 var actorTurnCoordinator = new ActorTurnCoordinator(config.SerzeniaRepoRoot ?? Directory.GetCurrentDirectory());
@@ -996,6 +997,38 @@ EventEmitter.Emit("run-end", new
 });
 return 0;
 
+// Capture transverse SERZENIA-145 : appelee immediatement apres chaque retour
+// d'acteur, avant timer, publication, etat ou autre traitement. L'evenement existant
+// retro-entry alimente l'UI avec le meme fichier qui vient d'etre persiste.
+async Task PersistActorRetrospectiveAsync(
+    ActorRole role,
+    string output,
+    bool isFinalSynthesis = false)
+{
+    var result = isFinalSynthesis
+        ? await retrospectiveJournal.AppendFinalSynthesisAsync(role, output, CancellationToken.None)
+        : await retrospectiveJournal.CaptureAsync(role, output, CancellationToken.None);
+
+    if (!result.HasContent) return;
+
+    if (result.Persisted)
+    {
+        Console.WriteLine($"  ✓ {role} — point rétro appendé dans {Path.GetFileName(result.FilePath)}");
+        EventEmitter.Emit("retro-entry", new
+        {
+            role = role.ToString(),
+            file = Path.GetFullPath(result.FilePath!),
+            content = result.Content,
+            isFinalSynthesis,
+        });
+    }
+    else
+    {
+        Console.Error.WriteLine(
+            $"  ✗ Échec append rétro {role} sur disque : {result.Error} — sortie acteur conservée");
+    }
+}
+
 // ─── Single actor execution (famille Claude / famille GPT) ────────────────────
 async Task RunSingleActorAsync(
     ActorRole role,
@@ -1036,6 +1069,8 @@ async Task RunSingleActorAsync(
     var timerTask = StartTimerTask(role.ToString(), sw, timerCts.Token);
 
     var runResult = await runner.RunAsync(prompt, model, ct);
+
+    await PersistActorRetrospectiveAsync(role, runResult.Output);
 
     timerCts.Cancel();
     await timerTask;
@@ -1094,10 +1129,10 @@ async Task RunSingleActorAsync(
 // discussion multi-tours (contributions indépendantes, pas de consensus recherché),
 // PAS de publication Jira automatique — mécanisme de trace locale du sprint-launcher.
 //
-// Persistance IMMÉDIATE : chaque contribution est append sur disque (retrospective.md,
-// bloc "## RETRO — <acteur>") dès la sortie de l'acteur, AVANT toute autre étape — pour
-// survivre à un arrêt quota entre deux acteurs (jamais seulement en mémoire, incident
-// déclencheur : run mort avant publication = rétro perdue).
+// Persistance IMMÉDIATE : la synthèse de chaque acteur est append dans son fichier
+// artifacts/retro/<sprint>/retro-<acteur>.md dès sa sortie, AVANT toute autre étape.
+// Les points produits pendant les phases précédentes sont relus depuis ces fichiers et
+// injectés comme matière première, y compris après l'arrêt complet d'un processus.
 async Task RunRetrospectivePhaseAsync(
     ActorRole[] roles,
     IReadOnlyList<SprintLauncher.Jira.JiraIssue> issues,
@@ -1106,8 +1141,6 @@ async Task RunRetrospectivePhaseAsync(
     string stateFile,
     CancellationToken ct)
 {
-    var retroFile = Path.Combine(artifactsDir, "retrospective.md");
-
     // Contexte factuel du run, injecté à chaque acteur pour ancrer sa rétro dans
     // les faits (pas juste le contexte Jira brut des US) : verdict QA, écarts,
     // cycles de remédiation, litige — tout ce qui caractérise comment le sprint s'est passé.
@@ -1120,6 +1153,7 @@ async Task RunRetrospectivePhaseAsync(
         $"- Cycles de remédiation post-QA : {state.RemediationCycles}\n" +
         $"- Litige détecté en analyse : {(state.LitigeDetected ? "oui" : "non")}\n" +
         $"- Verdict QA final :\n{Truncate(qaVerdict, 2000)}\n";
+    var persistedRetrospective = await retrospectiveJournal.ReadForFinalPhaseAsync(ct);
 
     foreach (var role in roles)
     {
@@ -1135,7 +1169,11 @@ async Task RunRetrospectivePhaseAsync(
         }
 
         var prompt = builder.Build(role, issues, pilotageKey, mode: sessionMode, frameworks: frameworks, memory: agentMemory);
-        prompt = prompt with { UserPrompt = prompt.UserPrompt + "\n\n---\n\n" + retroContext };
+        prompt = prompt with
+        {
+            UserPrompt = prompt.UserPrompt + "\n\n---\n\n" + retroContext +
+                         "\n\n---\n\n" + persistedRetrospective,
+        };
         await using var actorTurn = await actorTurnCoordinator.BeginAsync(role, ct);
 
         var promptFile = Path.Combine(artifactsDir, ArtifactNaming.Prompt(role));
@@ -1150,6 +1188,12 @@ async Task RunRetrospectivePhaseAsync(
         using var timerCts = new CancellationTokenSource();
         var timerTask = StartTimerTask(role.ToString(), sw, timerCts.Token);
         var runResult = await runner.RunAsync(prompt, model, ct);
+
+        await PersistActorRetrospectiveAsync(
+            role,
+            runResult.Output,
+            isFinalSynthesis: runResult.Success);
+
         timerCts.Cancel();
         await timerTask;
         sw.Stop();
@@ -1160,23 +1204,6 @@ async Task RunRetrospectivePhaseAsync(
 
         if (runResult.Success)
         {
-            // Append IMMÉDIAT — avant tout autre traitement — c'est la trace persistante
-            // qui survit à un arrêt quota juste après ce point.
-            var separator = File.Exists(retroFile) ? "\n\n" : "";
-            var block =
-                $"{separator}## RETRO — {role} — {DateTimeOffset.UtcNow:yyyy-MM-dd HH:mm} UTC\n\n" +
-                runResult.Output.Trim() + "\n";
-            try
-            {
-                await File.AppendAllTextAsync(retroFile, block, new UTF8Encoding(false), CancellationToken.None);
-                Console.WriteLine($"  ✓ {role} — rétro appendée dans {Path.GetFileName(retroFile)}");
-                EventEmitter.Emit("retro-entry", new { role = role.ToString(), file = Path.GetFullPath(retroFile), content = runResult.Output.Trim() });
-            }
-            catch (IOException ex)
-            {
-                Console.Error.WriteLine($"  ✗ Échec append rétro {role} sur disque : {ex.Message} — sortie conservée dans {outputFile}");
-            }
-
             state.CompletedRoles.Add(role.ToString());
             state.InterruptedRoles.Remove(role.ToString());
         }
@@ -2527,6 +2554,8 @@ async Task<ActorRunResult> RunDialogueTurnAsync(
     var timerTask = StartTimerTask(role.ToString(), sw, timerCts.Token);
 
     var runResult = await runner.RunAsync(prompt, model, ct);
+
+    await PersistActorRetrospectiveAsync(role, runResult.Output);
 
     timerCts.Cancel();
     await timerTask;
