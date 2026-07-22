@@ -396,6 +396,8 @@ public partial class MainWindow : Window
             {
                 case "manifest":
                     _artifactsDir = data.GetProperty("artifactsDir").GetString();
+                    _retroDirectory = RetroDirectoryFromArtifacts(_artifactsDir);
+                    _retroSnapshot = null;
                     _lastRunWasDryRun = data.GetProperty("dryRun").GetBoolean();
                     RebuildActorsFromManifest(data.GetProperty("roles"));
                     BtnOpenArtifacts.IsEnabled = Directory.Exists(_artifactsDir);
@@ -448,6 +450,21 @@ public partial class MainWindow : Window
                     var isIntervention = data.GetProperty("isIntervention").GetBoolean();
                     var isFinal = data.TryGetProperty("isFinalSynthesis", out var f) && f.GetBoolean();
                     AppendChatTurn(speaker, content, isIntervention, round, isFinal);
+                    break;
+                }
+
+                case "retro-entry":
+                {
+                    var role = data.GetProperty("role").GetString() ?? "acteur";
+                    var file = data.GetProperty("file").GetString();
+                    var isFinal = data.TryGetProperty("isFinalSynthesis", out var final) && final.GetBoolean();
+                    if (!string.IsNullOrWhiteSpace(file))
+                        _retroDirectory = Path.GetDirectoryName(file);
+                    _retroSnapshot = null;
+                    RefreshRetro();
+                    AppendLog(isFinal
+                        ? $"RETRO finale persistée : {role}"
+                        : $"RETRO au fil du sprint : point persisté par {role}");
                     break;
                 }
 
@@ -506,6 +523,7 @@ public partial class MainWindow : Window
                 {
                     _htmlReportPath = data.GetProperty("reportPath").GetString();
                     _artifactsDir = data.GetProperty("artifactsDir").GetString();
+                    _retroDirectory ??= RetroDirectoryFromArtifacts(_artifactsDir);
                     if (data.TryGetProperty("publishable", out var p) && p.GetBoolean())
                         EnablePublishSelection();
                     break;
@@ -1187,41 +1205,76 @@ public partial class MainWindow : Window
         RefreshRetro();
     }
 
-    // ─── Onglet RÉTROSPECTIVE : trace persistante append-only (SERZENIA-144 lot 4) ─
-    // Le fichier retrospective.md grandit par append côté CLI, un bloc "## RETRO —
-    // <acteur>" par contribution, dès la sortie de l'acteur (survit à un arrêt quota
-    // entre deux acteurs). Cet onglet le relit tel quel — pas de reconstruction.
-    private DateTime _retroLastWrite = DateTime.MinValue;
+    // ─── Onglet RÉTROSPECTIVE : journaux append-only par acteur (SERZENIA-145) ──
+    // Les événements retro-entry pointent sur artifacts/retro/<sprint>/. La lecture
+    // du dossier permet aussi de restaurer les points d'un processus interrompu avant
+    // le démarrage de cette instance UI.
+    private string? _retroDirectory;
+    private string? _retroSnapshot;
 
     private void RefreshRetro()
     {
         if (TabMain.SelectedIndex != 5) return;
-        var path = _artifactsDir is null ? null : Path.Combine(_artifactsDir, "retrospective.md");
-        if (path is null || !File.Exists(path))
+        var directory = _retroDirectory ?? RetroDirectoryFromArtifacts(_artifactsDir);
+        string[] files;
+        try
         {
-            if (_retroLastWrite != DateTime.MinValue || RetroViewer.Document is null)
+            files = directory is not null && Directory.Exists(directory)
+                ? Directory.GetFiles(directory, "retro-*.md")
+                    .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+                    .ToArray()
+                : [];
+        }
+        catch (IOException ex)
+        {
+            RetroViewer.Document = new FlowDocument(new Paragraph(new Run($"Lecture impossible : {ex.Message}")));
+            return;
+        }
+
+        if (files.Length == 0)
+        {
+            if (_retroSnapshot != "<empty>" || RetroViewer.Document is null)
             {
-                _retroLastWrite = DateTime.MinValue;
-                TxtRetroHeader.Text = "Aucune rétrospective pour l'instant — elle se remplit en fin de run, un bloc par acteur.";
+                _retroSnapshot = "<empty>";
+                TxtRetroHeader.Text = "Aucun point de rétrospective consigné pour l'instant.";
                 RetroViewer.Document = new FlowDocument(new Paragraph(new Run(
-                    "Chaque acteur (Claude, GPT) y appende son bilan de sprint dès qu'il le produit : " +
-                    "ce qui a bien marché (à garder), ce qui a mal marché, un plan d'action. " +
-                    "L'écriture est immédiate sur disque — rien n'est perdu si un moteur s'arrête au quota.")));
+                    "Pendant n'importe quelle phase, un acteur peut consigner un apprentissage concret. " +
+                    "Il apparaît ici dès son append sur disque et survivra à un arrêt ou à un quota épuisé.")));
             }
             return;
         }
+
         try
         {
-            var ts = File.GetLastWriteTime(path);
-            if (ts == _retroLastWrite) return; // rien de nouveau
-            _retroLastWrite = ts;
-            TxtRetroHeader.Text = $"Rétrospective — dernière contribution appendée le {ts:dd/MM HH:mm}";
-            RetroViewer.Document = MarkdownToFlow(File.ReadAllText(path));
+            var infos = files.Select(path => new FileInfo(path)).ToArray();
+            var snapshot = string.Join("|", infos.Select(info =>
+                $"{info.FullName}:{info.Length}:{info.LastWriteTimeUtc.Ticks}"));
+            if (snapshot == _retroSnapshot) return;
+
+            var sections = files.Select(path => File.ReadAllText(path).Trim())
+                .Where(content => content.Length > 0);
+            var markdown = string.Join("\n\n---\n\n", sections);
+            var latest = infos.Max(info => info.LastWriteTime);
+            _retroSnapshot = snapshot;
+            TxtRetroHeader.Text =
+                $"Rétrospective au fil du sprint — {files.Length} acteur(s), dernier append le {latest:dd/MM HH:mm}";
+            RetroViewer.Document = MarkdownToFlow(markdown);
         }
         catch (IOException ex)
         {
             RetroViewer.Document = new FlowDocument(new Paragraph(new Run($"Lecture impossible : {ex.Message}")));
         }
+    }
+
+    private static string? RetroDirectoryFromArtifacts(string? artifactsDir)
+    {
+        if (string.IsNullOrWhiteSpace(artifactsDir)) return null;
+        var runDirectory = new DirectoryInfo(artifactsDir);
+        var sprintDirectory = runDirectory.Parent;
+        var artifactsRoot = sprintDirectory?.Parent;
+        return sprintDirectory is null || artifactsRoot is null
+            ? null
+            : Path.Combine(artifactsRoot.FullName, "retro", sprintDirectory.Name);
     }
 
     // ─── Actor selection ───────────────────────────────────────────────────────

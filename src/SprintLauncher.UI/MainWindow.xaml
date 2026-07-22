@@ -352,7 +352,7 @@
             </Grid.RowDefinitions>
             <Border Grid.Row="0" Padding="12,8" BorderBrush="#313244" BorderThickness="0,0,0,1">
               <TextBlock x:Name="TxtRetroHeader"
-                         Text="Rétrospective — chaque acteur y appende son bilan (bien passé / mal passé / plan d'action) en fin de sprint"
+                         Text="Rétrospective — les points apparaissent au fil du sprint, puis nourrissent la synthèse finale"
                          FontSize="11" FontWeight="SemiBold" Foreground="#f9e2af"/>
             </Border>
             <FlowDocumentScrollViewer Grid.Row="1" x:Name="RetroViewer"

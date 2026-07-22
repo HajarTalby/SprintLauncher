@@ -25,6 +25,12 @@ public static class ArtifactNaming
     public static string AnalysisOutput(string key) =>
         $"output-Analysis-{SanitizeSegment(key)}.txt";
 
+    public static string Retrospective(ActorRole role) =>
+        Retrospective(role.ToString());
+
+    public static string Retrospective(string actor) =>
+        $"retro-{SanitizeSegment(actor)}.md";
+
     public static string SanitizeSegment(string value)
     {
         var trimmed = value.Trim();
