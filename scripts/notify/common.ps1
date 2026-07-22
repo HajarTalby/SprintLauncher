@@ -60,13 +60,18 @@ function Invoke-SlNotify {
         [Parameter(Mandatory=$false)] [string] $Context
     )
 
-    $repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..\..')
-    $project = Join-Path $repoRoot 'tools\notify\notify.csproj'
-    $args = @('run', '--project', $project, '--', '--actor', $Actor, '--level', $Level, '--text', $Text)
+    $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+    $notifier = Join-Path $repoRoot 'tools\notify\published\notify.exe'
+    if (-not (Test-Path -LiteralPath $notifier -PathType Leaf)) {
+        [Console]::Error.WriteLine("Slack notifier executable not found: $notifier")
+        exit 0
+    }
+
+    $args = @('--actor', $Actor, '--level', $Level, '--text', $Text)
     if (-not [string]::IsNullOrWhiteSpace($Context)) {
         $args += @('--context', $Context)
     }
 
-    & dotnet @args
+    & $notifier @args
     exit 0
 }

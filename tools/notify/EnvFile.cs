@@ -1,5 +1,7 @@
 namespace SprintLauncher.Notify;
 
+public sealed record EnvFileResolution(string Path, bool Exists);
+
 public static class EnvFile
 {
     public static IReadOnlyDictionary<string, string> Load(string path)
@@ -23,18 +25,47 @@ public static class EnvFile
         return values;
     }
 
-    public static string? FindRepoEnvFile(string startDirectory)
+    public static EnvFileResolution? Resolve(
+        string? sprintLauncherHome,
+        string applicationBaseDirectory,
+        string currentDirectory)
     {
-        var current = new DirectoryInfo(startDirectory);
+        if (!string.IsNullOrWhiteSpace(sprintLauncherHome))
+        {
+            return FromRoot(Environment.ExpandEnvironmentVariables(sprintLauncherHome.Trim()));
+        }
+
+        var installationRoot = FindSprintLauncherRoot(applicationBaseDirectory);
+        if (installationRoot is not null)
+        {
+            return FromRoot(installationRoot);
+        }
+
+        var currentRoot = FindSprintLauncherRoot(currentDirectory);
+        if (currentRoot is not null)
+        {
+            return FromRoot(currentRoot);
+        }
+
+        return null;
+    }
+
+    private static EnvFileResolution FromRoot(string root)
+    {
+        var path = Path.GetFullPath(Path.Combine(root, ".env"));
+        return new EnvFileResolution(path, File.Exists(path));
+    }
+
+    private static string? FindSprintLauncherRoot(string startDirectory)
+    {
+        if (string.IsNullOrWhiteSpace(startDirectory)) return null;
+
+        var current = new DirectoryInfo(Path.GetFullPath(startDirectory));
         while (current is not null)
         {
-            var candidate = Path.Combine(current.FullName, ".env");
-            if (File.Exists(candidate)) return candidate;
-
-            if (File.Exists(Path.Combine(current.FullName, "SprintLauncher.sln")) ||
-                Directory.Exists(Path.Combine(current.FullName, ".git")))
+            if (File.Exists(Path.Combine(current.FullName, "SprintLauncher.sln")))
             {
-                return candidate;
+                return current.FullName;
             }
 
             current = current.Parent;
