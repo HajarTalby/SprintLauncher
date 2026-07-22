@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using SprintLauncher.Prompts;
 
 namespace SprintLauncher.Runners;
 
@@ -9,7 +10,7 @@ public enum ModelEngine
     Agy,
 }
 
-public sealed record ModelRecommendation(ModelEngine Engine, string Model, string Source);
+public sealed record ModelRecommendation(ModelEngine Engine, string Model, string Source, ActorRole? Role = null);
 
 public static class ModelRecommendationParser
 {
@@ -31,9 +32,9 @@ public static class ModelRecommendationParser
     public static bool TryParseCommand(string line, out ModelRecommendation recommendation)
     {
         var match = CommandRegex.Match(line ?? "");
-        if (match.Success && TryParseEngine(match.Groups["engine"].Value, out var engine))
+        if (match.Success && TryParseTarget(match.Groups["engine"].Value, out var engine, out var role))
         {
-            recommendation = new ModelRecommendation(engine, CleanModel(match.Groups["model"].Value), line ?? "");
+            recommendation = new ModelRecommendation(engine, CleanModel(match.Groups["model"].Value), line ?? "", role);
             return recommendation.Model.Length > 0;
         }
 
@@ -66,10 +67,10 @@ public static class ModelRecommendationParser
         var engineToken = match.Groups["engine"].Success
             ? match.Groups["engine"].Value
             : match.Groups["engine2"].Success ? match.Groups["engine2"].Value : "";
-        var engine = TryParseEngine(engineToken, out var parsed) ? parsed : defaultEngine;
+        var engine = TryParseTarget(engineToken, out var parsed, out var role) ? parsed : defaultEngine;
         var model = CleanModel(match.Groups["model"].Value);
         if (model.Length > 0)
-            results.Add(new ModelRecommendation(engine, model, match.Value.Trim()));
+            results.Add(new ModelRecommendation(engine, model, match.Value.Trim(), role));
     }
 
     public static bool TryParseEngine(string token, out ModelEngine engine)
@@ -95,6 +96,25 @@ public static class ModelRecommendationParser
             default:
                 engine = ModelEngine.Claude;
                 return false;
+        }
+    }
+
+    public static bool TryParseTarget(string token, out ModelEngine engine, out ActorRole? role)
+    {
+        role = null;
+        switch ((token ?? "").Trim().ToLowerInvariant())
+        {
+            case "ccode":
+            case "claudeimplementation":
+                engine = ModelEngine.Claude;
+                role = ActorRole.ClaudeImplementation;
+                return true;
+            case "gptimplementation":
+                engine = ModelEngine.Codex;
+                role = ActorRole.GptImplementation;
+                return true;
+            default:
+                return TryParseEngine(token ?? "", out engine);
         }
     }
 

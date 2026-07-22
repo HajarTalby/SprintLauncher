@@ -1,3 +1,4 @@
+using SprintLauncher.Prompts;
 using SprintLauncher.Runners;
 using Xunit;
 
@@ -17,6 +18,15 @@ public class ModelRecommendationParserTests
         Assert.Equal(model, recommendation.Model);
     }
 
+    [Theory]
+    [InlineData("!model ccode claude-opus-4-8", ActorRole.ClaudeImplementation)]
+    [InlineData("!model gptimplementation gpt-5.5", ActorRole.GptImplementation)]
+    public void Parses_explicit_hajar_model_command_target_role(string line, ActorRole role)
+    {
+        Assert.True(ModelRecommendationParser.TryParseCommand(line, out var recommendation));
+        Assert.Equal(role, recommendation.Role);
+    }
+
     [Fact]
     public void Extracts_structured_recommendation_from_analysis_output()
     {
@@ -29,6 +39,7 @@ public class ModelRecommendationParserTests
         var recommendation = Assert.Single(ModelRecommendationParser.ExtractRecommendations(text, ModelEngine.Claude));
         Assert.Equal(ModelEngine.Codex, recommendation.Engine);
         Assert.Equal("gpt-5.5", recommendation.Model);
+        Assert.Null(recommendation.Role);
     }
 
     [Fact]

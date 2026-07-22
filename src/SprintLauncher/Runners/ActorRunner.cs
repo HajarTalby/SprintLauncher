@@ -297,6 +297,7 @@ public sealed class ActorRunner : IDisposable
         if (_claudeBin is null)
             return Fail(prompt.Role, "claude.exe not found. Set CLAUDE_BIN env var or install Claude Desktop App.");
 
+        var model = string.IsNullOrWhiteSpace(modelOverride) ? _claudeModel : modelOverride;
         var fullPrompt = $"{prompt.SystemPrompt}\n\n---\n\n{prompt.UserPrompt}";
 
         var psi = new ProcessStartInfo
@@ -321,7 +322,7 @@ public sealed class ActorRunner : IDisposable
 
         psi.ArgumentList.Add("-p");
         psi.ArgumentList.Add("--model");
-        psi.ArgumentList.Add(string.IsNullOrWhiteSpace(modelOverride) ? _claudeModel : modelOverride);
+        psi.ArgumentList.Add(model);
         // Flux événementiel : réflexion/outils/texte visibles EN TEMPS RÉEL dans
         // l'UI (demande Hajar), le résultat final est extrait de l'événement result.
         psi.ArgumentList.Add("--output-format");
@@ -382,11 +383,12 @@ public sealed class ActorRunner : IDisposable
         if (_codexBin is null)
             return Fail(prompt.Role, "codex.exe not found. Set CODEX_BIN env var or install the Codex VS Code extension.");
 
+        var model = string.IsNullOrWhiteSpace(modelOverride) ? _codexModel : modelOverride;
         // Chat live : `codex app-server` (JSON-RPC stdio) permet d'orienter le tour en
         // cours (turn/steer) — le vrai chat live que Hajar a en VS Code. Le mode exec
         // one-shot reste le repli par défaut tant que LiveInputDir n'est pas positionné.
         if (LiveInputDir is not null)
-            return await RunCodexLiveAsync(prompt, modelOverride, ct);
+            return await RunCodexLiveAsync(prompt, model, ct);
 
         var fullPrompt = $"{prompt.SystemPrompt}\n\n---\n\n{prompt.UserPrompt}";
 
@@ -409,7 +411,7 @@ public sealed class ActorRunner : IDisposable
         MarkAsActor(psi);
         psi.ArgumentList.Add("exec");
         psi.ArgumentList.Add("--model");
-        psi.ArgumentList.Add(string.IsNullOrWhiteSpace(modelOverride) ? _codexModel : modelOverride);
+        psi.ArgumentList.Add(model);
         // Sans ce flag, codex exec refuse de démarrer hors d'un dépôt git « trusted »
         // ("Not inside a trusted directory") — constaté en test isolé.
         psi.ArgumentList.Add("--skip-git-repo-check");
@@ -503,10 +505,7 @@ public sealed class ActorRunner : IDisposable
         };
         MarkAsActor(psi);
         psi.ArgumentList.Add("app-server");
-        if (!string.IsNullOrWhiteSpace(modelOverride))
-        {
-            psi.EnvironmentVariables["CODEX_MODEL"] = modelOverride;
-        }
+        psi.EnvironmentVariables["CODEX_MODEL"] = string.IsNullOrWhiteSpace(modelOverride) ? _codexModel : modelOverride;
         psi.EnvironmentVariables.Remove("OPENAI_API_KEY");
         psi.EnvironmentVariables.Remove("ANTHROPIC_API_KEY");
 
