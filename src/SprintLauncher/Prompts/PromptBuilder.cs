@@ -220,6 +220,23 @@ public sealed class PromptBuilder
             $"Synthétise la recommandation finale : verdict du comité, conditions, prochaine étape pour {_approver}. " +
             $"Tu te signes [agent: codex | role: comite-arbitrage | us: {issueKey}].",
 
+        ActorRole.ClaudeQaVerdict when mode == SessionMode.Cadrage =>
+            $"Tu es le premier membre QA {_project} en session de CADRAGE (perspective claude-chat). " +
+            "Rien n'est encore implémenté : tu ne rends AUCUN verdict. Ton rôle est de PRÉPARER les " +
+            "scénarios de test que le mode exécution déroulera. À partir des US cadrées et de leur analyse, " +
+            "produis pour chaque US des scénarios de test concrets et vérifiables : préconditions, étapes, " +
+            "résultat attendu, et le critère de Definition of Done qu'ils couvrent. Signale les critères non " +
+            "testables en l'état — c'est un manque de DoR à remonter. Le membre suivant complétera. " +
+            $"Tu te signes [agent: claude-chat | role: qa-scenarios | mode: cadrage | us: {issueKey}].",
+
+        ActorRole.GptQaVerdict when mode == SessionMode.Cadrage =>
+            $"Tu es le second membre QA {_project} en session de CADRAGE (perspective gpt-chat). " +
+            "Rien n'est encore implémenté : aucun verdict. Tu reçois les scénarios de test du premier membre " +
+            "et tu les complètes : cas limites, chemins d'erreur, données de test, couverture des critères DoD " +
+            "encore non couverts. Ne répète pas ce qui est déjà écrit — ajoute ce qui manque. La sortie est un " +
+            "jeu de scénarios prêt à dérouler en exécution, pas une évaluation. " +
+            $"Tu te signes [agent: gpt-chat | role: qa-scenarios | mode: cadrage | us: {issueKey}].",
+
         ActorRole.ClaudeQaVerdict =>
             $"Tu es le premier membre du comité de verdict QA {_project} (perspective claude-chat). " +
             "Tu reçois les logs d'exécution des tests et la Definition of Done (DoD) du sprint. " +
@@ -624,6 +641,16 @@ public sealed class PromptBuilder
             ActorRole.CommitteeCodex =>
                 "Voici le contexte du litige soumis au comité d'arbitrage complet. " +
                 "Toutes les contributions précédentes suivent — synthétise le verdict final.",
+
+            ActorRole.ClaudeQaVerdict when mode == SessionMode.Cadrage =>
+                "Rien n'est encore implémenté. À partir des US cadrées et de leur analyse, prépare les " +
+                "scénarios de test à dérouler en exécution (préconditions, étapes, résultat attendu, critère " +
+                "DoD couvert). Première contribution de la préparation QA.",
+
+            ActorRole.GptQaVerdict when mode == SessionMode.Cadrage =>
+                "Rien n'est encore implémenté. Les scénarios de test du premier membre suivent — complète-les " +
+                "(cas limites, chemins d'erreur, données, critères DoD non couverts). Sortie : un jeu de " +
+                "scénarios prêt à dérouler, pas un verdict.",
 
             ActorRole.ClaudeQaVerdict =>
                 "Voici les logs d'exécution des tests du sprint et la Definition of Done. " +

@@ -135,7 +135,8 @@ if (issueKeys.Length == 0 && sprintArg is null && publishManualRole is null && c
     Console.Error.WriteLine();
     Console.Error.WriteLine("  --interactive   Checkpoints : GO/intervention/conclure entre rounds de discussion et groupes.");
     Console.Error.WriteLine("  !pause / !resume dans pending-directive.txt : pause douce après l'acteur en cours, puis reprise.");
-    Console.Error.WriteLine("  --mode cadrage  Comité Pilotage d'abord (discussion) → US proposées → Analyse → Implémentation → QA.");
+    Console.Error.WriteLine("  --mode cadrage  Prépare un sprint : Comité Pilotage (discussion) → US proposées → Analyse → arbitrage si litige.");
+    Console.Error.WriteLine("                  N'implémente rien : les US en ressortent « ready » pour un run --mode execution.");
     Console.Error.WriteLine("  --mode execution (défaut) Analyse → Implémentation (tour de rôle) → Pilotage → QA.");
     Console.Error.WriteLine("  --publish-from-artifacts  Publie les sorties dry-run validées, sans réexécuter les acteurs.");
     Console.Error.WriteLine("  --auto-resume-quota  Si tous les moteurs d'implémentation sont à quota et qu'une heure de reset est connue, attend puis reprend.");

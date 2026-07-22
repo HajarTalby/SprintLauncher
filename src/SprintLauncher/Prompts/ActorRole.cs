@@ -2,25 +2,29 @@
 
 public enum SessionMode
 {
-    Execution, // default: Familles → Comité Pilotage → Arbitrage → QA
-    Cadrage,   // Comité Pilotage first → Familles → Arbitrage → QA
+    Execution, // default: Analyse → Familles → Comité Pilotage → Arbitrage → QA → Rétro
+    Cadrage,   // Comité Pilotage → Analyse → Arbitrage si litige. S'arrête là.
 }
 
 public static class SessionModeExtensions
 {
-    // Pipeline vision SERZENIA-143 : cadrage → analyse → implémentation →
-    // arbitrage (seulement si litige) → QA. L'arbitrage est convoqué sur
-    // marqueur [LITIGE] détecté en analyse, jamais systématiquement.
+    // Le cadrage PRÉPARE un sprint : il cadre les US, les fait analyser, et les rend
+    // « ready » pour une exécution ultérieure. Il n'implémente rien — donc pas de
+    // familles, et pas de rétrospective (elle clôt un sprint exécuté).
+    // L'arbitrage est conservé mais n'est convoqué que sur marqueur [LITIGE] : sans
+    // lui un désaccord d'analyse resterait non tranché et l'US ne serait pas ready.
+    // La QA est conservée avec un rôle différent (décision Hajar, 2026-07-22) : en
+    // cadrage elle ne rend pas de verdict — il n'y a rien à valider — elle PRÉPARE
+    // les scénarios de test que le mode exécution déroulera.
+    // Corrigé le 2026-07-22 (Hajar) : le cadrage déroulait tout le sprint, il se
+    // contentait de déplacer le comité de pilotage en tête.
     public static IReadOnlyList<ActorGroup> GetGroupOrder(this SessionMode mode) => mode switch
     {
         SessionMode.Cadrage => [
             ActorGroup.CommitteePilotage,
             ActorGroup.Analysis,
-            ActorGroup.FamilyClaude,
-            ActorGroup.FamilyGpt,
             ActorGroup.CommitteeArbitrage,
             ActorGroup.Qa,
-            ActorGroup.Retrospective,
         ],
         _ => [
             ActorGroup.Analysis,
