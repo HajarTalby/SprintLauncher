@@ -56,10 +56,42 @@ public class PhaseOrderQueueTests
             },
         };
 
-        var applied = PhaseOrderQueue.ApplyNext(phases, pending, currentIndex: 1, _ => { });
+        var cleared = new List<ActorGroup>();
+
+        var applied = PhaseOrderQueue.ApplyNext(phases, pending, currentIndex: 1, cleared.Add);
 
         Assert.NotNull(applied);
         Assert.Equal(4, applied!.NextIndex);
+        Assert.Contains(ActorGroup.Qa, cleared);
+        Assert.True(pending[0].Applied);
+    }
+
+    [Fact]
+    public void Skip_to_inserts_previous_target_after_current_boundary_and_clears_completion()
+    {
+        var phases = new List<ActorGroup>
+        {
+            ActorGroup.Analysis,
+            ActorGroup.FamilyClaude,
+            ActorGroup.FamilyGpt,
+        };
+        var pending = new List<PendingPhaseOrder>
+        {
+            new()
+            {
+                Kind = PhaseOrderKind.SkipTo,
+                TargetGroup = ActorGroup.Analysis.ToString(),
+                SourceText = "retourne a l'analyse",
+            },
+        };
+        var cleared = new List<ActorGroup>();
+
+        var applied = PhaseOrderQueue.ApplyNext(phases, pending, currentIndex: 2, cleared.Add);
+
+        Assert.NotNull(applied);
+        Assert.Equal(3, applied!.NextIndex);
+        Assert.Equal(ActorGroup.Analysis, phases[3]);
+        Assert.Contains(ActorGroup.Analysis, cleared);
         Assert.True(pending[0].Applied);
     }
 

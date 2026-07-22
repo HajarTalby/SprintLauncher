@@ -658,6 +658,7 @@ while (phaseIndex < phaseOrder.Count)
                     Role: skipped, Success: true, IsSemiManual: false, IsSkipped: true,
                     ExitCode: 0, ElapsedSeconds: 0, OutputChars: 0,
                     ErrorSnippet: null, OutputFilePath: null, SemiManualPromptPath: null));
+            phaseIndex = await ApplyPendingPhaseOrdersAsync(phaseOrder, phaseIndex, shutdownCts.Token);
             continue;
         }
 
@@ -671,6 +672,7 @@ while (phaseIndex < phaseOrder.Count)
             {
                 Console.WriteLine("  Arbitrage non convoqué — le pipeline continue.");
                 lastGroupPrinted = group;
+                phaseIndex = await ApplyPendingPhaseOrdersAsync(phaseOrder, phaseIndex, shutdownCts.Token);
                 continue;
             }
         }
@@ -699,6 +701,7 @@ while (phaseIndex < phaseOrder.Count)
                 Role: skipped, Success: true, IsSemiManual: false, IsSkipped: true,
                 ExitCode: 0, ElapsedSeconds: 0, OutputChars: 0,
                 ErrorSnippet: null, OutputFilePath: null, SemiManualPromptPath: null));
+        phaseIndex = await ApplyPendingPhaseOrdersAsync(phaseOrder, phaseIndex, shutdownCts.Token);
         continue;
     }
 

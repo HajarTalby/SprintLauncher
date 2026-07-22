@@ -58,9 +58,16 @@ public static class DirectiveInterpretationParser
     {
         foreach (var name in new[] { "targets", "target", "cibles", "cible" })
         {
-            if (!root.TryGetProperty(name, out var target) || target.ValueKind != JsonValueKind.Object) continue;
-            actors.AddRange(ReadTargets<ActorRole>(target, "actors", "actor", "acteurs", "roles", "roles_acteurs"));
-            groups.AddRange(ReadTargets<ActorGroup>(target, "groups", "group", "groupes"));
+            if (!TryGetProperty(root, name, out var target)) continue;
+            if (target.ValueKind == JsonValueKind.Object)
+            {
+                actors.AddRange(ReadTargets<ActorRole>(target, "actors", "actor", "acteurs", "roles", "roles_acteurs"));
+                groups.AddRange(ReadTargets<ActorGroup>(target, "groups", "group", "groupes"));
+            }
+            else
+            {
+                ReadGenericTargets(target, actors, groups);
+            }
         }
     }
 
@@ -69,7 +76,7 @@ public static class DirectiveInterpretationParser
         JsonElement phaseRoot = root;
         foreach (var name in new[] { "phase_order", "phaseOrder", "ordre_phase", "phase" })
         {
-            if (root.TryGetProperty(name, out var nested) && nested.ValueKind == JsonValueKind.Object)
+            if (TryGetProperty(root, name, out var nested) && nested.ValueKind == JsonValueKind.Object)
             {
                 phaseRoot = nested;
                 break;
@@ -77,7 +84,7 @@ public static class DirectiveInterpretationParser
         }
 
         var action = FirstString(phaseRoot, "action", "kind", "type", "ordre", "order");
-        var phase = FirstString(phaseRoot, "phase", "target_phase", "targetPhase", "target", "cible");
+        var phase = FirstString(phaseRoot, "phase", "target_phase", "targetPhase", "target_group", "targetGroup", "target", "group", "groupe", "cible");
         if (action is null || phase is null) return null;
 
         var kind = PhaseOrderQueue.ParseKind(action);
@@ -99,7 +106,7 @@ public static class DirectiveInterpretationParser
         var result = new List<TEnum>();
         foreach (var name in names)
         {
-            if (!root.TryGetProperty(name, out var el)) continue;
+            if (!TryGetProperty(root, name, out var el)) continue;
             foreach (var token in ReadStrings(el))
             {
                 if (TryParseTarget<TEnum>(token) is { } parsed && !result.Contains(parsed))
@@ -107,6 +114,17 @@ public static class DirectiveInterpretationParser
             }
         }
         return result;
+    }
+
+    private static void ReadGenericTargets(JsonElement el, List<ActorRole> actors, List<ActorGroup> groups)
+    {
+        foreach (var token in ReadStrings(el))
+        {
+            if (TryParseTarget<ActorRole>(token) is { } actor && !actors.Contains(actor))
+                actors.Add(actor);
+            if (TryParseTarget<ActorGroup>(token) is { } group && !groups.Contains(group))
+                groups.Add(group);
+        }
     }
 
     private static TEnum? TryParseTarget<TEnum>(string token) where TEnum : struct, Enum
@@ -140,12 +158,27 @@ public static class DirectiveInterpretationParser
     private static string? FirstString(JsonElement root, params string[] names)
     {
         foreach (var name in names)
-            if (root.TryGetProperty(name, out var el) && el.ValueKind == JsonValueKind.String)
+            if (TryGetProperty(root, name, out var el) && el.ValueKind == JsonValueKind.String)
             {
                 var value = el.GetString();
                 if (!string.IsNullOrWhiteSpace(value)) return value.Trim();
             }
         return null;
+    }
+
+    private static bool TryGetProperty(JsonElement root, string name, out JsonElement value)
+    {
+        if (root.TryGetProperty(name, out value)) return true;
+        foreach (var property in root.EnumerateObject())
+        {
+            if (string.Equals(property.Name, name, StringComparison.OrdinalIgnoreCase))
+            {
+                value = property.Value;
+                return true;
+            }
+        }
+        value = default;
+        return false;
     }
 
     private static string? ExtractJsonObject(string raw)
