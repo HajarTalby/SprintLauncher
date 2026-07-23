@@ -35,6 +35,13 @@ public static class EnvFile
             return FromRoot(Environment.ExpandEnvironmentVariables(sprintLauncherHome.Trim()));
         }
 
+        // Layout release : le .env est déposé à côté de notify.exe (pas de .sln à remonter).
+        var beside = Path.GetFullPath(Path.Combine(applicationBaseDirectory, ".env"));
+        if (File.Exists(beside))
+        {
+            return new EnvFileResolution(beside, true);
+        }
+
         var installationRoot = FindSprintLauncherRoot(applicationBaseDirectory);
         if (installationRoot is not null)
         {

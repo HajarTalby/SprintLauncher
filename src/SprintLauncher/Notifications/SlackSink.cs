@@ -23,6 +23,7 @@ public static class SlackSink
     private static readonly ConcurrentBag<Process> Started = new();
     private static readonly ConcurrentDictionary<string, string> ActorModels = new();
     private static readonly Lazy<string?> NotifierPath = new(ResolveNotifier);
+    private static readonly Lazy<string?> EnvDirectory = new(ResolveEnvDirectory);
     private static readonly Lazy<bool> EnabledFlag = new(ComputeEnabled);
 
     private static bool _runStarted;
@@ -110,6 +111,10 @@ public static class SlackSink
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
             };
+            // Garantit que notify.exe retrouve le .env même dans la release (pas de .sln
+            // à remonter) : on lui passe le dossier du .env déjà résolu ici.
+            var envDir = EnvDirectory.Value;
+            if (envDir is not null) psi.Environment["SPRINTLAUNCHER_HOME"] = envDir;
             psi.ArgumentList.Add("--actor");
             psi.ArgumentList.Add(actor);
             psi.ArgumentList.Add("--level");
@@ -206,6 +211,12 @@ public static class SlackSink
         }
 
         return null;
+    }
+
+    private static string? ResolveEnvDirectory()
+    {
+        var envPath = ResolveEnvPath();
+        return envPath is not null && File.Exists(envPath) ? Path.GetDirectoryName(envPath) : null;
     }
 
     private static bool ComputeEnabled()
