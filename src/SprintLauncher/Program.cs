@@ -58,6 +58,7 @@ bool resume = args.Contains("--resume");
 bool interactive = args.Contains("--interactive");
 bool publishFromArtifacts = args.Contains("--publish-from-artifacts");
 bool autoResumeQuota = args.Contains("--auto-resume-quota");
+bool slackListen = args.Contains("--slack-listen");
 string? publishRolesFilter = GetArg(args, "--roles");
 string? createUsFile = GetArg(args, "--create-us");
 string? publishManualRole = GetArg(args, "--publish-manual");
@@ -127,6 +128,22 @@ if (args.Contains("--smoke-live"))
 }
 
 // ─── Usage guard — before config load so no .env required just to show help ───
+// SERZENIA-155 lot 1 : mode listener seul (test Socket Mode isolé).
+// Usage : sprint-launcher --slack-listen [<liveDir>]
+if (slackListen)
+{
+    // Ce chargement léger peuple l'environnement depuis .env sans exiger Jira : le
+    // listener doit pouvoir être testé seul, hors pipeline.
+    _ = SprintLauncherConfig.LoadModelsOnly();
+    var liveDir = GetArg(args, "--slack-listen");
+    if (string.IsNullOrWhiteSpace(liveDir) || liveDir.StartsWith("--", StringComparison.Ordinal))
+        liveDir = Directory.GetCurrentDirectory();
+
+    var listener = new SlackSocketListener();
+    await listener.RunAsync(liveDir, shutdownCts.Token);
+    return 0;
+}
+
 if (issueKeys.Length == 0 && sprintArg is null && publishManualRole is null && createUsFile is null)
 {
     Console.Error.WriteLine("Usage: sprint-launcher <ISSUE-KEY> [<ISSUE-KEY> ...] [--write] [--no-cache] [--resume] [--interactive] [--auto-resume-quota]");
