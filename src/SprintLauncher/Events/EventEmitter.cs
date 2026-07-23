@@ -1,4 +1,5 @@
 using System.Text.Json;
+using SprintLauncher.Notifications;
 
 namespace SprintLauncher.Events;
 
@@ -23,6 +24,15 @@ public static class EventEmitter
 
     public static void Emit(string type, object payload)
     {
+        // Miroir Slack (SERZENIA-146) : n'a lieu que si un webhook est configuré, jamais sous
+        // test. Le chemin reste gratuit (un booléen) quand Slack est désactivé — cas courant —
+        // et la sortie terminal/UI ci-dessous est inchangée.
+        if (SlackSink.Enabled)
+        {
+            try { SlackSink.Forward(type, JsonSerializer.SerializeToElement(payload, _json)); }
+            catch { /* Slack ne doit jamais casser un run */ }
+        }
+
         if (!Enabled) return;
         Console.WriteLine(Prefix + JsonSerializer.Serialize(new EventEnvelope(type, payload), _json));
     }

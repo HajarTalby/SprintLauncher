@@ -6,6 +6,7 @@ using SprintLauncher.Dialogue;
 using SprintLauncher.Events;
 using SprintLauncher.Jira;
 using SprintLauncher.Memory;
+using SprintLauncher.Notifications;
 using SprintLauncher.Prompts;
 using SprintLauncher.Runners;
 
@@ -46,6 +47,7 @@ Console.CancelKeyPress += (_, e) =>
 AppDomain.CurrentDomain.ProcessExit += (_, _) =>
 {
     try { shutdownCts.Cancel(); } catch (ObjectDisposedException) { }
+    try { SlackSink.RunFinished(); } catch { /* Slack ne doit jamais casser la sortie */ }
 };
 
 // ─── Config ───────────────────────────────────────────────────────────────────
@@ -250,6 +252,8 @@ if (sprintArg is not null && issueKeys.Length == 0)
 
 if (issueKeys.Length == 0)
     throw new InvalidOperationException("Aucun ticket résolu. Passez les clés directement ou vérifiez --sprint.");
+
+SlackSink.RunStarted(sprintArg is not null ? $"sprint {sprintArg}" : string.Join(", ", issueKeys));
 
 // ─── --publish-from-artifacts : publier les sorties dry-run déjà validées ─────
 // Aucune réexécution d'acteur (zéro quota) : les output-*.txt du run précédent
