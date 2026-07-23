@@ -1,46 +1,35 @@
 # Slack — brancher les notifications des acteurs (SERZENIA-146)
 
-Le code est prêt. Il ne manque que les **URLs** (côté ton compte Slack — c'est ta main,
-comme les permissions). ~5 minutes. Deux options ; le design livré marche avec les deux.
+Design : **un seul bot token**. Hajar installe l'app une fois et fournit le token ;
+l'agent crée les canaux et poste lui-même (`chat.postMessage`). Aucun clic webhook.
 
----
+## Ta part (~3 étapes, une seule fois)
 
-## Option A — 4 webhooks entrants (design actuel, rien à recoder)
-
-Un webhook = une URL liée à **un canal**. On en crée 4 (un par acteur).
-
-1. Va sur https://api.slack.com/apps → **Create New App** → **From an app manifest**.
-2. Choisis ton workspace SERZENIA, colle le contenu de `docs/slack-app-manifest.json`, crée.
-3. Onglet **Incoming Webhooks** → active le toggle.
-4. **Add New Webhook to Workspace** → choisis le canal `#sl-ccode` → copie l'URL.
-5. Répète le bouton pour `#sl-ag`, `#sl-codex`, `#sl-sl` (4 URLs au total).
-6. Colle dans `SprintLauncher/.env` (jamais commité) :
+1. https://api.slack.com/apps → **Create New App** → **From an app manifest** →
+   workspace SERZENIA → colle `docs/slack-app-manifest.json` → **Create**.
+   (Scopes demandés : `chat:write`, `channels:manage`, `channels:read`, `channels:join`.)
+2. Menu **OAuth & Permissions** → **Install to Workspace** → **Allow**.
+3. Copie le **Bot User OAuth Token** (`xoxb-…`) et colle-le dans `SprintLauncher/.env` :
 
    ```
-   SLACK_WEBHOOK_CCODE=https://hooks.slack.com/services/...
-   SLACK_WEBHOOK_AG=https://hooks.slack.com/services/...
-   SLACK_WEBHOOK_CODEX=https://hooks.slack.com/services/...
-   SLACK_WEBHOOK_SL=https://hooks.slack.com/services/...
-   SLACK_WEBHOOK_DEFAULT=      # optionnel, repli
+   SLACK_BOT_TOKEN=xoxb-…
    ```
 
-7. Vérifie : `tools\notify\published\notify.exe --check` → chaque acteur doit afficher `yes`.
+   Ne le colle **pas** dans le chat (c'est un secret). Dis « c'est mis ».
 
-> Les noms de canaux (`#sl-ccode`…) sont libres : le webhook est lié au canal choisi à
-> l'étape 4, pas à une clé. Choisis le canal qui correspond à l'acteur.
+## Ma part (automatique, après ton « c'est mis »)
 
----
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/notify/provision-slack.ps1
+```
 
-## Option B — 1 bot token `chat:write` (une seule URL secrète)
+Le script : crée les canaux publics `ccode`, `ag`, `codex`, `sl` (ou rejoint ceux qui
+existent), écrit leurs ids dans `.env` (`SLACK_CHANNEL_*`), et poste un message de test
+dans chacun. `notify.exe --check` confirme ensuite le câblage.
 
-Plus propre côté secrets (un seul token), mais **change le design livré** : il faut poster
-via `chat:write` avec un ID de canal au lieu d'un webhook par acteur. Recodage du
-`WebhookResolver` + `SlackNotifier` (~1 lot). À choisir seulement si tu préfères gérer un
-token unique plutôt que 4 URLs.
+## Fonctionnement
 
----
-
-## Une fois les URLs collées
-
-Je lance le test end-to-end moi-même (`notify.exe --check` + un message réel par canal) et
-je te montre le résultat. Aucune action manuelle de ton côté après le collage.
+Chaque événement d'acteur du SL (début/fin de tour, quota, blocage) est posté par
+`notify.exe` dans le canal de l'acteur via `chat.postMessage`, **avec le modèle utilisé**.
+Le canal par acteur : `SLACK_CHANNEL_<ACTEUR>` dans `.env` (id ou nom), défaut = nom de
+l'acteur. Le token n'apparaît jamais en clair (masqué `xoxb-***` dans `--check`).

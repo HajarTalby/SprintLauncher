@@ -40,8 +40,8 @@ public static class NotifyApplication
         }
 
         var values = EnvFile.Load(resolution.Path);
-        var webhook = WebhookResolver.Resolve(values, options!.Actor);
-        if (webhook is null)
+        var target = SlackTargetResolver.Resolve(values, options!.Actor);
+        if (target is null)
         {
             return 0;
         }
@@ -51,12 +51,12 @@ public static class NotifyApplication
         {
             using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
             var notifier = new SlackNotifier(httpClient);
-            await notifier.SendAsync(webhook, options, timeout.Token);
+            await notifier.SendAsync(target, options, timeout.Token);
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or SlackNotifyException)
         {
             await error.WriteLineAsync(
-                $"Slack notification failed for {WebhookResolver.Mask(webhook)}: {ex.Message}");
+                $"Slack notification failed (#{target.Channel}): {ex.Message}");
         }
 
         return 0;
@@ -82,21 +82,22 @@ public static class NotifyApplication
         }
 
         var values = EnvFile.Load(resolution.Path);
-        var usable = false;
+        var hasToken = false;
         foreach (var actor in Actors)
         {
-            var webhook = WebhookResolver.Resolve(values, actor);
-            if (webhook is null)
+            var target = SlackTargetResolver.Resolve(values, actor);
+            if (target is null)
             {
                 await output.WriteLineAsync($"{actor}: no");
                 continue;
             }
 
-            usable = true;
-            await output.WriteLineAsync($"{actor}: yes - {WebhookResolver.Mask(webhook)}");
+            hasToken = true;
+            await output.WriteLineAsync(
+                $"{actor}: yes - {SlackTargetResolver.MaskToken(target.Token)} -> #{target.Channel}");
         }
 
-        return usable ? 0 : 1;
+        return hasToken ? 0 : 1;
     }
 
     private static EnvFileResolution? ResolveEnvFile(NotifyRuntimeContext runtimeContext) =>

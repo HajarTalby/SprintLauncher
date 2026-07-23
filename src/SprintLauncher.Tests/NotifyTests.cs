@@ -14,13 +14,29 @@ public class NotifyTests
         var installationRoot = directories.Create("SprintLauncher");
         File.WriteAllText(Path.Combine(installationRoot, "SprintLauncher.sln"), string.Empty);
         var expected = Path.Combine(installationRoot, ".env");
-        File.WriteAllText(expected, "SLACK_WEBHOOK_CCODE=https://example.invalid/install");
+        File.WriteAllText(expected, "SLACK_BOT_TOKEN=xoxb-install");
         var applicationBase = Directory.CreateDirectory(
             Path.Combine(installationRoot, "tools", "notify", "published")).FullName;
         var foreignCwd = Directory.CreateDirectory(Path.Combine(directories.Root, "SERZENIA")).FullName;
         Directory.CreateDirectory(Path.Combine(foreignCwd, ".git"));
 
         var resolution = EnvFile.Resolve(null, applicationBase, foreignCwd);
+
+        Assert.NotNull(resolution);
+        Assert.True(resolution.Exists);
+        Assert.Equal(expected, resolution.Path);
+    }
+
+    [Fact]
+    public void Resolves_env_beside_the_executable_in_a_release_layout()
+    {
+        using var directories = new TestDirectories();
+        // Layout release : pas de .sln, le .env est déposé à côté de notify.exe.
+        var releaseDir = directories.Create("release");
+        var expected = Path.Combine(releaseDir, ".env");
+        File.WriteAllText(expected, "SLACK_BOT_TOKEN=xoxb-release");
+
+        var resolution = EnvFile.Resolve(null, releaseDir, directories.Root);
 
         Assert.NotNull(resolution);
         Assert.True(resolution.Exists);
@@ -55,9 +71,9 @@ public class NotifyTests
     public void Sprintlauncher_home_has_priority_over_installation_and_cwd()
     {
         using var directories = new TestDirectories();
-        var explicitHome = CreateRepo(directories, "explicit", "https://example.invalid/explicit");
-        var installationRoot = CreateRepo(directories, "installation", "https://example.invalid/install");
-        var cwdRoot = CreateRepo(directories, "cwd", "https://example.invalid/cwd");
+        var explicitHome = CreateRepo(directories, "explicit");
+        var installationRoot = CreateRepo(directories, "installation");
+        var cwdRoot = CreateRepo(directories, "cwd");
         var applicationBase = Directory.CreateDirectory(Path.Combine(installationRoot, "published")).FullName;
 
         var resolution = EnvFile.Resolve(explicitHome, applicationBase, cwdRoot);
@@ -68,14 +84,14 @@ public class NotifyTests
     }
 
     [Fact]
-    public async Task Check_reports_env_and_masked_webhook_presence_without_sending()
+    public async Task Check_reports_env_and_channels_without_leaking_the_token()
     {
         using var directories = new TestDirectories();
         var installationRoot = directories.Create("SprintLauncher");
         File.WriteAllText(Path.Combine(installationRoot, "SprintLauncher.sln"), string.Empty);
         var envPath = Path.Combine(installationRoot, ".env");
-        const string rawWebhook = "https://example.invalid/private-check-value";
-        File.WriteAllText(envPath, $"SLACK_WEBHOOK_CCODE={rawWebhook}");
+        const string rawToken = "xoxb-1234567890-secret-value";
+        File.WriteAllText(envPath, $"SLACK_BOT_TOKEN={rawToken}\nSLACK_CHANNEL_CCODE=sl-ccode");
         var applicationBase = Directory.CreateDirectory(
             Path.Combine(installationRoot, "tools", "notify", "published")).FullName;
         var output = new StringWriter();
@@ -90,15 +106,16 @@ public class NotifyTests
         Assert.Equal(0, exitCode);
         Assert.Equal(string.Empty, error.ToString());
         Assert.Contains($".env: {envPath}", output.ToString());
-        Assert.Contains("ccode: yes - https://example.invalid/***", output.ToString());
-        Assert.Contains("ag: no", output.ToString());
-        Assert.Contains("codex: no", output.ToString());
-        Assert.Contains("sl: no", output.ToString());
-        Assert.DoesNotContain(rawWebhook, output.ToString());
+        // Token global : tous les acteurs résolvent une cible ; canal par défaut = nom d'acteur.
+        Assert.Contains("ccode: yes - xoxb-*** -> #sl-ccode", output.ToString());
+        Assert.Contains("ag: yes - xoxb-*** -> #ag", output.ToString());
+        Assert.Contains("codex: yes - xoxb-*** -> #codex", output.ToString());
+        Assert.Contains("sl: yes - xoxb-*** -> #sl", output.ToString());
+        Assert.DoesNotContain(rawToken, output.ToString());
     }
 
     [Fact]
-    public async Task No_webhook_is_silent_for_notifications_and_makes_check_fail()
+    public async Task No_token_is_silent_for_notifications_and_makes_check_fail()
     {
         using var directories = new TestDirectories();
         var installationRoot = directories.Create("SprintLauncher");
@@ -129,83 +146,106 @@ public class NotifyTests
     }
 
     [Fact]
-    public void Resolves_actor_specific_webhook()
+    public void Resolves_actor_channel_override()
     {
         var values = new Dictionary<string, string>
         {
-            ["SLACK_WEBHOOK_CCODE"] = "https://example.invalid/actor",
-            ["SLACK_WEBHOOK_DEFAULT"] = "https://example.invalid/default"
+            ["SLACK_BOT_TOKEN"] = "xoxb-token",
+            ["SLACK_CHANNEL_CCODE"] = "C0123ABCD"
         };
 
-        var resolved = WebhookResolver.Resolve(values, "ccode");
+        var target = SlackTargetResolver.Resolve(values, "ccode");
 
-        Assert.Equal("https://example.invalid/actor", resolved?.ToString());
+        Assert.Equal("xoxb-token", target?.Token);
+        Assert.Equal("C0123ABCD", target?.Channel);
     }
 
     [Fact]
-    public void Falls_back_to_default_webhook()
+    public void Defaults_channel_to_actor_name()
     {
-        var values = new Dictionary<string, string>
-        {
-            ["SLACK_WEBHOOK_DEFAULT"] = "https://example.invalid/default"
-        };
+        var values = new Dictionary<string, string> { ["SLACK_BOT_TOKEN"] = "xoxb-token" };
 
-        var resolved = WebhookResolver.Resolve(values, "codex");
+        var target = SlackTargetResolver.Resolve(values, "codex");
 
-        Assert.Equal("https://example.invalid/default", resolved?.ToString());
+        Assert.Equal("codex", target?.Channel);
     }
 
     [Fact]
-    public void Missing_config_returns_null()
+    public void Missing_token_returns_null()
     {
-        var resolved = WebhookResolver.Resolve(new Dictionary<string, string>(), "sl");
+        var target = SlackTargetResolver.Resolve(new Dictionary<string, string>(), "sl");
 
-        Assert.Null(resolved);
+        Assert.Null(target);
     }
 
     [Fact]
-    public void Masks_slack_webhook_secret()
+    public void Masks_bot_token()
     {
-        var masked = WebhookResolver.Mask(new Uri("https://hooks.slack.com/services/"));
-
-        Assert.Equal("https://hooks.slack.com/services/***", masked);
+        Assert.Equal("xoxb-***", SlackTargetResolver.MaskToken("xoxb-1234-abcd"));
+        Assert.Equal("***", SlackTargetResolver.MaskToken("other"));
     }
 
     [Fact]
-    public async Task Posts_expected_json_payload()
+    public async Task Posts_chat_postmessage_with_bearer_and_channel()
     {
-        var handler = new RecordingHandler();
+        var handler = new RecordingHandler("{\"ok\":true}");
         var notifier = new SlackNotifier(handler, (_, _) => Task.CompletedTask);
         var options = new NotifyOptions("codex", "warn", "outil echoue", "SERZENIA-146");
 
-        await notifier.SendAsync(new Uri("https://example.invalid/webhook"), options, CancellationToken.None);
+        await notifier.SendAsync(new SlackTarget("xoxb-secret", "codex"), options, CancellationToken.None);
 
         Assert.Equal(HttpMethod.Post, handler.Request?.Method);
+        Assert.Equal("https://slack.com/api/chat.postMessage", handler.Request?.RequestUri?.ToString());
+        Assert.Equal("Bearer", handler.Request?.Headers.Authorization?.Scheme);
+        Assert.Equal("xoxb-secret", handler.Request?.Headers.Authorization?.Parameter);
         Assert.Equal("application/json", handler.Request?.Content?.Headers.ContentType?.MediaType);
-        Assert.Equal("utf-8", handler.Request?.Content?.Headers.ContentType?.CharSet?.ToLowerInvariant());
 
         using var json = JsonDocument.Parse(handler.Body!);
-        Assert.Equal("[CODEX] warn \u2014 outil echoue\ncontext: SERZENIA-146", json.RootElement.GetProperty("text").GetString());
+        Assert.Equal("codex", json.RootElement.GetProperty("channel").GetString());
+        Assert.Equal("[CODEX] warn — outil echoue\ncontext: SERZENIA-146", json.RootElement.GetProperty("text").GetString());
+    }
+
+    [Fact]
+    public async Task Api_error_is_not_retried_and_surfaces_the_reason()
+    {
+        var handler = new RecordingHandler("{\"ok\":false,\"error\":\"channel_not_found\"}");
+        var notifier = new SlackNotifier(handler, (_, _) => Task.CompletedTask);
+        var options = new NotifyOptions("sl", "info", "hello", null);
+
+        var ex = await Assert.ThrowsAsync<SlackNotifyException>(() =>
+            notifier.SendAsync(new SlackTarget("xoxb-secret", "sl"), options, CancellationToken.None));
+
+        Assert.Contains("channel_not_found", ex.Message);
+        Assert.Equal(1, handler.CallCount); // pas de retry sur erreur applicative
     }
 
     private sealed class RecordingHandler : HttpMessageHandler
     {
+        private readonly string _responseBody;
+
+        public RecordingHandler(string responseBody) => _responseBody = responseBody;
+
         public HttpRequestMessage? Request { get; private set; }
         public string? Body { get; private set; }
+        public int CallCount { get; private set; }
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
+            CallCount++;
             Request = request;
             Body = await request.Content!.ReadAsStringAsync(cancellationToken);
-            return new HttpResponseMessage(HttpStatusCode.OK);
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(_responseBody),
+            };
         }
     }
 
-    private static string CreateRepo(TestDirectories directories, string name, string webhook)
+    private static string CreateRepo(TestDirectories directories, string name)
     {
         var root = directories.Create(name);
         File.WriteAllText(Path.Combine(root, "SprintLauncher.sln"), string.Empty);
-        File.WriteAllText(Path.Combine(root, ".env"), $"SLACK_WEBHOOK_CCODE={webhook}");
+        File.WriteAllText(Path.Combine(root, ".env"), "SLACK_BOT_TOKEN=xoxb-test");
         return root;
     }
 

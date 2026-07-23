@@ -223,7 +223,7 @@ public static class SlackSink
     {
         if (IsTestHost()) return false;
         if (NotifierPath.Value is null) return false;
-        return HasAnyWebhook();
+        return HasBotToken();
     }
 
     private static bool IsTestHost()
@@ -233,7 +233,7 @@ public static class SlackSink
             || entry.Contains("test", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static bool HasAnyWebhook()
+    private static bool HasBotToken()
     {
         var envPath = ResolveEnvPath();
         if (envPath is null || !File.Exists(envPath)) return false;
@@ -246,7 +246,7 @@ public static class SlackSink
             if (idx <= 0) continue;
             var key = trimmed[..idx].Trim();
             var value = trimmed[(idx + 1)..].Trim();
-            if (key.StartsWith("SLACK_WEBHOOK_", StringComparison.OrdinalIgnoreCase) && value.Length > 0)
+            if (key.Equals("SLACK_BOT_TOKEN", StringComparison.OrdinalIgnoreCase) && value.Length > 0)
                 return true;
         }
 

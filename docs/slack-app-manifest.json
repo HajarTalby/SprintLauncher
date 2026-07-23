@@ -13,8 +13,10 @@
   "oauth_config": {
     "scopes": {
       "bot": [
-        "incoming-webhook",
-        "chat:write"
+        "chat:write",
+        "channels:manage",
+        "channels:read",
+        "channels:join"
       ]
     }
   },
