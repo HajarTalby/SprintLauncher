@@ -8,21 +8,31 @@ public sealed class ModelSelectionState
     private readonly Dictionary<ActorRole, string> _roleModels = [];
     private string _claudeModel;
     private string _codexModel;
+    private string _codexExecutionModel;
     private string _agyModel;
 
-    public ModelSelectionState(string claudeModel, string codexModel, string agyModel)
+    public ModelSelectionState(string claudeModel, string codexModel, string agyModel, string? codexExecutionModel = null)
     {
         _claudeModel = string.IsNullOrWhiteSpace(claudeModel) ? "sonnet-5" : claudeModel;
         _codexModel = string.IsNullOrWhiteSpace(codexModel) ? "gpt-5.6-sol" : codexModel;
+        _codexExecutionModel = string.IsNullOrWhiteSpace(codexExecutionModel) ? "gpt-5.6-terra" : codexExecutionModel!;
         _agyModel = string.IsNullOrWhiteSpace(agyModel) ? "agy" : agyModel;
     }
 
     public string ModelFor(ActorRole role)
     {
         lock (_lock)
-            return _roleModels.TryGetValue(role, out var model)
-                ? model
-                : role.IsClaudeFamily() ? _claudeModel : role.IsAgFamily() ? _agyModel : _codexModel;
+        {
+            if (_roleModels.TryGetValue(role, out var model)) return model;
+            if (role.IsClaudeFamily()) return _claudeModel;
+            if (role.IsAgFamily()) return _agyModel;
+            // codex (Hajar 2026-07-22) : le dev et la QA (rôles d'exécution) tournent sur
+            // le modèle d'exécution économique (terra) ; l'analyse, le pilotage, l'arbitrage
+            // et le comité restent sur le modèle de raisonnement (sol). La revue croisée est
+            // un cas particulier : bien que portée par un rôle d'implémentation, elle est
+            // surchargée vers sol au site d'appel.
+            return role.IsExecutionRole() ? _codexExecutionModel : _codexModel;
+        }
     }
 
     public ActorRole? Apply(ModelRecommendation recommendation, bool nextDevelopmentOnly)

@@ -9,6 +9,11 @@ public sealed class SprintLauncherConfig
     // Moteur codex courant de l abonnement (cf. ~/.codex/config.toml). Verifie le
     // 2026-07-22 : `codex exec --model gpt-5.6-sol` repond bien.
     public string CodexModel { get; init; } = "gpt-5.6-sol";
+    // Modele d execution codex (dev + QA) : terra, plus economique que sol reserve au
+    // raisonnement (analyse/pilotage/arbitrage/revue). Choix Hajar 2026-07-22.
+    public string CodexExecutionModel { get; init; } = "gpt-5.6-terra";
+    // Effort de raisonnement codex applique a tous les acteurs codex (config.toml = low).
+    public string CodexReasoningEffort { get; init; } = "high";
     public string AgyModel { get; init; } = "gemini-3-pro";
     public string DirectiveInterpreterModel { get; init; } = "gpt-5-mini";
     public int ActorTimeoutSeconds { get; init; } = 600;
@@ -71,6 +76,8 @@ public sealed class SprintLauncherConfig
             JiraBaseUrl = "", JiraEmail = "", JiraApiToken = "",
             ClaudeModel = Environment.GetEnvironmentVariable("CLAUDE_MODEL") ?? "sonnet-5",
             CodexModel = Environment.GetEnvironmentVariable("CODEX_MODEL") ?? "gpt-5.6-sol",
+            CodexExecutionModel = Environment.GetEnvironmentVariable("CODEX_EXECUTION_MODEL") ?? "gpt-5.6-terra",
+            CodexReasoningEffort = Environment.GetEnvironmentVariable("CODEX_EFFORT") ?? "high",
             AgyModel = Environment.GetEnvironmentVariable("AGY_MODEL") ?? "gemini-3-pro",
             DirectiveInterpreterModel = Environment.GetEnvironmentVariable("DIRECTIVE_INTERPRETER_MODEL") ?? "gpt-5-mini",
             SerzeniaRepoRoot = Environment.GetEnvironmentVariable("SERZENIA_REPO_ROOT"),
@@ -92,6 +99,8 @@ public sealed class SprintLauncherConfig
             JiraApiToken = token,
             ClaudeModel = Environment.GetEnvironmentVariable("CLAUDE_MODEL") ?? "sonnet-5",
             CodexModel = Environment.GetEnvironmentVariable("CODEX_MODEL") ?? "gpt-5.6-sol",
+            CodexExecutionModel = Environment.GetEnvironmentVariable("CODEX_EXECUTION_MODEL") ?? "gpt-5.6-terra",
+            CodexReasoningEffort = Environment.GetEnvironmentVariable("CODEX_EFFORT") ?? "high",
             AgyModel = Environment.GetEnvironmentVariable("AGY_MODEL") ?? "gemini-3-pro",
             DirectiveInterpreterModel = Environment.GetEnvironmentVariable("DIRECTIVE_INTERPRETER_MODEL") ?? "gpt-5-mini",
             ActorTimeoutSeconds = ReadPositiveInt("ACTOR_TIMEOUT_SECONDS", 600),

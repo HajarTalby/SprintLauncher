@@ -3,12 +3,14 @@
 # stdin en UTF-8 sans BOM, clefs API retirees (mode abonnement), sandbox bypass pour dev.
 # Demande de Hajar (2026-07-18) : deleguer les lots a codex, hors quota Claude, survivant.
 # NB : script strictement ASCII (PS 5.1 lit les .ps1 en Windows-1252).
-# Effort de raisonnement : le config.toml global est en "low" (rapide/economique). Un lot
-# de dev merite le maximum -> defaut "xhigh" ici, surchargeable par lot (Hajar, 2026-07-22).
+# Effort de raisonnement : le config.toml global est en "low" (rapide/economique). Defaut
+# "high" (Hajar, 2026-07-22 : high partout pour economiser le quota, sol comme terra),
+# surchargeable par lot. Modele : sol (gpt-5.6-sol) pour analyse/pilotage/arbitrage/revue,
+# terra (gpt-5.6-terra) pour dev/QA -> passer -Model en consequence selon le lot.
 param(
     [Parameter(Mandatory=$true)][string]$Worktree,
     [Parameter(Mandatory=$true)][string]$BriefFile,
-    [ValidateSet('low','medium','high','xhigh')][string]$Effort = 'xhigh',
+    [ValidateSet('low','medium','high','xhigh')][string]$Effort = 'high',
     [string]$Model
 )
 $ErrorActionPreference = "Continue"

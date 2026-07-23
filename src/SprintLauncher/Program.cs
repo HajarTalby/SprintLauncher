@@ -121,7 +121,8 @@ if (args.Contains("--smoke-live"))
         codexModel: smokeModels.CodexModel,
         agyModel: smokeModels.AgyModel,
         actorTimeout: TimeSpan.FromMinutes(5),
-        repoRoot: smokeModels.SerzeniaRepoRoot);
+        repoRoot: smokeModels.SerzeniaRepoRoot)
+    { CodexReasoningEffort = smokeModels.CodexReasoningEffort };
     return await LiveChatSmoke.RunAsync(engineArg, smokeRunner, shutdownCts.Token);
 }
 
@@ -425,7 +426,8 @@ using var runner = new ActorRunner(
     repoRoot: config.SerzeniaRepoRoot,
     implementationTimeout: TimeSpan.FromSeconds(config.ImplementationTimeoutSeconds),
     gptPilotageAuto: config.GptPilotageAuto);
-var modelSelection = new ModelSelectionState(config.ClaudeModel, config.CodexModel, config.AgyModel);
+var modelSelection = new ModelSelectionState(config.ClaudeModel, config.CodexModel, config.AgyModel, config.CodexExecutionModel);
+runner.CodexReasoningEffort = config.CodexReasoningEffort;
 // Garde-fou de périmètre : toute écriture Jira hors des tickets du sprint est refusée
 // (incident sprint 6 : délibération publiée sur SERZENIA-98 au lieu de SERZENIA-111).
 var publisher = new JiraCommentPublisher(httpClient, config.JiraBaseUrl, config.JiraEmail, config.JiraApiToken, dryRun)
@@ -2047,7 +2049,11 @@ async Task ProcessPendingReviewsAsync(
                 // pendant la phase de revue (retour 2026-07-17 : interventions ignorées).
                 await IngestPendingDirectivesAsync(artifactsDir, ct);
                 reviewPrompt = WithDirective(reviewPrompt, DirectivesForActor(reviewer), config.ApproverName);
-                review = await RunDialogueTurnAsync(reviewer, reviewPrompt, artifactsDir, runner, ct);
+                // Revue de code = tâche de raisonnement : le réviseur codex passe sur sol
+                // (modèle de raisonnement) même si son rôle d'implémentation vaut terra par
+                // défaut. Les autres moteurs gardent leur modèle habituel (Hajar 2026-07-22).
+                var reviewModel = EngineForRole(reviewer) == ModelEngine.Codex ? config.CodexModel : null;
+                review = await RunDialogueTurnAsync(reviewer, reviewPrompt, artifactsDir, runner, ct, reviewModel);
             }
             finally { engineLocks[reviewer].Release(); }
 
@@ -2540,7 +2546,8 @@ async Task RunDialogueGroupAsync(
 
 // ─── Un tour de discussion : timer, artefacts, entrée rapport ─────────────────
 async Task<ActorRunResult> RunDialogueTurnAsync(
-    ActorRole role, ActorPrompt prompt, string artifactsDir, ActorRunner runner, CancellationToken ct)
+    ActorRole role, ActorPrompt prompt, string artifactsDir, ActorRunner runner, CancellationToken ct,
+    string? modelOverride = null)
 {
     await using var actorTurn = await actorTurnCoordinator.BeginAsync(role, ct);
 
@@ -2548,7 +2555,7 @@ async Task<ActorRunResult> RunDialogueTurnAsync(
     await WaitIfPausedAsync(artifactsDir, ct);
     await File.WriteAllTextAsync(promptFile, $"=== SYSTEM ===\n{prompt.SystemPrompt}\n\n=== USER ===\n{prompt.UserPrompt}");
 
-    var model = ModelForRole(role);
+    var model = modelOverride ?? ModelForRole(role);
     EventEmitter.Emit("actor-start", new { role = role.ToString(), engine = EngineForRole(role).ToString().ToLowerInvariant(), model });
     var sw = Stopwatch.StartNew();
     if (Console.IsOutputRedirected) Console.WriteLine($"  > {role}");

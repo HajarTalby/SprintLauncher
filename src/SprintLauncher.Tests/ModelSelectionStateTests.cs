@@ -51,4 +51,34 @@ public class ModelSelectionStateTests
         Assert.Equal("gpt-5.5", state.ModelFor(ActorRole.AnalysisCodex));
         Assert.Equal("sonnet-5", state.ModelFor(ActorRole.CommitteePilotageClaudeChat));
     }
+
+    // Routage sol/terra (Hajar 2026-07-22) : les rôles codex d'exécution (dev, QA) tournent
+    // sur le modèle d'exécution ; l'analyse/pilotage/arbitrage/comité sur le modèle de
+    // raisonnement. Les rôles claude/ag priment sur ce routage codex.
+    [Theory]
+    // Exécution codex → terra
+    [InlineData(ActorRole.GptImplementation, "gpt-5.6-terra")]
+    [InlineData(ActorRole.GptQaVerdict, "gpt-5.6-terra")]
+    // Raisonnement codex → sol
+    [InlineData(ActorRole.AnalysisCodex, "gpt-5.6-sol")]
+    [InlineData(ActorRole.CommitteeCodex, "gpt-5.6-sol")]
+    [InlineData(ActorRole.CommitteePilotageGptChat, "gpt-5.6-sol")]
+    [InlineData(ActorRole.GptPilotage, "gpt-5.6-sol")]
+    // Familles claude/ag : leur propre modèle, jamais terra même en exécution
+    [InlineData(ActorRole.ClaudeImplementation, "sonnet-5")]
+    [InlineData(ActorRole.ClaudeQaVerdict, "sonnet-5")]
+    [InlineData(ActorRole.AgImplementation, "agy")]
+    public void Codex_execution_roles_use_terra_reasoning_roles_use_sol(ActorRole role, string expected)
+    {
+        var state = new ModelSelectionState("sonnet-5", "gpt-5.6-sol", "agy", "gpt-5.6-terra");
+        Assert.Equal(expected, state.ModelFor(role));
+    }
+
+    [Fact]
+    public void Explicit_role_override_wins_over_terra_sol_routing()
+    {
+        var state = new ModelSelectionState("sonnet-5", "gpt-5.6-sol", "agy", "gpt-5.6-terra");
+        state.Apply(new ModelRecommendation(ModelEngine.Codex, "gpt-5.6-luna", "hajar", ActorRole.GptImplementation), nextDevelopmentOnly: false);
+        Assert.Equal("gpt-5.6-luna", state.ModelFor(ActorRole.GptImplementation));
+    }
 }

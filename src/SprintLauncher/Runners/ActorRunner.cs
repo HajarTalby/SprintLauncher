@@ -20,6 +20,10 @@ public sealed class ActorRunner : IDisposable
     public string ClaudeModel { get => _claudeModel; set => _claudeModel = value; }
     public string CodexModel { get => _codexModel; set => _codexModel = value; }
     public string AgyModel { get => _agyModel; set => _agyModel = value; }
+    // Effort de raisonnement codex (config.toml global = low). Hajar (2026-07-22) : high
+    // pour tous les acteurs codex — sol comme terra. Fixé explicitement à l'appel pour ne
+    // pas dépendre du réglage global de la machine.
+    public string CodexReasoningEffort { get; set; } = "high";
     public string DirectiveInterpreterModel { get => _directiveInterpreterModel; set => _directiveInterpreterModel = value; }
     private readonly TimeSpan _actorTimeout;
     private readonly TimeSpan _implementationTimeout;
@@ -412,6 +416,12 @@ public sealed class ActorRunner : IDisposable
         psi.ArgumentList.Add("exec");
         psi.ArgumentList.Add("--model");
         psi.ArgumentList.Add(model);
+        // Effort de raisonnement explicite (sinon hérite du config.toml global = low).
+        if (!string.IsNullOrWhiteSpace(CodexReasoningEffort))
+        {
+            psi.ArgumentList.Add("-c");
+            psi.ArgumentList.Add($"model_reasoning_effort=\"{CodexReasoningEffort}\"");
+        }
         // Sans ce flag, codex exec refuse de démarrer hors d'un dépôt git « trusted »
         // ("Not inside a trusted directory") — constaté en test isolé.
         psi.ArgumentList.Add("--skip-git-repo-check");
