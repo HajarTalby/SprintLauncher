@@ -36,6 +36,7 @@ static void PauseIfInteractive()
 
 // ─── Correction 5: graceful shutdown ─────────────────────────────────────────
 using var shutdownCts = new CancellationTokenSource();
+CancellationTokenSource? slackListenerCts = null;
 
 Console.CancelKeyPress += (_, e) =>
 {
@@ -47,6 +48,7 @@ Console.CancelKeyPress += (_, e) =>
 AppDomain.CurrentDomain.ProcessExit += (_, _) =>
 {
     try { shutdownCts.Cancel(); } catch (ObjectDisposedException) { }
+    try { slackListenerCts?.Cancel(); } catch (ObjectDisposedException) { }
     try { SlackSink.RunFinished(); } catch { /* Slack ne doit jamais casser la sortie */ }
 };
 
@@ -466,6 +468,28 @@ if (config.LiveChatEnabled)
 {
     runner.LiveInputDir = Path.GetFullPath(artifactsDir);
     Console.WriteLine("  ⚡ Chat live ACTIVÉ (LIVE_CHAT=true) — interventions injectées pendant le tour. Protocole expérimental : surveiller la 1re exécution.");
+
+    var hasSlackTokens = !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("SLACK_APP_TOKEN"))
+        && !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("SLACK_BOT_TOKEN"));
+    if (hasSlackTokens && !SlackSink.IsTestHost())
+    {
+        var fullArtifactsDir = runner.LiveInputDir;
+        slackListenerCts = CancellationTokenSource.CreateLinkedTokenSource(shutdownCts.Token);
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await new SlackSocketListener().RunAsync(fullArtifactsDir, slackListenerCts.Token);
+            }
+            catch (Exception ex)
+            {
+                // Le listener est un confort d'injection : son indisponibilité ne doit
+                // jamais interrompre le pipeline principal.
+                Console.Error.WriteLine($"[slack] Listener indisponible ({ex.GetType().Name}).");
+            }
+        });
+        Console.WriteLine("  ⚡ Slack two-way ACTIVÉ (écoute #ccode/#ag/#codex/#sl)");
+    }
 }
 
 // Sorties périmées : les live-* d'un run précédent ne doivent jamais passer
@@ -1018,6 +1042,7 @@ EventEmitter.Emit("run-end", new
     dryRun,
     publishable = dryRun && !shutdownCts.IsCancellationRequested,
 });
+try { slackListenerCts?.Cancel(); } catch (ObjectDisposedException) { }
 return 0;
 
 // Capture transverse SERZENIA-145 : appelee immediatement apres chaque retour

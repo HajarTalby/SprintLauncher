@@ -226,7 +226,7 @@ public static class SlackSink
         return HasBotToken();
     }
 
-    private static bool IsTestHost()
+    internal static bool IsTestHost()
     {
         var entry = Assembly.GetEntryAssembly()?.GetName().Name ?? string.Empty;
         return entry.Contains("testhost", StringComparison.OrdinalIgnoreCase)

@@ -607,19 +607,20 @@ public sealed class ActorRunner : IDisposable
         timeoutCts.CancelAfter(timeout);
 
         // Pompe des interventions : turn/steer sur le tour actif, tant que le tour dure.
-        var inbox = new LiveInputInbox(LiveInputInbox.PathFor(LiveInputDir!, prompt.Role));
+        var inboxes = LiveInputInbox.ForRoleAndActor(LiveInputDir!, prompt.Role);
         var steerTask = Task.Run(async () =>
         {
             while (!turnDone.Task.IsCompleted && !timeoutCts.IsCancellationRequested && !HasExitedSafe(process))
             {
                 if (threadId is not null && turnId is not null)
-                    foreach (var line in inbox.DrainNewLines())
-                        if (LiveChatProtocol.IsSendable(line))
-                        {
-                            var resolved = ResolveLiveAttachments(prompt.Role, line);
-                            Send(CodexAppServerProtocol.TurnSteer(nextId++, threadId, turnId, WrapLiveIntervention(resolved)));
-                            NotifyLiveDelivery(prompt.Role, line);
-                        }
+                    foreach (var inbox in inboxes)
+                        foreach (var line in inbox.DrainNewLines())
+                            if (LiveChatProtocol.IsSendable(line))
+                            {
+                                var resolved = ResolveLiveAttachments(prompt.Role, line);
+                                Send(CodexAppServerProtocol.TurnSteer(nextId++, threadId, turnId, WrapLiveIntervention(resolved)));
+                                NotifyLiveDelivery(prompt.Role, line);
+                            }
                 try { await Task.Delay(LivePollInterval, timeoutCts.Token); } catch (OperationCanceledException) { break; }
             }
         }, CancellationToken.None);
@@ -639,7 +640,7 @@ public sealed class ActorRunner : IDisposable
             Send(CodexAppServerProtocol.TurnInterrupt(nextId++, threadId, turnId));
         try { process.StandardInput.Close(); } catch (IOException) { } catch (ObjectDisposedException) { }
         await steerTask;
-        SalvageLeftoverInterventions(inbox, prompt.Role); // arrivées après la fin du tour → directives
+        SalvageLeftoverInterventions(inboxes, prompt.Role); // arrivées après la fin du tour → directives
         if (!HasExitedSafe(process))
             try { process.Kill(entireProcessTree: true); } catch (InvalidOperationException) { }
         liveWriter?.Dispose();
@@ -915,8 +916,8 @@ public sealed class ActorRunner : IDisposable
         Func<string, string> frame, Func<int> turnsCompleted, CancellationToken ct)
     {
         var stdin = process.StandardInput;
-        LiveInputInbox? inbox = LiveInputDir is not null
-            ? new LiveInputInbox(LiveInputInbox.PathFor(LiveInputDir, role))
+        IReadOnlyList<LiveInputInbox>? inboxes = LiveInputDir is not null
+            ? LiveInputInbox.ForRoleAndActor(LiveInputDir, role)
             : null;
         int sent = 0;
         try
@@ -927,17 +928,18 @@ public sealed class ActorRunner : IDisposable
 
             while (!ct.IsCancellationRequested && !HasExitedSafe(process))
             {
-                if (inbox is not null)
+                if (inboxes is not null)
                 {
-                    foreach (var line in inbox.DrainNewLines())
-                    {
-                        if (!LiveChatProtocol.IsSendable(line)) continue;
-                        var resolved = ResolveLiveAttachments(role, line);
-                        stdin.WriteLine(frame(WrapLiveIntervention(resolved)));
-                        stdin.Flush();
-                        sent++;
-                        NotifyLiveDelivery(role, line);
-                    }
+                    foreach (var inbox in inboxes)
+                        foreach (var line in inbox.DrainNewLines())
+                        {
+                            if (!LiveChatProtocol.IsSendable(line)) continue;
+                            var resolved = ResolveLiveAttachments(role, line);
+                            stdin.WriteLine(frame(WrapLiveIntervention(resolved)));
+                            stdin.Flush();
+                            sent++;
+                            NotifyLiveDelivery(role, line);
+                        }
                 }
 
                 // ANTI-DEADLOCK : en session stream-json, claude attend indéfiniment du
@@ -954,16 +956,19 @@ public sealed class ActorRunner : IDisposable
         finally
         {
             try { stdin.Close(); } catch (IOException) { } catch (ObjectDisposedException) { }
-            SalvageLeftoverInterventions(inbox, role);
+            SalvageLeftoverInterventions(inboxes, role);
         }
     }
 
     // Interventions arrivées trop tard pour ce tour : reversées dans pending-directive.txt
     // (même dossier), où le flux de directives adressées du CLI les ramasse — jamais perdues.
-    private void SalvageLeftoverInterventions(LiveInputInbox? inbox, ActorRole role)
+    private void SalvageLeftoverInterventions(IReadOnlyList<LiveInputInbox>? inboxes, ActorRole role)
     {
-        if (inbox is null || LiveInputDir is null) return;
-        var leftovers = inbox.DrainNewLines().Where(LiveChatProtocol.IsSendable).ToList();
+        if (inboxes is null || LiveInputDir is null) return;
+        var leftovers = inboxes
+            .SelectMany(inbox => inbox.DrainNewLines())
+            .Where(LiveChatProtocol.IsSendable)
+            .ToList();
         if (leftovers.Count == 0) return;
         try
         {

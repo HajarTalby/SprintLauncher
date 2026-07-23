@@ -1,4 +1,5 @@
 using System.Text;
+using SprintLauncher.Notifications;
 using SprintLauncher.Prompts;
 
 namespace SprintLauncher.Runners;
@@ -78,4 +79,26 @@ public sealed class LiveInputInbox
     /// <summary>Chemin de l'inbox d'un acteur dans un dossier live donné.</summary>
     public static string PathFor(string liveDir, ActorRole role) =>
         System.IO.Path.Combine(liveDir, $"live-input-{role}.txt");
+
+    /// <summary>Clé Slack canonique de la famille qui exécute ce rôle.</summary>
+    public static string ActorKeyFor(ActorRole role) =>
+        ActorKeyFor(role.ToString());
+
+    /// <summary>Clé Slack canonique d'un nom de rôle ou d'orchestrateur.</summary>
+    public static string ActorKeyFor(string role) =>
+        SlackSink.ActorFromRole(role);
+
+    /// <summary>Chemin de l'inbox Slack d'un acteur dans un dossier live donné.</summary>
+    public static string PathForActorKey(string liveDir, string actorKey) =>
+        System.IO.Path.Combine(liveDir, $"live-input-{actorKey}.txt");
+
+    /// <summary>
+    /// Les deux boîtes à surveiller pendant un tour : celle du rôle (UI historique)
+    /// et celle de la famille Slack. Chaque instance conserve son propre curseur.
+    /// </summary>
+    public static IReadOnlyList<LiveInputInbox> ForRoleAndActor(string liveDir, ActorRole role) =>
+    [
+        new LiveInputInbox(PathFor(liveDir, role)),
+        new LiveInputInbox(PathForActorKey(liveDir, ActorKeyFor(role))),
+    ];
 }

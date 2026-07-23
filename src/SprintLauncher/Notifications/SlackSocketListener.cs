@@ -2,13 +2,15 @@ using System.Net.Http.Headers;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
+using SprintLauncher.Dialogue;
+using SprintLauncher.Runners;
 
 namespace SprintLauncher.Notifications;
 
 /// <summary>
 /// Ecoute les messages Slack en Socket Mode et les range dans l'inbox de leur acteur.
-/// La reception est volontairement independante du pipeline : le lot 2 fera le lien
-/// entre ces inbox d'acteurs et les inbox de roles d'un run.
+/// Le runner draine ensuite cette inbox par acteur en plus de son inbox historique
+/// par rôle, pendant le tour de la famille concernée.
 /// </summary>
 public sealed class SlackSocketListener
 {
@@ -137,6 +139,18 @@ public sealed class SlackSocketListener
         writer.Write('\n');
     }
 
+    /// <summary>
+    /// Détermine l'inbox cible : un préfixe @acteur explicite prévaut sur le canal,
+    /// sinon le message reste destiné à la famille du canal d'origine.
+    /// </summary>
+    internal static string RouteActorKey(string channelActorKey, string text)
+    {
+        var address = DirectiveAddressing.Parse(text);
+        return address.Actor is { } targetRole
+            ? LiveInputInbox.ActorKeyFor(targetRole)
+            : channelActorKey;
+    }
+
     private async Task<string> OpenConnectionAsync(string appToken, CancellationToken ct)
     {
         using var request = new HttpRequestMessage(HttpMethod.Post, ConnectionsOpenUrl);
@@ -204,11 +218,12 @@ public sealed class SlackSocketListener
             if (IsFromBot(envelope) || !IsHumanMessage(envelope) || envelope.Channel is null)
                 continue;
 
-            var actorKey = channelMap.ResolveActor(envelope.Channel);
-            if (actorKey is null)
+            var channelActorKey = channelMap.ResolveActor(envelope.Channel);
+            if (channelActorKey is null)
                 continue;
 
             var text = envelope.Text ?? string.Empty;
+            var actorKey = RouteActorKey(channelActorKey, text);
             AppendToInbox(liveDir, actorKey, text);
             Console.WriteLine($"[slack] #{actorKey} → \"{TruncateForLog(text)}\"");
         }

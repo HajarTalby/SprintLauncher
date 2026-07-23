@@ -119,4 +119,26 @@ public class SlackSocketListenerTests
                 Directory.Delete(directory, recursive: true);
         }
     }
+
+    [Fact]
+    public void Addressed_message_from_codex_channel_is_written_to_target_actor_inbox()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"slack-listener-{Guid.NewGuid():N}");
+        try
+        {
+            Directory.CreateDirectory(directory);
+            const string text = "@ccode fais X";
+            var actorKey = SlackSocketListener.RouteActorKey("codex", text);
+
+            SlackSocketListener.AppendToInbox(directory, actorKey, text);
+
+            Assert.Equal("@ccode fais X\n", File.ReadAllText(Path.Combine(directory, "live-input-ccode.txt")));
+            Assert.False(File.Exists(Path.Combine(directory, "live-input-codex.txt")));
+        }
+        finally
+        {
+            if (Directory.Exists(directory))
+                Directory.Delete(directory, recursive: true);
+        }
+    }
 }

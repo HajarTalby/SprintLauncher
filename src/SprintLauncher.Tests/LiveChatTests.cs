@@ -111,6 +111,42 @@ public class LiveChatTests : IDisposable
         Assert.Contains("GptImplementation", p1);
     }
 
+    [Theory]
+    [InlineData(ActorRole.GptImplementation, "codex")]
+    [InlineData(ActorRole.ClaudeImplementation, "ccode")]
+    [InlineData(ActorRole.CommitteeCodex, "codex")]
+    [InlineData(ActorRole.AgImplementation, "ag")]
+    public void Inbox_actor_key_uses_canonical_slack_mapping(ActorRole role, string expected) =>
+        Assert.Equal(expected, LiveInputInbox.ActorKeyFor(role));
+
+    [Fact]
+    public void Inbox_actor_key_routes_orchestrator_role_to_sl() =>
+        Assert.Equal("sl", LiveInputInbox.ActorKeyFor("CommitteePilotage"));
+
+    [Fact]
+    public void Inbox_path_for_actor_key_uses_slack_listener_convention()
+    {
+        var path = LiveInputInbox.PathForActorKey(_dir, "codex");
+
+        Assert.Equal(Path.Combine(_dir, "live-input-codex.txt"), path);
+    }
+
+    [Fact]
+    public void Role_and_actor_inboxes_drain_both_incrementally_without_duplicates()
+    {
+        var inboxes = LiveInputInbox.ForRoleAndActor(_dir, ActorRole.GptImplementation);
+        File.AppendAllText(LiveInputInbox.PathFor(_dir, ActorRole.GptImplementation), "depuis le role\n");
+        File.AppendAllText(LiveInputInbox.PathForActorKey(_dir, "codex"), "depuis Slack\n");
+
+        Assert.Equal(
+            new[] { "depuis le role", "depuis Slack" },
+            inboxes.SelectMany(inbox => inbox.DrainNewLines()));
+        Assert.Empty(inboxes.SelectMany(inbox => inbox.DrainNewLines()));
+
+        File.AppendAllText(LiveInputInbox.PathForActorKey(_dir, "codex"), "nouveau Slack\n");
+        Assert.Equal(new[] { "nouveau Slack" }, inboxes.SelectMany(inbox => inbox.DrainNewLines()));
+    }
+
     // ── Adressage multiple (retour Hajar 2026-07-17) ──────────────────────────────
 
     [Fact]
