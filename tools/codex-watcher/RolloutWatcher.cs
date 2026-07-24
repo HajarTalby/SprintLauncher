@@ -7,16 +7,16 @@ public sealed class RolloutWatcher
     private readonly string _sessionsRoot;
     private readonly OffsetStore _offsetStore;
     private readonly RolloutParser _parser;
-    private readonly NotifyInvoker _notify;
+    private readonly Func<string, CompletedTurn, CancellationToken, Task> _notifyAsync;
     private readonly TextWriter _log;
     private readonly HashSet<string> _seenTurnIds = new(StringComparer.Ordinal);
 
-    public RolloutWatcher(string sessionsRoot, OffsetStore offsetStore, RolloutParser parser, NotifyInvoker notify, TextWriter log)
+    public RolloutWatcher(string sessionsRoot, OffsetStore offsetStore, RolloutParser parser, Func<string, CompletedTurn, CancellationToken, Task> notifyAsync, TextWriter log)
     {
         _sessionsRoot = sessionsRoot;
         _offsetStore = offsetStore;
         _parser = parser;
-        _notify = notify;
+        _notifyAsync = notifyAsync;
         _log = log;
     }
 
@@ -25,8 +25,11 @@ public sealed class RolloutWatcher
         var todayDirectory = Path.Combine(_sessionsRoot, DateTime.Today.ToString("yyyy"), DateTime.Today.ToString("MM"), DateTime.Today.ToString("dd"));
         if (!Directory.Exists(todayDirectory)) return;
 
+        // Initial scan = "seed" pass: capture identity + mark existing turns as seen, WITHOUT
+        // alerting. Without this, a first launch (empty offset store) would replay the whole day's
+        // completed turns as a burst of Slack pings. Only turns appended AFTER startup are alerted.
         foreach (var file in Directory.EnumerateFiles(todayDirectory, "rollout-*.jsonl", SearchOption.TopDirectoryOnly))
-            await ProcessFileAsync(file, cancellationToken);
+            await ProcessFileAsync(file, notify: false, cancellationToken);
     }
 
     public async Task WatchAsync(CancellationToken cancellationToken)
@@ -56,7 +59,15 @@ public sealed class RolloutWatcher
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
     }
 
-    public async Task ProcessFileAsync(string rolloutPath, CancellationToken cancellationToken)
+    public Task ProcessFileAsync(string rolloutPath, CancellationToken cancellationToken) =>
+        ProcessFileAsync(rolloutPath, notify: true, cancellationToken);
+
+    /// <param name="notify">
+    /// When false, this is a seed pass: the read offset advances, the session identity is captured
+    /// and every consumed turn is recorded as seen, but no Slack alert is sent. Used by the initial
+    /// scan so pre-existing history is never replayed as alerts.
+    /// </param>
+    public async Task ProcessFileAsync(string rolloutPath, bool notify, CancellationToken cancellationToken)
     {
         var entry = _offsetStore.Get(rolloutPath);
         var lines = _offsetStore.ReadNewLines(rolloutPath);
@@ -67,8 +78,9 @@ public sealed class RolloutWatcher
         foreach (var turn in parsed.CompletedTurns)
         {
             if (!entry.SeenTurnIds.Add(turn.TurnId) || !_seenTurnIds.Add(turn.TurnId)) continue;
+            if (!notify) continue; // seed pass: identity + dedup established, no alert
             if (!SessionFilter.ShouldNotify(entry.SessionMeta)) continue;
-            await _notify.InvokeAsync(rolloutPath, turn, cancellationToken);
+            await _notifyAsync(rolloutPath, turn, cancellationToken);
         }
         _offsetStore.Save();
     }

@@ -6,7 +6,7 @@ var watcher = new RolloutWatcher(
     options.SessionsRoot,
     offsetStore,
     new RolloutParser(),
-    new NotifyInvoker(options.RepositoryRoot, Console.Error),
+    new NotifyInvoker(options.RepositoryRoot, Console.Error).InvokeAsync,
     Console.Error);
 
 using var cancellationSource = new CancellationTokenSource();
