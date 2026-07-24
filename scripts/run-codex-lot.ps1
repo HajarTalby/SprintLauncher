@@ -47,3 +47,20 @@ $brief | & $codex exec --skip-git-repo-check --json --output-last-message $last 
     @extra --dangerously-bypass-approvals-and-sandbox 2>&1 |
     ForEach-Object { Add-Content -Path $log -Value ([string]$_) -Encoding UTF8 }
 Log "codex termine (exit $LASTEXITCODE). Dernier message: $last"
+
+# Alerte Slack de fin de delegation (SERZENIA-155 point 2 : notifs symetriques codex/ccode).
+# Une session codex delegee est detachee : sans ce ping, la fin passe inapercue. Non bloquant :
+# une alerte qui echoue ne doit jamais faire echouer le lot.
+$exitCode = $LASTEXITCODE
+try {
+    $repoRoot = Split-Path $PSScriptRoot -Parent
+    $notifyProj = Join-Path $repoRoot "tools\notify"
+    $wtName = Split-Path $Worktree -Leaf
+    $lastMsg = if (Test-Path $last) { (Get-Content $last -Raw -Encoding UTF8).Trim() } else { "" }
+    $env:SPRINTLAUNCHER_HOME = $repoRoot
+    & dotnet run --project $notifyProj --verbosity quiet -- --actor codex --level info `
+        --text "Delegation codex terminee (exit $exitCode) : $wtName" --context $lastMsg 2>&1 |
+        ForEach-Object { Add-Content -Path $log -Value ("[notify] " + [string]$_) -Encoding UTF8 }
+} catch {
+    Log ("notify Slack echoue: " + $_.Exception.Message)
+}
