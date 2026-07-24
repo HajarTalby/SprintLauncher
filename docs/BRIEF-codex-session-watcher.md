@@ -1,79 +1,131 @@
 # Brief — Watcher de sessions Codex → alertes Slack (point 3 SERZENIA-155)
 
-> Statut : **à faire** (lot dédié, pas dans une session lourde). Décidé par Hajar le 2026-07-23.
-> Prérequis livrés : outil `notify` (Slack par acteur) opérationnel ; points 1 (alertes de
-> session Claude Code) et 2 (fin de délégation `run-codex-lot.ps1`) déjà câblés et prouvés en réel.
+> Statut : **à construire** (lot dédié codex terra high). Schéma figé sur rollouts réels du
+> 2026-07-23 par Claude, dont la session interactive VS Code réelle d'Hajar (« session 98 »).
+> Prérequis livrés : outil `notify` (Slack par acteur) opérationnel ; points 1 (alertes session
+> Claude Code) et 2 (fin de délégation `run-codex-lot.ps1`) câblés+prouvés en réel.
 
-## Problème
+## Objectif
 
-Les sessions **codex interactives lancées par Hajar dans VS Code** ne préviennent pas sur Slack
-(fin de tâche, demande d'approbation). Le mécanisme naturel — le hook `notify` de Codex — est
-**inutilisable** :
+Un process de fond qui surveille les logs des sessions **codex interactives d'Hajar dans VS Code**
+et envoie un ping Slack `#codex` **à la fin de chaque tour**, SANS toucher au hook `notify` global
+(pris par computer-use, réécrit par l'app — cf. « Pourquoi pas le hook »). On lit les rollouts que
+codex écrit déjà.
 
-- Le slot `notify` de `~/.codex/config.toml` est **déjà occupé par le runtime computer-use**
-  (`runtimes/cua_node/.../codex-computer-use.exe "turn-ended"`). Le remplacer casserait le
-  computer-use.
-- `config.toml` est **réécrit en direct par l'app Codex Desktop** (timestamps `marketplaces`
-  observés modifiés en pleine session) → un edit manuel du `notify` serait écrasé.
+## Schéma réel des rollouts (FIGÉ — vérifié sur fichiers 2026-07-23, dont la session 98)
 
-Conclusion : ne pas toucher au hook global. Surveiller à la place les logs que Codex écrit déjà.
+Codex écrit un JSONL par session, en **append** :
+`~/.codex/sessions/<yyyy>/<MM>/<dd>/rollout-<ts>-<uuid>.jsonl` (`~` = `%USERPROFILE%`).
+Chaque ligne = un objet JSON `{"timestamp":...,"type":<type-haut-niveau>,"payload":{...}}`.
 
-## Mécanisme retenu : watcher de rollout
+### `session_meta` (identité de la session → sert au FILTRAGE)
+```json
+{"type":"session_meta","payload":{
+  "cwd":"C:\\...","originator":"codex_vscode","thread_source":"user",
+  "source":{"subagent":{"other":"guardian"}}, ...}}
+```
+- `cwd` : répertoire de travail (chemin Windows, backslashes échappés).
+- `originator` : origine. Valeurs RÉELLES observées :
+  - `codex_vscode` = session VS Code (**cible** si `thread_source=user`).
+  - `codex_exec` = délégation CLI (`run-codex-lot.ps1`), cwd sous `SL-*` → à exclure.
+  - `codex_work_desktop` / `Codex Desktop` = app computer-use / desktop, cwd sous `Documents\Codex` → à exclure.
+- `thread_source` : `user` (piloté par un humain) ou `subagent` (sous-agent interne, ex. guardian).
+- `source.subagent` : **présent** ⇒ sous-agent interne à **exclure**.
 
-Codex écrit un fichier JSONL par session :
-`~/.codex/sessions/<yyyy>/<MM>/<dd>/rollout-<timestamp>-<uuid>.jsonl`, en **append** au fil des
-événements. Marqueurs identifiés (via un rollout réel du 2026-07-23) :
+⚠️ **Un rollout contient PLUSIEURS lignes `session_meta`** (observé 27 dans la session 98 :
+compaction/reconnexions VS Code les ré-émettent), **toutes de même identité**. Le parseur doit
+**prendre la 1re `session_meta` et ignorer les suivantes** (ne jamais planter dessus).
 
-| event_msg `type`   | sens                         | action watcher                          |
-|--------------------|------------------------------|-----------------------------------------|
-| `task_started`     | début d'un tour              | (rien / mémoriser le début)             |
-| `task_complete`    | **fin d'un tour**            | **ping Slack `notify --actor codex`**   |
-| `*approval*`       | demande d'approbation (à confirmer en session interactive, absent des runs bypass-sandbox) | ping `--level warn` |
-| `agent_message`    | dernier message de l'agent   | source du texte de contexte du ping     |
+### Événements `event_msg` (`payload.type` = le vrai type)
+- `task_started` : `{type,turn_id,started_at}`.
+- `task_complete` : **fin d'un tour → PING**.
+  `{type,turn_id,last_agent_message,started_at,completed_at,duration_ms}`.
+  **`last_agent_message` porte déjà le texte du dernier message** → source du `--context` du ping.
+  **Ne PAS corréler un `agent_message` séparé.** (La session 98 : 16 `task_complete` sur sa vie.)
+- Approbation : **AUCUN type `*approval*` observé, même en session interactive réelle** — la session
+  98 tourne en auto/bypass (patch_apply/exec sans gate) → pas d'événement d'approbation du tout.
+  ⇒ **Ne pas investir dessus.** Fournir juste un point d'extension `bool IsApprovalRequest(line)`
+  qui rend `false` (testé à vide) ; le vrai type sera câblé plus tard SI le test réel en révèle un.
 
-### Composant `codex-session-watcher`
+## Règle de FILTRAGE (le cœur du lot — se tromper = spam ou silence)
 
-- **Découverte** : surveiller l'arbre `~/.codex/sessions/**/rollout-*.jsonl` (FileSystemWatcher +
-  scan initial du jour). Nouveau fichier = nouvelle session.
-- **Tail incrémental** : lire chaque `.jsonl` depuis son dernier offset (curseur persistant par
-  fichier, comme `LiveInputInbox`), parser chaque ligne JSON, réagir sur `task_complete` /
-  approbation.
-- **Ping** : appeler l'outil `notify --actor codex --level info|warn --text ... --context <dernier agent_message tronqué>`.
-- **Anti-doublon avec le point 2** : les sessions lancées par `run-codex-lot.ps1` ont **déjà**
-  leur ping de fin. Les exclure — piste : détecter le `cwd`/worktree de la session (les rollouts
-  contiennent le répertoire) et ignorer ceux sous `SL-*` / worktrees de délégation, OU marquer les
-  délégations via une variable d'env repérable dans le rollout.
-- **Debounce / anti-spam** : un ping par `task_complete`, pas par event. Optionnel : ne pinguer que
-  si la session est restée idle > N s après `task_complete` (= vraiment en attente d'Hajar).
+Pour une session (identité = sa 1re `session_meta`), pinguer ses `task_complete` **UNIQUEMENT si
+TOUTES ces conditions sont vraies** :
+1. `originator == "codex_vscode"` ;
+2. `thread_source == "user"` ;
+3. `source.subagent` **absent** ;
+4. `cwd` **hors** worktree de délégation : exclure si un segment du chemin matche `^SL-` (insensible
+   casse), ex. `...\Desktop\SL-155-lot2` — ces sessions ont déjà leur ping (point 2).
 
-### Exécution permanente
+Fixtures fournies dans `tools/codex-watcher.Tests/fixtures/` (données réalistes, attendus) :
+| fixture                     | originator          | thread_source | subagent | cwd             | attendu     |
+|-----------------------------|---------------------|---------------|----------|-----------------|-------------|
+| `interactive-vscode.jsonl`  | codex_vscode        | user          | absent   | SERZENIA        | **2 pings** |
+| `guardian-subagent.jsonl`   | codex_vscode        | subagent      | guardian | SERZENIA        | 0 ping      |
+| `computer-use.jsonl`        | codex_work_desktop  | user          | absent   | Documents\Codex | 0 ping      |
+| `delegation-worktree.jsonl` | codex_exec          | user          | absent   | SL-155-lot2     | 0 ping      |
 
-Process de fond qui survit au redémarrage : **tâche planifiée Windows** (`schtasks`) déclenchée au
-logon (`ONLOGON`), relançant le watcher s'il tombe. À préparer en fichier `.xml`/commande — mais
-**la création de la tâche schtasks reste la main de Hajar** (droits), lui fournir la commande prête.
+`interactive-vscode.jsonl` contient **deux** lignes `session_meta` (cas réel) et 2 `task_complete` :
+les 2 pings doivent avoir pour contexte les `last_agent_message` respectifs (« …276 verts. » puis
+« Prochaine etape : … »).
 
-## Tests (bloquants)
+## Architecture demandée
 
-1. **Unitaire** : parseur d'événements sur un rollout figé (fixture `.jsonl` copiée) → détecte les
-   N `task_complete`, extrait le bon `agent_message`, ignore le reste. Zéro réseau.
-2. **Anti-doublon** : un rollout de session-délégation (cwd sous `SL-*`) → **aucun** ping.
-3. **Réel (participation Hajar)** : watcher lancé, Hajar ouvre une session codex VS Code, fait un
-   tour → un ping `#codex` à la fin, un seul. Puis provoquer une demande d'approbation → ping warn.
+Nouveau **tool console autonome** (parallèle à `tools/notify/`), long-running :
+`tools/codex-watcher/` + tests `tools/codex-watcher.Tests/`. Découper en classes **pures/testables**
+(tests unitaires : NI réseau NI horloge NI écriture FS hors tmp) :
 
-## Estimation
+- `SessionMeta` / `RolloutEvent` : modèles System.Text.Json, parsing **tolérant** (champ manquant ⇒
+  défaut, jamais d'exception sur une ligne inattendue ou non-JSON).
+- `RolloutParser` : lit la 1re `session_meta`, puis rend un `CompletedTurn{TurnId,LastAgentMessage,
+  CompletedAt}` par `task_complete`. Ignore silencieusement les autres types et les `session_meta`
+  surnuméraires.
+- `SessionFilter.ShouldNotify(SessionMeta) : bool` — applique les 4 règles. **Testé sur les 4 fixtures.**
+- `OffsetStore` : curseur d'offset **persistant par fichier** (JSON `~/.codex/.watcher-offsets.json`,
+  jamais commité). Même esprit que `LiveInputInbox` (`src/SprintLauncher/Runners/LiveInputInbox.cs`) :
+  lire depuis le dernier offset, ne consommer que jusqu'au dernier `\n`, gérer troncature/rotation.
+  **Essentiel** : les rollouts font plusieurs Mo et grossissent en direct — jamais de relecture complète.
+- `RolloutWatcher` : orchestration. `FileSystemWatcher` sur `~/.codex/sessions/**` (filtre
+  `rollout-*.jsonl`) **+ scan initial du jour**. Nouveauté → lire lignes neuves (offset), parser,
+  et pour chaque `task_complete` d'une session qui passe `SessionFilter` → appeler `notify`.
+  Dédup par `turn_id` déjà vu (mémoire + offset store) : **un ping par `task_complete`**, jamais deux.
+- `NotifyInvoker` : lance `notify` en sous-process, **exactement comme le point 2** de
+  `scripts/run-codex-lot.ps1` :
+  `dotnet run --project tools/notify -- --actor codex --level info --text "<résumé court>" --context "<last_agent_message tronqué ~500 char>"`.
+  Réutiliser `notify` (NE PAS réécrire l'envoi Slack). Exporter `SPRINTLAUNCHER_HOME` = racine du
+  repo principal (pour que `notify` trouve `.env`). Échec du ping = loggé, **non bloquant**.
 
-- Parseur + curseurs + tail incrémental + tests unitaires : **~cœur d'un lot** (comparable au lot 1
-  listener, réutilise les patterns `LiveInputInbox` / `SlackSocketListener`).
-- Anti-doublon + debounce : petite couche.
-- Tâche planifiée + doc d'install : léger, mais nécessite un aller-retour Hajar (schtasks).
-- **Total : ~1 lot codex terra effort high**, délégable via `run-codex-lot.ps1` pour le cœur +
-  tests unitaires (2 premiers tests), le test réel (3) restant à faire avec Hajar.
+## Tests (BLOQUANTS — les 2 premiers, zéro réseau)
 
-## Pistes de démarrage
+1. **Parseur** : `Parse(interactive-vscode.jsonl)` rend **2** `CompletedTurn` avec les bons
+   `LastAgentMessage`, malgré les 2 `session_meta`. `Parse(guardian-subagent.jsonl)` rend 1
+   `task_complete` (le parseur ne filtre pas), mais…
+2. **Filtrage** : `SessionFilter.ShouldNotify` = **vrai uniquement** pour `interactive-vscode` ;
+   **faux** pour `guardian-subagent`, `computer-use`, `delegation-worktree` (4 cas).
+3. **Réel (participation Hajar, HORS lot)** : watcher lancé, Hajar fait un tour dans sa session codex
+   VS Code → **un** ping `#codex` à la fin.
 
-- Réutiliser `SlackSink.ActorFromRole` / l'outil `notify` déjà en place (ne pas ré-écrire l'envoi).
-- Regarder un rollout complet pour figer le schéma exact des lignes (`payload` imbriqué vs plat) et
-  le nom précis de l'événement d'approbation en mode interactif (les runs `--dangerously-bypass`
-  ne le produisent pas).
-- Curseur persistant : un petit fichier d'offsets à côté (ex. `~/.codex/.watcher-offsets.json`),
-  jamais commité.
+Lot « vert » = `dotnet build` OK (`tools/codex-watcher` + `.Tests`) **et**
+`dotnet test tools/codex-watcher.Tests` vert (tests 1 & 2). Committer sur `sl-155-watcher`
+en `--no-verify` (hook = acteur IA) et **pousser**.
+
+## Exécution permanente (NE PAS créer la tâche — fournir la commande)
+
+Process de fond survivant au logon : **tâche planifiée Windows `ONLOGON`** relançant le watcher.
+Fournir dans `docs/` la **commande `schtasks` prête à copier** (+ `.xml` si utile), mais **la création
+reste la main de Hajar** (droits). Ne PAS exécuter `schtasks` dans le lot.
+
+## Pourquoi pas le hook `notify` de codex (rappel)
+
+Le slot `notify` de `~/.codex/config.toml` est **déjà pris par computer-use**
+(`codex-computer-use.exe "turn-ended"`) et l'app **réécrit** `config.toml` en direct → un edit manuel
+serait écrasé et casserait le computer-use. **Ne jamais toucher ce fichier.**
+
+## Contraintes repo (IMPÉRATIF)
+
+- Lancer `dotnet` **depuis le repo SprintLauncher** (le `global.json` de SERZENIA épingle un SDK absent).
+- `codex-watcher` = **projet .NET indépendant** (`.csproj` autonome comme `tools/notify`, ne pas casser
+  le build global de la solution SL).
+- Ne PAS committer `.watcher-offsets.json` ni aucun rollout réel (uniquement les fixtures synthétiques
+  déjà fournies).
+- Commits `--no-verify`, branche `sl-155-watcher`, **pousser** en fin de lot.
