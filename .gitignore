@@ -10,3 +10,6 @@ release/
 # Artefacts de run codex (sorties de session, non reproductibles)
 codex-last.txt
 codex-run.log
+
+# Curseur local du watcher de rollouts Codex
+.watcher-offsets.json
