@@ -23,7 +23,7 @@ dotnet run --project tools/codex-watcher -- --once
 À exécuter par Hajar dans PowerShell (le lot ne crée pas la tâche) :
 
 ```powershell
-schtasks /Create /TN "SprintLauncher Codex Session Watcher" /SC ONLOGON /RL LIMITED /TR 'powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command "Set-Location -LiteralPath ''C:\Users\najwa\OneDrive\Desktop\SL-155-watcher''; dotnet run --project tools\codex-watcher"' /F
+schtasks /Create /TN "SprintLauncher Codex Session Watcher" /SC ONLOGON /RL LIMITED /TR 'powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command "Set-Location -LiteralPath ''C:\Users\najwa\OneDrive\Desktop\SprintLauncher''; dotnet run --project tools\codex-watcher"' /F
 ```
 
 Adapter le chemin du dépôt si celui-ci est déplacé. La tâche lance le processus au logon ;
