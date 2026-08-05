@@ -14,7 +14,16 @@ param(
     # par agy lui-meme, avec espaces et parentheses, p.ex. "Gemini 3.6 Flash (High)",
     # "Gemini 3.1 Pro (High)", "Claude Sonnet 4.6 (Thinking)". En cas de nouveau rejet,
     # lancer `agy -p x --model bidon` : l'erreur liste les modeles reellement disponibles.
-    [string]$Model = "Gemini 3.1 Pro (High)"
+    # 2026-08-05 17h30 : le quota des modeles GEMINI d'agy est epuise (message
+    # "Individual quota reached", reset annonce dans ~163 h, soit vers le 12/08). Six lots
+    # lances a la suite sont tous tombes dessus. En revanche "Claude Sonnet 4.6 (Thinking)"
+    # repond encore : le quota est par famille de modeles, pas global. C'est donc lui le
+    # defaut tant que Gemini n'est pas revenu.
+    # ATTENTION appelant : ce nom contient des espaces ET des parentheses. Passe par le
+    # defaut plutot que par -Model dans un Start-Process : un -ArgumentList en tableau ne
+    # requote pas les elements, la valeur est alors decoupee et le lot ne demarre pas
+    # silencieusement (constate le 2026-08-05).
+    [string]$Model = "Claude Sonnet 4.6 (Thinking)"
 )
 $ErrorActionPreference = "Continue"
 $log = Join-Path $Worktree "agy-run.log"
