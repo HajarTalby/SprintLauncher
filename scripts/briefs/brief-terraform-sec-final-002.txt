@@ -1,0 +1,95 @@
+LOT - SEC-FINAL-002 : acquerir et verifier le provider Terraform google-beta 6.49.1
+
+Tu travailles dans le worktree ou tu te trouves : copie complete du repo SERZENIA sur le
+commit 619b5d3 (branche feature/oauth-bff). Le module Terraform est dans deploy/auth-broker/.
+
+--------------------------------------------------------------------------------
+AUTORISATION EXPLICITE ET SES LIMITES
+--------------------------------------------------------------------------------
+Hajar Talby a donne son accord EXPLICITE aujourd'hui 2026-08-05 pour une sortie reseau,
+avec une condition qu'elle a formulee elle-meme : "que des sites officiels".
+
+DOMAINES AUTORISES - ces trois-la, aucun autre :
+  - releases.hashicorp.com        (binaire terraform et ses SHA256SUMS)
+  - registry.terraform.io          (provider google-beta)
+  - apt.releases.hashicorp.com / keys openpgp officielles HashiCorp pour la clef publique
+
+TOUT LE RESTE EST INTERDIT. En particulier : aucun miroir tiers, aucun github.com/<un
+inconnu>, aucun paquet chocolatey/scoop/npm/pip, aucun raccourci "j'ai trouve ce binaire
+ailleurs". Si tu ne peux pas obtenir un artefact depuis un domaine autorise, tu t'arretes
+et tu l'ecris dans le rapport. Un binaire non officiel est un echec du lot, pas une
+solution de repli.
+
+INTERDICTIONS ABSOLUES, sans exception :
+  - AUCUN `terraform apply`. Jamais, sous aucun pretexte.
+  - AUCUN contact avec Google Cloud Platform : pas de credentials GCP, pas d'appel a une
+    API googleapis.com, aucune ressource creee, aucun projet touche.
+  - AUCUN `terraform init` avec un backend distant actif. Le fichier backend.tf.example est
+    INACTIF A DESSEIN : un backend GCS ferait contacter storage.googleapis.com et casserait
+    les gates offline. Ne l'active pas, ne le renomme pas en .tf.
+  - Ne jamais afficher un token, un secret, ni le contenu d'un .env.
+  - Ne touche pas a Jira.
+
+--------------------------------------------------------------------------------
+CONTEXTE TECHNIQUE (verifie ce jour, prends-le pour acquis)
+--------------------------------------------------------------------------------
+- terraform N'EST PAS installe sur cette machine, et gpg non plus. Tu dois donc les acquerir.
+- deploy/auth-broker/versions.tf epingle aujourd'hui required_version = "1.8.5" et le
+  provider hashicorp/google = "6.0.1". Ce pin est VOLONTAIRE : il correspond exactement au
+  couple qui a produit les preuves acceptees (docs/oauth-bff-security-evidence.json).
+  Lis le commentaire en tete de versions.tf, il explique pourquoi il ne faut pas elargir a
+  "~> 6.0" tant qu'aucun fichier de lock ne fige le hash du paquet.
+- Aucun .terraform.lock.hcl n'existe pour ce module. C'est precisement le manque a combler.
+- SEC-FINAL-002 concerne le bypass de Cloud Armor. Le patch v2 est deja redige et attend :
+  outputs/sec-final-002-003-bff-iac.patch. Il vise google-beta 6.49.1 limite a Cloud Run,
+  launch_stage=BETA, default_uri_disabled=true, invoker_iam_disabled=true, avec une double
+  postcondition. NE L'APPLIQUE PAS dans ce lot : ce lot acquiert et verifie le provider,
+  il ne modifie pas la posture.
+- Lis d'abord ces trois documents, ils portent l'etat exact du sujet :
+    docs/oauth-bff-google-beta-upgrade-matrix.md
+    docs/oauth-bff-security-gate-matrix.md   (ligne SEC-FINAL-002)
+    docs/oauth-bff-consolidation-report.md   (section remediation du 3 aout 2026)
+
+--------------------------------------------------------------------------------
+CE QUE TU DOIS FAIRE, DANS CET ORDRE
+--------------------------------------------------------------------------------
+1. Acquerir terraform 1.8.5 windows_amd64 depuis releases.hashicorp.com UNIQUEMENT.
+   Installe-le DANS TON WORKSPACE (par exemple .tools/terraform/), pas dans un repertoire
+   systeme, pas dans le PATH global de la machine.
+2. Verifier son integrite : telecharge le fichier SHA256SUMS de la meme version et compare
+   le hash SHA256 du zip. Si le hash ne correspond pas, ARRETE TOUT et ecris-le en tete du
+   rapport. Tente aussi la verification de la signature GPG HashiCorp du SHA256SUMS ; si tu
+   ne peux pas installer gpg depuis une source officielle, dis-le honnetement dans le
+   rapport au lieu de la sauter en silence.
+3. Depuis deploy/auth-broker/, generer le lock file avec le provider ACTUELLEMENT epingle
+   (google 6.0.1) : `terraform init -backend=false`. L'option -backend=false est
+   obligatoire : elle empeche toute initialisation d'un backend distant.
+   Cela doit produire un .terraform.lock.hcl qui fige les hashes du paquet.
+4. Verifier que le module est syntaxiquement sain : `terraform validate` puis
+   `terraform fmt -check`. Rapporte le resultat exact de chacun.
+5. Acquerir et verifier de la meme facon le provider hashicorp/google-beta 6.49.1 (celui que
+   vise le patch v2), SANS l'activer dans le module. Objectif : prouver qu'il est
+   telechargeable depuis le registry officiel et enregistrer ses hashes. C'est ce qui leve
+   la mention "provider non acquis / non executes" de la matrice.
+6. Tenter un `terraform plan` OFFLINE. Il echouera probablement faute de credentials GCP :
+   c'est ATTENDU et ce n'est pas un echec du lot. Rapporte le message d'erreur EXACT et
+   complet. N'essaie SURTOUT PAS de fournir des credentials pour le faire passer.
+
+--------------------------------------------------------------------------------
+LIVRABLE
+--------------------------------------------------------------------------------
+Ecris RAPPORT-terraform-sec-final-002.md a la racine de ton workspace, en francais :
+  1. Verdict global : ce qui est acquis et verifie, ce qui ne l'est pas.
+  2. Un tableau : artefact | version | URL exacte utilisee | SHA256 obtenu | SHA256 attendu |
+     signature verifiee oui/non.
+  3. Le contenu du .terraform.lock.hcl genere (ou l'explication de son absence).
+  4. La sortie EXACTE et complete de terraform validate, fmt -check et plan.
+  5. Ce qui reste a faire pour lever SEC-FINAL-002 pour de bon, et ce qui exige
+     obligatoirement une intervention humaine (credentials GCP, deploiement QA).
+  6. Toute anomalie de securite rencontree : hash qui ne correspond pas, redirection vers un
+     domaine non autorise, certificat invalide. Ce point est le plus important du rapport :
+     s'il ne s'est rien passe d'anormal, ecris-le explicitement.
+
+Ne commit pas, ne push pas. Ce lot produit un rapport et un lock file, rien d'autre.
+Si un point est impossible, ecris pourquoi precisement. Ne romance jamais un resultat :
+un "j'ai echoue et voici l'erreur exacte" vaut infiniment mieux qu'un succes invente.

@@ -1,0 +1,55 @@
+AUDIT - Code et dette technique SERZENIA (audit en LECTURE SEULE)
+
+Tu es un agent d'audit technique. Ton workspace est le worktree ou tu te trouves : il porte
+une copie complete du repo SERZENIA sur le commit 619b5d3 (branche feature/oauth-bff).
+
+CONTEXTE VERIFIE AUJOURD'HUI 2026-08-05 - ne le re-verifie pas, prends-le pour acquis :
+- La solution compile ENTIEREMENT : 7/7 projets, 0 erreur. Le workload maui-windows vient
+  d'etre installe, ce qui a leve le blocage NETSDK1147 qui empechait de builder SERZENIA.App
+  et SERZENIA.Windows.UITests depuis des semaines.
+- SDK .NET 9.0.316. Un rapport precedent affirmait que hostpolicy.dll manquait : c'etait
+  transitoire (installation en cours), c'est faux aujourd'hui.
+- Tests : SERZENIA.Application.Tests 204/204 PASS. SERZENIA.AuthBroker.Tests 34/37, les 3
+  echecs sont les FirestoreEmulatorIntegrationTests, fail-closed VOLONTAIRE quand la variable
+  FIRESTORE_EMULATOR_HOST est absente. Ce n'est pas un defaut, ne le compte pas comme dette.
+- SERZENIA.Windows.UITests echoue : WaitForAutomationId renvoie null. Un audit SEPARE traite
+  ce sujet. NE T'EN OCCUPE PAS et ne relance pas cette suite de tests.
+
+PERIMETRE DE TON AUDIT :
+  src/SERZENIA.Domain, src/SERZENIA.Application, src/SERZENIA.Infrastructure,
+  src/SERZENIA.App, src/SERZENIA.AuthBroker, tests/, scripts/, Directory.Build.props,
+  global.json, SERZENIA.sln
+
+CE QUE TU CHERCHES - classe chaque constat en CRITIQUE / MAJEUR / MINEUR :
+1. Duplication reelle de logique metier entre couches (pas la ressemblance de surface).
+2. Violations de l'architecture en couches : Domain qui dependrait de Infrastructure,
+   Application qui connaitrait le framework UI, etc. Verifie les references des .csproj.
+3. Code mort : classes, methodes publiques, fichiers jamais references nulle part.
+4. Gestion d'erreurs douteuse : catch vide, catch (Exception) trop large, exception avalee,
+   async void, Task non attendue, .Result / .Wait() qui peuvent deadlocker.
+5. Couverture de test absente sur du code a risque : dis QUEL code n'a AUCUN test et
+   pourquoi c'est risque. Ne reclame pas de test la ou il y en a deja.
+6. Le warning xUnit2031 dans tests/SERZENIA.Application.Tests/AudioGuidanceServiceTests.cs
+   ligne 65 (Where avant Assert.Single) : confirme-le et donne le correctif exact.
+7. Incoherences de configuration entre les .csproj (versions de packages divergentes,
+   Nullable/ImplicitUsings incoherents, TargetFramework qui ne suit pas le reste).
+
+TU PEUX : lire tous les fichiers, faire des recherches, et lancer `dotnet build` en Release
+si tu en as besoin.
+
+TU NE DOIS PAS :
+- Modifier le moindre fichier. Aucun git add / commit / push. C'est un audit, pas un correctif.
+- Lancer SERZENIA.Windows.UITests ni demarrer l'application SERZENIA.App : cela ouvre des
+  fenetres et des popups de validation sur la machine de Hajar. INTERDIT.
+- Sortir sur le reseau (aucun telechargement, aucun appel d'API).
+- Afficher un token, un secret ou le contenu d'un fichier .env.
+- Toucher a Jira.
+
+LIVRABLE : ecris un fichier RAPPORT-audit-dette.md a la racine de ton workspace, en francais :
+  1. Une synthese en tete : les 5 dettes les plus couteuses, ordonnees, avec l'effort estime.
+  2. Un tableau par constat : severite | fichier:ligne | probleme | correctif concret.
+  3. Une section "ce qui est sain" : les points ou le code est bon. Sois honnete, ne fabrique
+     pas de constat pour remplir. Si tu n'as pas trouve de dette sur un axe, ecris-le.
+  4. Une section "hors perimetre / non verifiable" avec la raison precise pour chaque point.
+
+Cite toujours fichier:ligne. Un constat sans emplacement precis n'a aucune valeur.
