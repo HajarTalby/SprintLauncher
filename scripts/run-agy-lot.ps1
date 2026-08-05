@@ -45,10 +45,60 @@ if (-not $agy) { Log "agy.exe introuvable (AGY_BIN / PATH / racines Antigravity 
 $env:OPENAI_API_KEY = $null
 $env:ANTHROPIC_API_KEY = $null
 
+# --- Contexte partage entre les trois agents (demande de Hajar, 2026-08-05) -------------
+# agy ne peut lire que ce qui est sous --add-dir : sans cette etape il ne voit ni la
+# memoire commune, ni CLAUDE.md, ni les branches, et il se dephase de Claude et de codex.
+# Cas reel du 2026-08-05 : un lot a conclu que tout le travail metier/UI de codex etait
+# perdu alors qu'il vivait sur cinq branches codex/* poussees le jour meme -- son worktree
+# detache ne montrait que le commit de base.
+$memSrc = "C:\Users\najwa\.claude\projects\c--Users-najwa-OneDrive-Desktop-SERZENIA\memory"
+if (Test-Path $memSrc) {
+    $memDst = Join-Path $Worktree "memoire"
+    New-Item -ItemType Directory -Force -Path $memDst | Out-Null
+    Copy-Item -Path (Join-Path $memSrc "*.md") -Destination $memDst -Force
+    Log "memoire partagee copiee dans $memDst"
+}
+
+# Etat git reel, branches distantes comprises. Un worktree partage le .git du depot : les
+# branches SONT accessibles, encore faut-il que l'acteur sache qu'elles existent.
+$gitState = Join-Path $Worktree "ETAT-GIT.md"
+$gs = @("# Etat git du depot au demarrage du lot ($(Get-Date -Format 'yyyy-MM-dd HH:mm'))", "")
+$gs += "## HEAD de ce worktree"
+$gs += '```'
+$gs += (& git -C $Worktree log -1 --format='%H %ad %s' --date=short 2>&1 | ForEach-Object { [string]$_ })
+$gs += '```'
+$gs += ""
+$gs += "## Branches locales et distantes (plus recentes d'abord)"
+$gs += '```'
+$gs += (& git -C $Worktree branch -a --sort=-committerdate --format='%(refname:short) | %(committerdate:short) | %(subject)' 2>&1 | ForEach-Object { [string]$_ })
+$gs += '```'
+$gs += ""
+$gs += "## Ecart de chaque branche distante par rapport a origin/main"
+$gs += '```'
+foreach ($br in (& git -C $Worktree for-each-ref --format='%(refname:short)' refs/remotes 2>&1)) {
+    $b = [string]$br
+    if (-not $b -or $b -match 'HEAD') { continue }
+    $n = (& git -C $Worktree rev-list --count "origin/main..$b" 2>&1) -join ''
+    $f = (& git -C $Worktree diff --name-only "origin/main...$b" 2>&1 | Measure-Object).Count
+    $gs += "$b : $n commit(s) d'avance, $f fichier(s) modifie(s)"
+}
+$gs += '```'
+$gs -join "`r`n" | Set-Content $gitState -Encoding UTF8
+Log "etat git ecrit dans $gitState"
+
 # Le prompt complet est copie dans le workspace de l'acteur (agy ne peut lire que ce qui
 # est sous --add-dir) ; seule une consigne courte qui pointe dessus passe en argument.
+# Le brief est prefixe du contexte commun : meme etat du monde pour les trois agents.
 $promptFile = Join-Path $Worktree "agy-prompt.txt"
-Copy-Item -LiteralPath $BriefFile -Destination $promptFile -Force
+$shared = Join-Path $PSScriptRoot "briefs\_contexte-commun.md"
+if (Test-Path $shared) {
+    $parts = @((Get-Content $shared -Raw -Encoding UTF8), (Get-Content $BriefFile -Raw -Encoding UTF8))
+    ($parts -join "`r`n") | Set-Content $promptFile -Encoding UTF8
+    Log "brief prefixe du contexte commun"
+} else {
+    Copy-Item -LiteralPath $BriefFile -Destination $promptFile -Force
+    Log "ATTENTION contexte commun introuvable ($shared) : brief seul"
+}
 $instruction = "Lis integralement le fichier agy-prompt.txt a la racine du workspace et " +
     "execute la consigne qu'il contient. Ce fichier porte ton prompt complet : ne demande " +
     "aucune clarification, ne resume pas le fichier, execute-le."

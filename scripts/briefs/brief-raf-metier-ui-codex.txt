@@ -1,0 +1,69 @@
+MISSION : reconstituer le RESTE-A-FAIRE (RAF) metier et UI de SERZENIA a partir des
+sessions codex archivees, puis le confronter au code reel de ce workspace.
+
+CONTEXTE
+Plusieurs sessions codex ont traite des avancements metier et UI de SERZENIA entre le
+31/07 et le 03/08/2026. Leurs transcripts complets sont dans le dossier `codex-sessions/`
+a la racine de ce workspace (fichiers .jsonl, un objet JSON par ligne). Personne ne sait
+aujourd'hui ce qui a ete reellement livre par ces sessions et ce qui reste ouvert.
+Le code du depot SERZENIA est a la racine de ce workspace (commit 619b5d3).
+
+LES 7 SESSIONS (nom de thread -> fichier)
+- "SERZENIA - Matrice de recette et preuves"  -> rollout-*-019fba22-c8c3-*.jsonl (398 Ko)
+- "SERZENIA - RAF UI multi-ecrans"            -> rollout-*-019fba22-f6a8-*.jsonl (527 Ko)
+- "SERZENIA - RAF Templates"                  -> rollout-*-019fba23-12a9-*.jsonl (3,1 Mo)
+- "Integrer les lots RAF Serzenia"            -> rollout-*-019fba3c-dae2-*.jsonl (3,5 Mo)
+- "Auditer le RAF Jira vers code"             -> rollout-*-019fba3d-1ef8-*.jsonl (10,8 Mo)
+- "Implementer le RAF audio multi-OS"         -> rollout-*-019fba3e-64d3-*.jsonl (2,3 Mo)
+- "Traiter le RAF SERZENIA-149"               -> rollout-*-019fc91b-7878-*.jsonl (623 Ko)
+
+METHODE IMPOSEE (les fichiers sont gros : ne les lis JAMAIS en entier)
+1. Pour chaque .jsonl, extrais d'abord la STRUCTURE : le premier message utilisateur
+   (= la consigne d'origine) et les DERNIERS messages assistant (= le compte rendu final).
+   C'est la que se trouve l'essentiel. Utilise du filtrage ligne a ligne (Select-String,
+   Get-Content -Tail, python) et non une lecture integrale.
+2. Cherche ensuite les marqueurs de RAF dans tout le fichier, par motif :
+   "reste a faire", "RAF", "TODO", "non implemente", "pas encore", "a faire",
+   "hors perimetre", "non traite", "bloque", "limitation", "manque".
+3. Note les fichiers du depot que la session dit avoir modifies ou avoir voulu modifier.
+
+VERIFICATION CONTRE LE CODE REEL (le point le plus important)
+Chaque element de RAF que tu retiens doit etre VERIFIE dans le code de ce workspace :
+- si la session disait "il reste a faire X" mais que X existe aujourd'hui dans le code,
+  classe-le FAIT (et cite le fichier:ligne qui le prouve) ;
+- s'il n'existe pas, classe-le RESTE (et cite l'endroit ou il devrait etre) ;
+- si tu ne peux pas trancher, classe-le A VERIFIER en disant precisement pourquoi.
+Ne recopie aucune affirmation de codex sans l'avoir confrontee au code. Une session peut
+avoir annonce une livraison sans l'avoir faite, ou l'avoir faite sur une autre branche.
+
+PERIMETRE
+Metier et UI uniquement : ecrans, navigation, multi-ecrans, templates, audio multi-OS,
+matrice de recette, regles metier, SERZENIA-149. Ignore la securite OAuth/BFF et la
+dette technique : deux audits distincts les ont deja couverts.
+
+INTERDITS ABSOLUS
+- LECTURE SEULE sur le code : aucune modification, aucun commit, aucun git push.
+- Ne lance PAS l'application SERZENIA et ne lance PAS les tests UI
+  (tests/SERZENIA.Windows.UITests) : cela ouvre des fenetres sur la machine de Hajar.
+- Aucun appel reseau, aucun appel a Jira, aucune installation.
+- Ne demande aucune clarification : execute avec ce que tu as.
+
+LIVRABLE
+Ecris `RAPPORT-raf-metier-ui.md` a la racine du workspace, en francais, avec :
+
+## 1. Synthese
+   Le RAF metier/UI en 10 lignes maximum : ce qui est reellement livre, ce qui reste.
+
+## 2. Tableau du RAF verifie
+   | Sujet | Session d'origine | Etat (FAIT / RESTE / A VERIFIER) | Preuve dans le code (fichier:ligne) | Effort estime |
+   Trie par importance metier decroissante.
+
+## 3. Detail par session
+   Pour chacune des 7 sessions : consigne d'origine (1 ligne), ce qu'elle a effectivement
+   produit, ce qu'elle a laisse ouvert.
+
+## 4. Contradictions et angles morts
+   Les endroits ou une session affirme une chose que le code contredit, et les sujets
+   metier/UI qu'aucune session n'a couverts.
+
+Sois factuel et concis. Chaque affirmation sur le code porte un fichier:ligne.

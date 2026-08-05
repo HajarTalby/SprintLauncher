@@ -1,0 +1,42 @@
+MISSION : verifier la SIGNATURE GPG de Terraform et de ses providers (complement a
+SEC-FINAL-002). Le lot precedent a valide les hashs SHA256 mais pas les signatures,
+faute de `gpg`. `gpg` est maintenant installe sur la machine.
+
+Hajar exige les DEUX : source officielle ET signature verifiee. Un hash seul ne prouve
+rien si le fichier de sommes de controle lui-meme n'est pas signe par HashiCorp.
+
+CE QUE TU FAIS
+1. Localise `gpg` (`gpg --version`). S'il n'est pas dans le PATH, cherche sous
+   `C:\Program Files (x86)\GnuPG\bin\gpg.exe` et `C:\Program Files\GnuPG\bin\gpg.exe`.
+2. Recupere la cle publique HashiCorp depuis un domaine officiel UNIQUEMENT
+   (`https://www.hashicorp.com/.well-known/pgp-key.txt`). Importe-la et NOTE SON
+   EMPREINTE COMPLETE.
+3. Pour terraform 1.8.5 (deja telecharge dans `.tools/` de ce workspace, sinon
+   re-telecharge depuis `releases.hashicorp.com`), recupere depuis `releases.hashicorp.com`
+   les fichiers `terraform_1.8.5_SHA256SUMS` et `terraform_1.8.5_SHA256SUMS.sig`.
+4. Verifie la signature : `gpg --verify terraform_1.8.5_SHA256SUMS.sig terraform_1.8.5_SHA256SUMS`.
+   Reporte la sortie BRUTE, mot pour mot.
+5. Verifie ensuite que le hash du zip telecharge figure bien dans ce SHA256SUMS signe.
+   La chaine de confiance complete est : cle HashiCorp -> signature -> SHA256SUMS -> zip.
+6. Fais de meme pour le provider google-beta 6.49.1 si HashiCorp publie un
+   `.sig` pour lui. Sinon, dis-le explicitement.
+
+DOMAINES AUTORISES, AUCUN AUTRE
+`releases.hashicorp.com`, `www.hashicorp.com`, `registry.terraform.io`.
+Pas de serveur de cles tiers (keys.openpgp.org, keyserver.ubuntu.com...) : la cle doit
+venir de HashiCorp directement.
+
+INTERDITS
+Aucun `terraform apply`, aucun contact GCP, aucune installation, aucun commit ni push.
+Ne lance pas l'application SERZENIA.
+
+LIVRABLE
+`RAPPORT-terraform-gpg.md` a la racine du workspace :
+1. Verdict en une phrase : chaine de confiance complete OUI / NON.
+2. Empreinte de la cle HashiCorp importee, et d'ou elle vient (URL exacte).
+3. Sortie brute de chaque `gpg --verify`.
+4. Tableau : artefact | version | signature verifiee (oui/non) | hash present dans le
+   SHA256SUMS signe (oui/non).
+5. Ce qui reste non prouve, s'il y a lieu, et pourquoi.
+
+Sois court et factuel : ce rapport sert de preuve d'audit.
