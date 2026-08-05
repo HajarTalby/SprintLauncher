@@ -9,7 +9,12 @@
 param(
     [Parameter(Mandatory=$true)][string]$Worktree,
     [Parameter(Mandatory=$true)][string]$BriefFile,
-    [string]$Model = "gemini-3-pro"
+    # 2026-08-05 : agy a change sa nomenclature de modeles. L'ancien defaut "gemini-3-pro"
+    # est rejete ("not recognized as a known model"). Les noms valides sont ceux affiches
+    # par agy lui-meme, avec espaces et parentheses, p.ex. "Gemini 3.6 Flash (High)",
+    # "Gemini 3.1 Pro (High)", "Claude Sonnet 4.6 (Thinking)". En cas de nouveau rejet,
+    # lancer `agy -p x --model bidon` : l'erreur liste les modeles reellement disponibles.
+    [string]$Model = "Gemini 3.1 Pro (High)"
 )
 $ErrorActionPreference = "Continue"
 $log = Join-Path $Worktree "agy-run.log"
@@ -71,9 +76,23 @@ try {
     $wtName = Split-Path $Worktree -Leaf
     $lastMsg = if (Test-Path $last) { (Get-Content $last -Raw -Encoding UTF8).Trim() } else { "" }
     $env:SPRINTLAUNCHER_HOME = $repoRoot
-    & dotnet run --project $notifyProj --verbosity quiet -- --actor ag --level info `
-        --text "Delegation agy terminee (exit $exitCode) : $wtName" --context $lastMsg 2>&1 |
-        ForEach-Object { Add-Content -Path $log -Value ("[notify] " + [string]$_) -Encoding UTF8 }
+    # Le worktree de l'acteur peut porter un global.json qui epingle un SDK absent (SERZENIA
+    # exige 9.0.300) : `dotnet run` echouerait alors sur "A compatible .NET SDK was not found"
+    # alors que le lot lui-meme s'est bien deroule. On privilegie donc le notify.exe publie,
+    # qui ne depend d'aucun SDK, et on ne retombe sur `dotnet run` qu'a defaut - en se placant
+    # dans le repo SprintLauncher pour ne pas heriter du global.json de l'acteur.
+    $notifyExe = Join-Path $notifyProj "published\notify.exe"
+    $notifyArgs = @("--actor", "ag", "--level", "info",
+        "--text", "Delegation agy terminee (exit $exitCode) : $wtName", "--context", $lastMsg)
+    if (Test-Path $notifyExe) {
+        & $notifyExe @notifyArgs |
+            ForEach-Object { Add-Content -Path $log -Value ("[notify] " + [string]$_) -Encoding UTF8 }
+    } else {
+        Push-Location $repoRoot
+        & dotnet run --project $notifyProj --verbosity quiet -- @notifyArgs |
+            ForEach-Object { Add-Content -Path $log -Value ("[notify] " + [string]$_) -Encoding UTF8 }
+        Pop-Location
+    }
 } catch {
     Log ("notify Slack echoue: " + $_.Exception.Message)
 }
