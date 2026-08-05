@@ -1,0 +1,42 @@
+MISSION : couvrir par des tests les repositories EF de coeur de domaine. C'est le seul
+point CRITIQUE de l'audit de dette du 2026-08-05 : un mapping casse (enum, valeur nulle,
+type de date) ne se voit qu'au runtime, en production, sur les donnees de l'utilisateur.
+
+BRANCHE
+`agy/tests-repos-ef-20260805`, depuis le HEAD de ce worktree. Commite. Ne pousse PAS.
+
+PERIMETRE
+Les repositories EF non couverts : `DailyState`, `DailyIntentions`, `UserPreferences`,
+`UserPriorities` (point de depart : `src/SERZENIA.Infrastructure/Persistence/
+EfDailyStateRepository.cs` et ses voisins). Commence par LISTER les repositories EF
+reellement presents et ceux deja couverts -- ne te fie pas a cette liste les yeux fermes.
+
+METHODE
+Suis le pattern deja en place dans `tests/SERZENIA.Application.Tests/SqlitePersistenceTests.cs` :
+meme style, meme facon de monter la base SQLite, meme conventions de nommage. N'invente
+pas une infrastructure de test parallele.
+
+Pour chaque repository, couvre au minimum :
+- aller-retour complet : sauvegarde puis relecture, egalite champ a champ ;
+- les ENUMS : c'est la ou le mapping casse le plus souvent (valeur persistee puis relue
+  a l'identique, y compris une valeur autre que la premiere de l'enum) ;
+- les valeurs nulles / optionnelles ;
+- la mise a jour d'une entite existante (pas seulement l'insertion) ;
+- les dates : ce qui est relu doit valoir ce qui a ete ecrit (attention au Kind UTC/Local).
+
+Si un test que tu ecris echoue, c'est peut-etre un VRAI bug de mapping : ne l'affaiblis
+pas pour le faire passer. Signale-le dans le rapport, laisse le test rouge documente, et
+corrige le mapping si la correction est evidente et sure.
+
+VALIDATION
+`dotnet build SERZENIA.sln -c Release` a 0 erreur, et `dotnet test tests/SERZENIA.Application.Tests`
+avec les 204 tests existants toujours verts, plus les tiens.
+
+INTERDITS
+Aucun push, aucun contact Jira, pas de lancement de l'application ni des UITests
+(fenetres chez Hajar), aucune modification hors `tests/` sauf correction de mapping
+explicitement justifiee dans le rapport.
+
+LIVRABLE
+`RAPPORT-tests-repos-ef.md` : repositories couverts (avant/apres), nombre de tests
+ajoutes, bugs de mapping trouves s'il y en a, sortie brute du dernier `dotnet test`.

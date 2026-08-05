@@ -1,0 +1,51 @@
+MISSION : lever les deux preuves manquantes du BFF OAuth. La revue de securite du
+2026-08-05 a conclu que le code est sain, avec exactement deux reserves. Tu les traites.
+
+BRANCHE
+`agy/bff-preuves-20260805`, depuis le HEAD de ce worktree. Commite. Ne pousse PAS.
+
+--- POINT 1 : exclusion de logs incomplete (rapide) ---
+`deploy/auth-broker/main.tf`, autour des lignes 243-247 : le filtre d'exclusion de logs
+`oauth_callback_query` ne couvre que `/v1/auth/google/callback`. Or `/v1/auth/google/start`
+recoit lui aussi `state` et `code_challenge` en query string, et n'est pas exclu : ces
+valeurs peuvent finir dans les logs.
+Etends le filtre d'exclusion pour couvrir aussi `/v1/auth/google/start`. Verifie avec
+`terraform fmt` et `terraform validate` (terraform 1.8.5 est dans `.tools/` de
+`D:\wt-agy-tf`, sinon retelecharge-le depuis `releases.hashicorp.com` UNIQUEMENT).
+Aucun `terraform apply`, aucun contact GCP.
+
+--- POINT 2 : emulateur Firestore (le vrai sujet) ---
+Trois tests de `SERZENIA.AuthBroker.Tests` sont fail-closed en l'absence de
+`FIRESTORE_EMULATOR_HOST` : les `FirestoreEmulatorIntegrationTests`. Deux d'entre eux
+sont la SEULE preuve du risque le plus critique du BFF -- l'atomicite multi-instances :
+`Multi_instance_claim_is_atomic` et `Hash_lookup_and_redemption_are_atomic_across_instances`.
+Aujourd'hui ils ne tournent jamais : le risque est non prouve.
+
+Ce que tu fais :
+1. Lis les tests et determine ce dont l'emulateur a besoin exactement (port, projet,
+   variables d'environnement).
+2. Trouve le moyen de le lancer sur cette machine. Le chemin officiel est le
+   Firebase CLI / gcloud emulator, qui exige Java. Verifie ce qui est deja present
+   (`java -version`, `firebase --version`, `gcloud --version`) AVANT de conclure.
+   N'installe rien toi-meme : si une installation est necessaire, dis precisement
+   laquelle et pourquoi, Claude s'en chargera.
+3. Si tu parviens a le lancer : fais tourner les 3 tests et rapporte la sortie BRUTE.
+   L'objectif est de voir les deux tests d'atomicite passer POUR DE VRAI.
+4. Si tu n'y parviens pas : ecris la procedure exacte, commande par commande, pour que
+   quelqu'un d'autre y arrive -- et dis ou ca bloque, precisement.
+5. Ecris un script reutilisable `scripts/Start-FirestoreEmulator.ps1` qui monte
+   l'emulateur, pose `FIRESTORE_EMULATOR_HOST` et lance ces tests. Strictement ASCII
+   (PS 5.1 lit les .ps1 en Windows-1252).
+
+INTERDITS
+Aucun push. Aucun contact GCP reel, aucun credential. Aucune installation logicielle.
+Ne touche a AUCUN autre fichier du BFF : une revue de securite vient de le valider, toute
+modification hors de ces deux points invaliderait cette preuve. Ne lance ni l'application
+SERZENIA ni les UITests (fenetres chez Hajar).
+
+LIVRABLE
+`RAPPORT-bff-preuves.md` :
+1. Point 1 : diff du filtre, sortie de `terraform fmt` et `validate`.
+2. Point 2 : verdict clair -- emulateur LANCE (avec sortie brute des 3 tests) ou NON
+   LANCE (avec le point de blocage exact et ce qu'il faut installer).
+3. Le contenu du script produit et comment on s'en sert.

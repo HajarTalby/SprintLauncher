@@ -1,0 +1,41 @@
+MISSION : corriger les paquets NuGet vulnerables de SERZENIA. Scan reel du 2026-08-05
+(`dotnet list package --vulnerable --include-transitive`), resultat brut :
+
+  SERZENIA.App             > SQLitePCLRaw.lib.e_sqlite3  2.1.10  High      GHSA-2m69-gcr7-jv3q
+  SERZENIA.Infrastructure  > SQLitePCLRaw.lib.e_sqlite3  2.1.10  High      GHSA-2m69-gcr7-jv3q
+  SERZENIA.Application.Tests > SQLitePCLRaw.lib.e_sqlite3 2.1.10 High      GHSA-2m69-gcr7-jv3q
+  SERZENIA.Windows.UITests > System.Drawing.Common        5.0.2   CRITIQUE  GHSA-rxg9-xrhp-64gj
+
+Bonne nouvelle a conserver : `SERZENIA.AuthBroker` et `SERZENIA.AuthBroker.Tests` n'ont
+AUCUN paquet vulnerable (FirebaseAdmin 3.6.0 et Google.Cloud.Firestore 4.3.0 sont sains).
+Ne les touche pas.
+
+BRANCHE
+`agy/paquets-vulnerables-20260805`, depuis le HEAD de ce worktree. Commite. Ne pousse PAS.
+
+CE QUE TU FAIS
+1. `System.Drawing.Common 5.0.2` (CRITIQUE) : c'est la plus urgente. Determine si elle est
+   directe ou transitive dans `tests/SERZENIA.Windows.UITests`. Monte-la a une version
+   non vulnerable alignee sur .NET 9. Si elle est transitive, remonte a la dependance qui
+   l'amene et corrige la, plutot que d'epingler en aveugle.
+2. `SQLitePCLRaw.lib.e_sqlite3 2.1.10` (HIGH) : elle est tres probablement transitive via
+   EF Core SQLite. La bonne correction est de monter le paquet PARENT (Microsoft.Entity
+   FrameworkCore.Sqlite ou equivalent), pas d'ajouter une reference directe a SQLitePCLRaw.
+   N'ajoute une reference directe qu'en dernier recours, et dis-le dans le rapport.
+3. Verifie la coherence des versions entre les projets : le depot cible net9.0 partout.
+4. Relance `dotnet list package --vulnerable --include-transitive` sur toute la solution
+   et mets la sortie BRUTE dans le rapport : c'est la preuve.
+
+VALIDATION
+`dotnet build SERZENIA.sln -c Release` a 0 erreur, `dotnet test tests/SERZENIA.Application.Tests`
+toujours a 204/204, `dotnet test tests/SERZENIA.AuthBroker.Tests` toujours a 34/37 (les 3
+echecs `FirestoreEmulatorIntegrationTests` sont attendus sans emulateur).
+Une montee de version qui casse le build ou les tests est annulee, pas forcee.
+
+INTERDITS
+Aucun push. Ne lance ni l'application SERZENIA ni les UITests (fenetres chez Hajar) --
+tu compiles les UITests, tu ne les executes pas. Ne modifie aucun fichier du BFF.
+
+LIVRABLE
+`RAPPORT-paquets-vulnerables.md` : tableau paquet | version avant | version apres |
+directe ou transitive | comment corrigee, puis la sortie brute du scan final et du build.

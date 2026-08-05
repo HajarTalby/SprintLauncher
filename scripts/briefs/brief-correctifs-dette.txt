@@ -1,0 +1,59 @@
+MISSION : appliquer les correctifs de dette technique identifies par l'audit du
+2026-08-05. Tu ECRIS du code cette fois, sur une branche dediee.
+
+BRANCHE
+Cree `agy/correctifs-dette-20260805` depuis le HEAD de ce worktree et commite dessus.
+Ne pousse PAS : Claude verifiera et poussera. Un commit par correctif, message clair.
+
+LES 5 CORRECTIFS, DANS CET ORDRE
+
+1. [MAJEUR] `src/SERZENIA.Application/Authentication/AuthenticationService.cs:78`
+   Le `catch (Exception)` avale l'erreur de connexion au provider d'authentification.
+   Journalise l'exception (ou propage un type d'erreur portant le detail technique).
+   L'utilisateur ne doit RIEN voir du detail technique : il reste sur le message
+   generique actuel. Respecte le pattern de logging deja en place dans le projet.
+
+2. [MAJEUR] `src/SERZENIA.AuthBroker/BrokerReadiness.cs:41`
+   `catch { _cached = false; }` est un catch vide. Trace l'exception avec le logger
+   deja injecte dans la classe (s'il n'y en a pas, injecte `ILogger<BrokerReadiness>`
+   selon le pattern du projet). Le comportement fonctionnel ne change pas :
+   `_cached = false` reste.
+
+3. [MINEUR] Regle metier dupliquee : l'annulation de `GratitudeCountPreference` quand
+   `GratitudeEnabled` est faux existe a la fois dans
+   `src/SERZENIA.Domain/Entities/UserPreferences.cs:22` et dans
+   `src/SERZENIA.Application/UserPreferences/UserPreferencesService.cs:44`.
+   Garde-la UNIQUEMENT dans le constructeur de l'entite Domaine, retire la condition
+   du service. Verifie que les tests existants passent toujours.
+
+4. [MINEUR] Code mort : l'entite `Workspace` (`src/SERZENIA.Domain/Entities/Workspace.cs`),
+   `IWorkspaceRepository` et `InMemoryWorkspaceRepository` ne sont jamais references.
+   AVANT de supprimer : prouve-le par une recherche exhaustive sur tout le depot
+   (y compris les tests et les branches distantes listees dans ETAT-GIT.md -- une
+   branche non fusionnee peut s'en servir). Si une seule reference existe quelque part,
+   NE SUPPRIME PAS et explique-le dans le rapport. Sinon supprime les 3 fichiers et
+   nettoie l'enregistrement dans `ServiceCollectionExtensions.cs`.
+
+5. [MINEUR] `tests/SERZENIA.Application.Tests/AudioGuidanceServiceTests.cs:65`
+   Warning xUnit2031 : remplace le `Where` suivi de `Assert.Single` par la surcharge
+   `Assert.Single(provider.Calls, call => call == "play");`
+
+VALIDATION OBLIGATOIRE APRES CHAQUE CORRECTIF
+`dotnet build SERZENIA.sln -c Release` doit rester a 0 erreur, et
+`dotnet test tests/SERZENIA.Application.Tests` doit rester a 204/204.
+Si un correctif casse quelque chose, annule-le et explique pourquoi dans le rapport
+plutot que de forcer.
+
+INTERDITS
+- Ne touche PAS au code OAuth/BFF autre que le point 2 (une revue de securite vient de
+  le valider ; toute modification hors perimetre invaliderait cette preuve).
+- Ne lance PAS l'application SERZENIA ni `tests/SERZENIA.Windows.UITests` (fenetres
+  chez Hajar).
+- Aucun `git push`, aucun contact Jira, aucun appel reseau.
+- N'ajoute pas de tests sur les repositories EF : c'est un lot separe (1 jour de travail).
+
+LIVRABLE
+`RAPPORT-correctifs-dette.md` a la racine : pour chacun des 5 correctifs, l'etat
+(APPLIQUE / NON APPLIQUE + raison), le hash du commit, le fichier:ligne modifie, et le
+resultat build + tests apres coup. Termine par la sortie brute du dernier
+`dotnet build` et du dernier `dotnet test`.

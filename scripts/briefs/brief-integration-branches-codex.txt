@@ -1,0 +1,43 @@
+MISSION : evaluer et preparer l'integration des cinq branches codex non fusionnees sur
+`feature/oauth-bff`. Elles portent le travail metier, UI et QA de fin juillet. Elles
+n'ont jamais ete fusionnees et datent d'AVANT les evolutions BFF du 2026-08-05.
+
+LES CINQ BRANCHES (voir aussi ETAT-GIT.md)
+- `origin/codex/ux-flows-98-156` -- UI metier : HomePage, ActivityDetailPage,
+  DailyStatePage, DailyStateService (15 fichiers, +362)
+- `origin/codex/qa-1569-visual-harness` -- matrice de recette, rapport, tracker (9, +863)
+- `origin/serzenia-156-harness-remediation` -- tests UITests : contrats harness,
+  adaptateur visuel Windows (4, +484)
+- `origin/codex/reusable-settings-templates` -- templates + artefacts sprint 6 (17, +342)
+- `origin/codex/oauth-secretless-release-gate` -- gate de release sans secret (17, +518)
+
+REGLE ABSOLUE
+**Ne reecris JAMAIS l'historique partage.** Pas de `rebase` ni de `push --force` sur ces
+branches : d'autres agents s'appuient dessus. Tu travailles uniquement dans ce worktree,
+sur une branche a toi, et tu ne pousses rien.
+
+CE QUE TU FAIS
+1. Pour chaque branche : lis le diff reel (`git diff origin/main...<branche>`) et resume
+   en 3 lignes ce qu'elle apporte VRAIMENT. Distingue le code applicatif des artefacts
+   (captures, exports, rapports) : ce n'est pas la meme valeur ni le meme risque.
+2. Cree `agy/integration-codex-20260805` depuis le HEAD de ce worktree, puis tente un
+   `git merge --no-commit --no-ff` de chaque branche, UNE PAR UNE, dans l'ordre du
+   risque croissant (le moins risque d'abord). Apres chaque merge :
+   - s'il n'y a pas de conflit : commite, puis `dotnet build SERZENIA.sln -c Release` ;
+   - s'il y a conflit : `git merge --abort`, et note precisement quels fichiers
+     entrent en conflit et pourquoi (le BFF a beaucoup bouge le 05/08).
+   Ne force jamais une resolution de conflit que tu ne comprends pas.
+3. Signale tout ce qui te parait perime : un test qui reference une API qui n'existe
+   plus, un artefact qui documente un etat depasse, un gate contredit par la revue de
+   securite du 05/08.
+
+INTERDITS
+Aucun push. Aucun contact Jira. Ne lance ni l'application ni les UITests (fenetres chez
+Hajar) -- tu compiles, tu ne joues pas.
+
+LIVRABLE
+`RAPPORT-integration-codex.md` :
+1. Tableau : branche | apport reel | fusionnable sans conflit (oui/non) | build apres
+   fusion (ok/ko) | recommandation (FUSIONNER / RETRAVAILLER / ABANDONNER) + pourquoi.
+2. Pour chaque conflit : fichiers, nature du conflit, ce qu'il faudrait decider.
+3. Ton ordre de fusion recommande, et ce qui doit passer par une revue humaine.

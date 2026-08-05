@@ -1,0 +1,47 @@
+MISSION : trouver la cause racine de l'echec de TOUS les tests UI Windows, par analyse
+STATIQUE du code. Aucun lancement d'application.
+
+LE SYMPTOME (mesure le 2026-08-05)
+`tests/SERZENIA.Windows.UITests` a tourne pour la premiere fois et tous les scenarios
+echouent, tous de la meme facon : `UiActions.WaitForAutomationId`
+(`tests/SERZENIA.Windows.UITests/WindowsUiSmokeTests.cs:1802`) renvoie `null`.
+L'application MAUI demarre bien, mais AUCUN AutomationId n'est trouve cote automation.
+Un symptome unique et commun a tous les scenarios = une cause racine unique.
+
+INTERDIT ABSOLU -- LIS BIEN
+**Ne lance PAS l'application SERZENIA. Ne lance PAS les UITests.** Chaque execution ouvre
+une fenetre sur la machine de Hajar et prend 20-30 s. Tu travailles UNIQUEMENT en lecture
+de code. `dotnet build` est autorise, `dotnet test` ne l'est pas.
+
+PISTE PRINCIPALE A INSTRUIRE EN PREMIER
+En MAUI, l'`AutomationId` pose sur un controle XAML n'est pas toujours propage a la
+couche d'automation Windows (UIA) : selon le controle, la version du framework et la
+presence ou non de `SemanticProperties`, la propriete UIA `AutomationId` peut rester
+vide cote natif. Verifie concretement, sur ce code :
+1. Les `AutomationId` sont-ils reellement poses dans les XAML de `src/SERZENIA.App/` ?
+   Sur quels types de controles ? Combien ?
+2. Par quel mecanisme `WaitForAutomationId` cherche-t-il l'element (FlaUI ? UIA brut ?
+   quelle propriete de recherche exactement) ? Lis `WindowsUiSmokeTests.cs:1802` et
+   `ClickByAutomationId` (`:1726`).
+3. Y a-t-il un ecart entre la propriete posee cote XAML et la propriete interrogee cote
+   test ? (AutomationId vs Name vs AutomationProperties.AutomationId vs SemanticProperties)
+4. La fenetre inspectee est-elle la bonne ? Une app MAUI Windows s'ouvre dans une fenetre
+   hote WinUI : si la recherche se fait sur le mauvais element racine, tout est null.
+5. Le timing : `VisualProofRunner.Run` (`:977`) laisse-t-il le temps a l'arbre UIA
+   d'exister avant la premiere recherche ?
+
+Regarde aussi si la branche `origin/serzenia-156-harness-remediation` (voir ETAT-GIT.md)
+apporte des reponses : elle touche `WindowsVisualAutomationAdapter.cs` et
+`WindowsVisualAutomationLiveTests.cs`, donc exactement cette couche. Elle peut deja
+contenir le correctif.
+
+LIVRABLE
+`RAPPORT-diag-automationid.md`, court et tranchant :
+1. **La cause racine la plus probable, en une phrase**, avec les fichier:ligne qui
+   l'etayent. Si tu hesites entre deux, classe-les et dis ce qui departagerait.
+2. Le correctif propose, concret : quel fichier, quelle modification.
+3. **Le test minimal qui confirmerait** -- une seule execution, un seul scenario, pas la
+   suite entiere. Claude le fera valider par Hajar avant de le lancer.
+4. Ce que la branche `serzenia-156-harness-remediation` apporte sur ce sujet.
+
+Ne commite rien : ce lot est un diagnostic, pas un correctif.
